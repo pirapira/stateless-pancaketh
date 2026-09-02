@@ -1,0 +1,193 @@
+/* lib/sha256.pnk -- SHA-256 (FIPS 180-4) on 64-bit words masked to 32 bits.
+   Port of SpecRef Crypto.lean sha256 / sha256Pair. */
+
+var 1 sha_k = 0;     /* 64 round constants, one per word */
+var 1 sha_w = 0;     /* 64-word message schedule scratch */
+var 1 sha_st = 0;    /* 8-word working state */
+var 1 sha_pad = 0;   /* 128-byte padding scratch */
+var 1 sha_pair_buf = 0; /* 64-byte scratch for sha256_pair */
+
+fun 1 sha256_init() {
+  sha_k = alloc(512);
+  sha_w = alloc(512);
+  sha_st = alloc(64);
+  sha_pad = alloc(128);
+  sha_pair_buf = alloc(64);
+  st sha_k + 0, 1116352408;
+  st sha_k + 8, 1899447441;
+  st sha_k + 16, 3049323471;
+  st sha_k + 24, 3921009573;
+  st sha_k + 32, 961987163;
+  st sha_k + 40, 1508970993;
+  st sha_k + 48, 2453635748;
+  st sha_k + 56, 2870763221;
+  st sha_k + 64, 3624381080;
+  st sha_k + 72, 310598401;
+  st sha_k + 80, 607225278;
+  st sha_k + 88, 1426881987;
+  st sha_k + 96, 1925078388;
+  st sha_k + 104, 2162078206;
+  st sha_k + 112, 2614888103;
+  st sha_k + 120, 3248222580;
+  st sha_k + 128, 3835390401;
+  st sha_k + 136, 4022224774;
+  st sha_k + 144, 264347078;
+  st sha_k + 152, 604807628;
+  st sha_k + 160, 770255983;
+  st sha_k + 168, 1249150122;
+  st sha_k + 176, 1555081692;
+  st sha_k + 184, 1996064986;
+  st sha_k + 192, 2554220882;
+  st sha_k + 200, 2821834349;
+  st sha_k + 208, 2952996808;
+  st sha_k + 216, 3210313671;
+  st sha_k + 224, 3336571891;
+  st sha_k + 232, 3584528711;
+  st sha_k + 240, 113926993;
+  st sha_k + 248, 338241895;
+  st sha_k + 256, 666307205;
+  st sha_k + 264, 773529912;
+  st sha_k + 272, 1294757372;
+  st sha_k + 280, 1396182291;
+  st sha_k + 288, 1695183700;
+  st sha_k + 296, 1986661051;
+  st sha_k + 304, 2177026350;
+  st sha_k + 312, 2456956037;
+  st sha_k + 320, 2730485921;
+  st sha_k + 328, 2820302411;
+  st sha_k + 336, 3259730800;
+  st sha_k + 344, 3345764771;
+  st sha_k + 352, 3516065817;
+  st sha_k + 360, 3600352804;
+  st sha_k + 368, 4094571909;
+  st sha_k + 376, 275423344;
+  st sha_k + 384, 430227734;
+  st sha_k + 392, 506948616;
+  st sha_k + 400, 659060556;
+  st sha_k + 408, 883997877;
+  st sha_k + 416, 958139571;
+  st sha_k + 424, 1322822218;
+  st sha_k + 432, 1537002063;
+  st sha_k + 440, 1747873779;
+  st sha_k + 448, 1955562222;
+  st sha_k + 456, 2024104815;
+  st sha_k + 464, 2227730452;
+  st sha_k + 472, 2361852424;
+  st sha_k + 480, 2428436474;
+  st sha_k + 488, 2756734187;
+  st sha_k + 496, 3204031479;
+  st sha_k + 504, 3329325298;
+  return 0;
+}
+
+fun 1 sha256_state_init(1 stp) {
+  st stp + 0, 1779033703;
+  st stp + 8, 3144134277;
+  st stp + 16, 1013904242;
+  st stp + 24, 2773480762;
+  st stp + 32, 1359893119;
+  st stp + 40, 2600822924;
+  st stp + 48, 528734635;
+  st stp + 56, 1541459225;
+  return 0;
+}
+
+/* One compression of the 64-byte block at blk into the 8-word state at stp. */
+fun 1 sha256_block(1 stp, 1 blk) {
+  var i = 0;
+  while i < 16 {
+    st sha_w + i * 8, LD_BE32(blk + i * 4);
+    i = i + 1;
+  }
+  while i < 64 {
+    var w15 = lds 1 (sha_w + (i - 15) * 8);
+    var w2 = lds 1 (sha_w + (i - 2) * 8);
+    var s0 = ROTR32(w15, 7) ^ ROTR32(w15, 18) ^ (w15 >>> 3);
+    var s1 = ROTR32(w2, 17) ^ ROTR32(w2, 19) ^ (w2 >>> 10);
+    st sha_w + i * 8, ((lds 1 (sha_w + (i - 16) * 8)) + s0 + (lds 1 (sha_w + (i - 7) * 8)) + s1) & M32;
+    i = i + 1;
+  }
+  var a = lds 1 stp;
+  var b = lds 1 (stp + 8);
+  var c = lds 1 (stp + 16);
+  var d = lds 1 (stp + 24);
+  var e = lds 1 (stp + 32);
+  var f = lds 1 (stp + 40);
+  var g = lds 1 (stp + 48);
+  var h = lds 1 (stp + 56);
+  i = 0;
+  while i < 64 {
+    var s1 = ROTR32(e, 6) ^ ROTR32(e, 11) ^ ROTR32(e, 25);
+    var ch = (e & f) ^ ((e ^ M32) & g);
+    var t1 = (h + s1 + ch + (lds 1 (sha_k + i * 8)) + (lds 1 (sha_w + i * 8))) & M32;
+    var s0 = ROTR32(a, 2) ^ ROTR32(a, 13) ^ ROTR32(a, 22);
+    var maj = (a & b) ^ (a & c) ^ (b & c);
+    var t2 = (s0 + maj) & M32;
+    h = g;
+    g = f;
+    f = e;
+    e = (d + t1) & M32;
+    d = c;
+    c = b;
+    b = a;
+    a = (t1 + t2) & M32;
+    i = i + 1;
+  }
+  st stp, ((lds 1 stp) + a) & M32;
+  st stp + 8, ((lds 1 (stp + 8)) + b) & M32;
+  st stp + 16, ((lds 1 (stp + 16)) + c) & M32;
+  st stp + 24, ((lds 1 (stp + 24)) + d) & M32;
+  st stp + 32, ((lds 1 (stp + 32)) + e) & M32;
+  st stp + 40, ((lds 1 (stp + 40)) + f) & M32;
+  st stp + 48, ((lds 1 (stp + 48)) + g) & M32;
+  st stp + 56, ((lds 1 (stp + 56)) + h) & M32;
+  return 0;
+}
+
+fun 1 sha256_finish(1 stp, 1 out) {
+  var i = 0;
+  while i < 8 {
+    st_be32(out + i * 4, lds 1 (stp + i * 8));
+    i = i + 1;
+  }
+  return 0;
+}
+
+/* sha256 of the len bytes at p, written to the 32 bytes at out. */
+fun 1 sha256(1 p, 1 len, 1 out) {
+  sha256_state_init(sha_st);
+  var i = 0;
+  while i + 64 <=+ len {
+    sha256_block(sha_st, p + i);
+    i = i + 64;
+  }
+  var rem = len - i;
+  memzero(sha_pad, 128);
+  memcpy(sha_pad, p + i, rem);
+  st8 sha_pad + rem, 128;
+  var total = 64;
+  if rem >=+ 56 {
+    total = 128;
+  }
+  st_be64(sha_pad + total - 8, len << 3);
+  sha256_block(sha_st, sha_pad);
+  if total == 128 {
+    sha256_block(sha_st, sha_pad + 64);
+  }
+  sha256_finish(sha_st, out);
+  return 0;
+}
+
+/* sha256(a ++ b) for two 32-byte chunks; out may alias a or b. */
+fun 1 sha256_pair(1 a, 1 b, 1 out) {
+  memcpy(sha_pair_buf, a, 32);
+  memcpy(sha_pair_buf + 32, b, 32);
+  sha256_state_init(sha_st);
+  sha256_block(sha_st, sha_pair_buf);
+  memzero(sha_pad, 64);
+  st8 sha_pad, 128;
+  st8 sha_pad + 62, 2;   /* 512 bits = 0x0200 big-endian */
+  sha256_block(sha_st, sha_pad);
+  sha256_finish(sha_st, out);
+  return 0;
+}

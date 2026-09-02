@@ -1,0 +1,162 @@
+/* lib/mem.pnk -- bump allocator over the Pancake heap and byte helpers.
+   The Pancake heap is [@base, HEAP_END); nothing else lives there. */
+
+var 1 heap_ptr = 0;
+
+fun 1 mem_init() {
+  heap_ptr = @base;
+  return 0;
+}
+
+/* Allocate n bytes, 8-byte aligned. Traps (deterministic halt) on OOM. */
+fun 1 alloc(1 n) {
+  var p = heap_ptr;
+  var q = (p + n + 7) & (0 - 8);
+  if q >+ HEAP_END {
+    @trap(@base, 0, @base, 0);
+  }
+  heap_ptr = q;
+  return p;
+}
+
+fun 1 heap_mark() {
+  return heap_ptr;
+}
+
+fun 1 heap_release(1 m) {
+  heap_ptr = m;
+  return 0;
+}
+
+fun 1 memcpy(1 dst, 1 src, 1 n) {
+  var i = 0;
+  if ((dst | src) & 7) == 0 {
+    while i + 8 <=+ n {
+      st dst + i, lds 1 (src + i);
+      i = i + 8;
+    }
+  }
+  while i <+ n {
+    st8 dst + i, ld8 (src + i);
+    i = i + 1;
+  }
+  return 0;
+}
+
+fun 1 memzero(1 dst, 1 n) {
+  var i = 0;
+  if (dst & 7) == 0 {
+    while i + 8 <=+ n {
+      st dst + i, 0;
+      i = i + 8;
+    }
+  }
+  while i <+ n {
+    st8 dst + i, 0;
+    i = i + 1;
+  }
+  return 0;
+}
+
+/* 1 if the n bytes at a and b are equal. */
+fun 1 memeq(1 a, 1 b, 1 n) {
+  var i = 0;
+  while i <+ n {
+    if (ld8 (a + i)) != (ld8 (b + i)) {
+      return 0;
+    }
+    i = i + 1;
+  }
+  return 1;
+}
+
+/* 1 if the n bytes at p are all zero. */
+fun 1 is_zero_bytes(1 p, 1 n) {
+  var i = 0;
+  while i <+ n {
+    if (ld8 (p + i)) != 0 {
+      return 0;
+    }
+    i = i + 1;
+  }
+  return 1;
+}
+
+fun 1 ld_le32(1 p) {
+  return LD_LE32(p);
+}
+
+fun 1 ld_le64(1 p) {
+  return LD_LE64(p);
+}
+
+fun 1 ld_be32(1 p) {
+  return LD_BE32(p);
+}
+
+fun 1 ld_be64(1 p) {
+  return LD_BE64(p);
+}
+
+fun 1 st_le32(1 p, 1 v) {
+  st8 p, v;
+  st8 p + 1, v >>> 8;
+  st8 p + 2, v >>> 16;
+  st8 p + 3, v >>> 24;
+  return 0;
+}
+
+fun 1 st_le64(1 p, 1 v) {
+  st_le32(p, v);
+  st_le32(p + 4, v >>> 32);
+  return 0;
+}
+
+fun 1 st_be32(1 p, 1 v) {
+  st8 p, v >>> 24;
+  st8 p + 1, v >>> 16;
+  st8 p + 2, v >>> 8;
+  st8 p + 3, v;
+  return 0;
+}
+
+fun 1 st_be64(1 p, 1 v) {
+  st_be32(p, v >>> 32);
+  st_be32(p + 4, v);
+  return 0;
+}
+
+/* Copy the host-supplied input blob into the heap. Returns <ptr, len>. */
+fun {1,1} input_blob() {
+  var len = 0;
+  !ldw len, INPUT_LEN_ADDR;
+  var p = alloc(len + 8);
+  var i = 0;
+  var w = 0;
+  while i <+ len {
+    !ldw w, INPUT_DATA_ADDR + i;   /* input is zero padded to 8 bytes */
+    st p + i, w;
+    i = i + 8;
+  }
+  return <p, len>;
+}
+
+/* Write n bytes from heap address src to the public output region. */
+fun 1 output_write(1 src, 1 n) {
+  var i = 0;
+  while i <+ n {
+    !st8 OUTPUT_ADDR + i, ld8 (src + i);
+    i = i + 1;
+  }
+  return 0;
+}
+
+fun 1 min(1 a, 1 b) {
+  if a <+ b { return a; }
+  return b;
+}
+
+fun 1 max(1 a, 1 b) {
+  if a >+ b { return a; }
+  return b;
+}

@@ -1,0 +1,621 @@
+/* ssz.pnk -- SSZ decoding (SszCodec.lean deserializeAux, Ssz.lean
+   ssz_to_* conversions) and merkleization (hashTreeRoot) for the stateless
+   guest. Decoding errors raise SszErr, which the shell maps to the
+   deserialize-failure sentinel (Guest.lean run_stateless_guest). */
+
+exception SszErr : 1;
+
+var 1 zero_hashes = 0;   /* 64 chunks: Z_d = sha256(Z_{d-1} || Z_{d-1}) */
+
+fun 1 ssz_init() {
+  zero_hashes = alloc(64 * 32);
+  memzero(zero_hashes, 32);
+  var d = 1;
+  while d < 64 {
+    sha256_pair(zero_hashes + (d - 1) * 32, zero_hashes + (d - 1) * 32, zero_hashes + d * 32);
+    d = d + 1;
+  }
+  return 0;
+}
+
+/* ---- merkleization ------------------------------------------------- */
+
+/* merkleize(chunks, limitChunks): root of the depth-ceil(log2 limit) tree
+   whose first n leaves are the 32-byte chunks at p. Writes 32 bytes at out
+   (out may alias p). SszCodec.lean merkleize. */
+fun 1 merkleize(1 p, 1 n, 1 limit, 1 out) {
+  var 1 dl = ceil_log2(limit);
+  var 1 dn = ceil_log2(n);
+  var target = max(dl, dn);
+  if n == 0 {
+    memcpy(out, zero_hashes + target * 32, 32);
+    return 0;
+  }
+  var 1 mark = heap_mark();
+  var size = 1 << dn;
+  var 1 buf = alloc(size * 32);
+  memcpy(buf, p, n * 32);
+  memzero(buf + n * 32, (size - n) * 32);
+  var cur = size;
+  while cur > 1 {
+    var half = cur >>> 1;
+    var j = 0;
+    while j < half {
+      sha256_pair(buf + j * 64, buf + j * 64 + 32, buf + j * 32);
+      j = j + 1;
+    }
+    cur = half;
+  }
+  var d = dn;
+  while d < target {
+    sha256_pair(buf, zero_hashes + d * 32, buf);
+    d = d + 1;
+  }
+  memcpy(out, buf, 32);
+  heap_release(mark);
+  return 0;
+}
+
+var 1 ssz_len_chunk = 0;
+
+/* mix_in_length(root, len) -> out (may alias root). */
+fun 1 mix_in_length(1 root, 1 len, 1 out) {
+  memzero(ssz_len_chunk, 32);
+  st_le64(ssz_len_chunk, len);
+  sha256_pair(root, ssz_len_chunk, out);
+  return 0;
+}
+
+/* Pack the n bytes at p into zero-padded 32-byte chunks in a fresh buffer.
+   Returns <chunks, count>. Caller owns the heap mark. */
+fun {1,1} pack_bytes(1 p, 1 n) {
+  var count = (n + 31) >>> 5;
+  var 1 buf = alloc(count * 32);
+  memcpy(buf, p, n);
+  memzero(buf + n, count * 32 - n);
+  return <buf, count>;
+}
+
+/* hash_tree_root of ByteVector[n]: merkleize(pack(data), chunkCount(n)). */
+fun 1 htr_bytes_vector(1 p, 1 n, 1 out) {
+  if n <=+ 32 {
+    memzero(out, 32);
+    memcpy(out, p, n);
+    return 0;
+  }
+  var 1 mark = heap_mark();
+  var {1,1} pk = pack_bytes(p, n);
+  merkleize(pk.0, pk.1, pk.1, out);
+  heap_release(mark);
+  return 0;
+}
+
+/* hash_tree_root of ByteList[limit] (limit given in chunks). */
+fun 1 htr_bytes_list(1 p, 1 n, 1 limit_chunks, 1 out) {
+  var 1 mark = heap_mark();
+  var {1,1} pk = pack_bytes(p, n);
+  merkleize(pk.0, pk.1, limit_chunks, out);
+  heap_release(mark);
+  mix_in_length(out, n, out);
+  return 0;
+}
+
+/* hash_tree_root of a uint64 stored little-endian at p. */
+fun 1 htr_u64_at(1 p, 1 out) {
+  memzero(out, 32);
+  memcpy(out, p, 8);
+  return 0;
+}
+
+/* ---- decoding primitives ------------------------------------------- */
+
+var 1 ssz_offs = 0;   /* scratch for up to 8 container offsets */
+
+fun 1 ssz_fail(1 code) {
+  throw SszErr code;
+  return 0;
+}
+
+/* Container offset checks (deserializeAux .container): every variable
+   offset in [fixed, len], nondecreasing, first == fixed. offs is a word
+   array of the n variable-field offsets in field order. */
+fun 1 ssz_check_offsets(1 offs, 1 n, 1 fixed, 1 len) {
+  if n == 0 {
+    return 0;
+  }
+  var i = 0;
+  while i < n {
+    var o = lds 1 (offs + i * 8);
+    if (o <+ fixed) || (len <+ o) {
+      ssz_fail(10);
+    }
+    if i > 0 {
+      if o <+ (lds 1 (offs + i * 8 - 8)) {
+        ssz_fail(11);
+      }
+    }
+    i = i + 1;
+  }
+  if (lds 1 offs) != fixed {
+    ssz_fail(12);
+  }
+  return 0;
+}
+
+/* Split a serialized List[variable elem, lim] into slices. Returns
+   <slice array, count>. */
+fun {1,1} ssz_split_var_list(1 p, 1 len, 1 lim) {
+  if len == 0 {
+    return <0, 0>;
+  }
+  if len <+ 4 {
+    ssz_fail(20);
+  }
+  var first = LD_LE32(p);
+  if (first == 0) || ((first & 3) != 0) || (len <+ first) {
+    ssz_fail(21);
+  }
+  var count = first >>> 2;
+  if count >+ lim {
+    ssz_fail(22);
+  }
+  var 1 arr = alloc(count * 16);
+  var i = 0;
+  var prev = first;
+  while i < count {
+    var o = LD_LE32(p + i * 4);
+    if (o <+ first) || (len <+ o) || (o <+ prev) {
+      ssz_fail(23);
+    }
+    if i > 0 {
+      st arr + (i - 1) * 16 + 8, o - prev;
+    }
+    st arr + i * 16, p + o;
+    prev = o;
+    i = i + 1;
+  }
+  st arr + (count - 1) * 16 + 8, len - prev;
+  return <arr, count>;
+}
+
+/* Element count of a serialized List[fixed elem of size sz, lim]. */
+fun 1 ssz_fixed_list_count(1 len, 1 sz, 1 lim) {
+  var {1,1} qr = udivmod(len, sz);
+  if qr.1 != 0 {
+    ssz_fail(30);
+  }
+  if qr.0 >+ lim {
+    ssz_fail(31);
+  }
+  return qr.0;
+}
+
+/* Decode List[uint64, 1] at p (the optional fork activation value).
+   Returns <present, value>. */
+fun {1,1} ssz_optional_u64(1 p, 1 len) {
+  if len == 0 {
+    return <0, 0>;
+  }
+  if len != 8 {
+    ssz_fail(40);
+  }
+  return <1, LD_LE64(p)>;
+}
+
+/* ---- ExecutionPayload ------------------------------------------------ */
+
+fun 1 decode_payload(1 p, 1 len) {
+  if len <+ PL_FIXED {
+    ssz_fail(50);
+  }
+  var 1 pl = alloc(PL_SIZE);
+  st pl + PL_RAW, p;
+  st pl + PL_RAW_LEN, len;
+  var o_extra = LD_LE32(p + PLO_EXTRA_OFF);
+  var o_txs = LD_LE32(p + PLO_TXS_OFF);
+  var o_wd = LD_LE32(p + PLO_WD_OFF);
+  var o_bal = LD_LE32(p + PLO_BAL_OFF);
+  st ssz_offs, o_extra;
+  st ssz_offs + 8, o_txs;
+  st ssz_offs + 16, o_wd;
+  st ssz_offs + 24, o_bal;
+  ssz_check_offsets(ssz_offs, 4, PL_FIXED, len);
+  /* extra_data: ByteList[32] */
+  if (o_txs - o_extra) >+ MAX_EXTRA_DATA_BYTES {
+    ssz_fail(51);
+  }
+  st pl + PL_EXTRA, p + o_extra;
+  st pl + PL_EXTRA_N, o_txs - o_extra;
+  /* transactions: List[ByteList[2^30], 2^20] */
+  var {1,1} txs = ssz_split_var_list(p + o_txs, o_wd - o_txs, MAX_TRANSACTIONS_PER_PAYLOAD);
+  st pl + PL_TXS, txs.0;
+  st pl + PL_TXS_N, txs.1;
+  var i = 0;
+  while i < txs.1 {
+    if SLICE_LEN(txs.0, i) >+ MAX_BYTES_PER_TRANSACTION {
+      ssz_fail(52);
+    }
+    i = i + 1;
+  }
+  /* withdrawals: List[Withdrawal(44 bytes), 16] */
+  var 1 nwd = ssz_fixed_list_count(o_bal - o_wd, WITHDRAWAL_SIZE, MAX_WITHDRAWALS_PER_PAYLOAD);
+  st pl + PL_WD, p + o_wd;
+  st pl + PL_WD_N, nwd;
+  /* block_access_list: ByteList[2^30] */
+  if (len - o_bal) >+ MAX_BLOCK_ACCESS_LIST_BYTES {
+    ssz_fail(53);
+  }
+  st pl + PL_BAL, p + o_bal;
+  st pl + PL_BAL_N, len - o_bal;
+  st pl + PL_NUMBER, LD_LE64(p + PLO_NUMBER);
+  st pl + PL_GAS_LIMIT, LD_LE64(p + PLO_GAS_LIMIT);
+  st pl + PL_GAS_USED, LD_LE64(p + PLO_GAS_USED);
+  st pl + PL_TIMESTAMP, LD_LE64(p + PLO_TIMESTAMP);
+  st pl + PL_BLOB_GAS_USED, LD_LE64(p + PLO_BLOB_GAS_USED);
+  st pl + PL_EXCESS_BLOB_GAS, LD_LE64(p + PLO_EXCESS_BLOB_GAS);
+  st pl + PL_SLOT, LD_LE64(p + PLO_SLOT);
+  return pl;
+}
+
+/* ---- ExecutionRequests ---------------------------------------------- */
+
+fun 1 decode_requests(1 p, 1 len) {
+  if len <+ REQ_FIXED {
+    ssz_fail(60);
+  }
+  var i = 0;
+  while i < 5 {
+    st ssz_offs + i * 8, LD_LE32(p + i * 4);
+    i = i + 1;
+  }
+  ssz_check_offsets(ssz_offs, 5, REQ_FIXED, len);
+  var 1 rq = alloc(REQ_SIZE);
+  var o0 = lds 1 ssz_offs;
+  var o1 = lds 1 (ssz_offs + 8);
+  var o2 = lds 1 (ssz_offs + 16);
+  var o3 = lds 1 (ssz_offs + 24);
+  var o4 = lds 1 (ssz_offs + 32);
+  var 1 n0 = ssz_fixed_list_count(o1 - o0, DEPOSIT_SIZE, MAX_DEPOSIT_REQUESTS_PER_PAYLOAD);
+  var 1 n1 = ssz_fixed_list_count(o2 - o1, WDREQ_SIZE, MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD);
+  var 1 n2 = ssz_fixed_list_count(o3 - o2, CONS_SIZE, MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD);
+  var 1 n3 = ssz_fixed_list_count(o4 - o3, BDEP_SIZE, MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD);
+  var 1 n4 = ssz_fixed_list_count(len - o4, BEXIT_SIZE, MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD);
+  st rq + REQ_DEP, p + o0;
+  st rq + REQ_DEP_N, n0;
+  st rq + REQ_WDR, p + o1;
+  st rq + REQ_WDR_N, n1;
+  st rq + REQ_CONS, p + o2;
+  st rq + REQ_CONS_N, n2;
+  st rq + REQ_BDEP, p + o3;
+  st rq + REQ_BDEP_N, n3;
+  st rq + REQ_BEXIT, p + o4;
+  st rq + REQ_BEXIT_N, n4;
+  return rq;
+}
+
+/* ---- StatelessInput --------------------------------------------------- */
+
+/* Decode a List[ByteList[maxb], lim] into a slice array. */
+fun {1,1} decode_bytes_list(1 p, 1 len, 1 lim, 1 maxb) {
+  var {1,1} r = ssz_split_var_list(p, len, lim);
+  var i = 0;
+  while i < r.1 {
+    if SLICE_LEN(r.0, i) >+ maxb {
+      ssz_fail(70);
+    }
+    i = i + 1;
+  }
+  return r;
+}
+
+/* deserialize_stateless_input (Guest.lean): schema id + SSZ body. */
+fun 1 decode_stateless_input(1 p, 1 len) {
+  if len <+ 2 {
+    ssz_fail(1);   /* missingSchemaId */
+  }
+  if ((ld8 p) != 21) || ((ld8 (p + 1)) != 1) {
+    ssz_fail(2);   /* unsupportedSchemaId */
+  }
+  p = p + 2;
+  len = len - 2;
+  if len <+ SI_FIXED {
+    ssz_fail(80);
+  }
+  var i = 0;
+  while i < 4 {
+    st ssz_offs + i * 8, LD_LE32(p + i * 4);
+    i = i + 1;
+  }
+  ssz_check_offsets(ssz_offs, 4, SI_FIXED, len);
+  var o_npr = lds 1 ssz_offs;
+  var o_wit = lds 1 (ssz_offs + 8);
+  var o_cc = lds 1 (ssz_offs + 16);
+  var o_pk = lds 1 (ssz_offs + 24);
+  var 1 si = alloc(SI_SIZE);
+  /* NewPayloadRequest */
+  var np = p + o_npr;
+  var nlen = o_wit - o_npr;
+  if nlen <+ NPR_FIXED {
+    ssz_fail(81);
+  }
+  var o_pl = LD_LE32(np);
+  var o_vh = LD_LE32(np + 4);
+  var o_rq = LD_LE32(np + 40);
+  st ssz_offs, o_pl;
+  st ssz_offs + 8, o_vh;
+  st ssz_offs + 16, o_rq;
+  ssz_check_offsets(ssz_offs, 3, NPR_FIXED, nlen);
+  var 1 pl = decode_payload(np + o_pl, o_vh - o_pl);
+  st si + SI_PL, pl;
+  var 1 nvh = ssz_fixed_list_count(o_rq - o_vh, 32, MAX_BLOB_COMMITMENTS_PER_BLOCK);
+  st si + SI_VH, np + o_vh;
+  st si + SI_VH_N, nvh;
+  st si + SI_PBBR, np + 8;
+  var 1 rq = decode_requests(np + o_rq, nlen - o_rq);
+  st si + SI_REQ, rq;
+  /* ExecutionWitness */
+  var wp = p + o_wit;
+  var wlen = o_cc - o_wit;
+  if wlen <+ 12 {
+    ssz_fail(82);
+  }
+  i = 0;
+  while i < 3 {
+    st ssz_offs + i * 8, LD_LE32(wp + i * 4);
+    i = i + 1;
+  }
+  ssz_check_offsets(ssz_offs, 3, 12, wlen);
+  var w0 = lds 1 ssz_offs;
+  var w1 = lds 1 (ssz_offs + 8);
+  var w2 = lds 1 (ssz_offs + 16);
+  var {1,1} st0 = decode_bytes_list(wp + w0, w1 - w0, MAX_WITNESS_NODES, MAX_BYTES_PER_WITNESS_NODE);
+  st si + SI_STATE, st0.0;
+  st si + SI_STATE_N, st0.1;
+  var {1,1} cd = decode_bytes_list(wp + w1, w2 - w1, MAX_WITNESS_CODES, MAX_BYTES_PER_CODE);
+  st si + SI_CODES, cd.0;
+  st si + SI_CODES_N, cd.1;
+  var {1,1} hd = decode_bytes_list(wp + w2, wlen - w2, MAX_WITNESS_HEADERS, MAX_BYTES_PER_HEADER);
+  st si + SI_HEADERS, hd.0;
+  st si + SI_HEADERS_N, hd.1;
+  /* ChainConfig: [u64 chain_id, ForkConfig] */
+  var cp = p + o_cc;
+  var clen = o_pk - o_cc;
+  if clen <+ 12 {
+    ssz_fail(83);
+  }
+  st si + SI_CHAIN_ID, LD_LE64(cp);
+  st ssz_offs, LD_LE32(cp + 8);
+  ssz_check_offsets(ssz_offs, 1, 12, clen);
+  /* ForkConfig: [ForkActivation] */
+  var fp = cp + 12;
+  var flen = clen - 12;
+  if flen <+ 4 {
+    ssz_fail(84);
+  }
+  st ssz_offs, LD_LE32(fp);
+  ssz_check_offsets(ssz_offs, 1, 4, flen);
+  /* ForkActivation: [List[u64,1], List[u64,1]] */
+  var ap = fp + 4;
+  var alen = flen - 4;
+  if alen <+ 8 {
+    ssz_fail(85);
+  }
+  st ssz_offs, LD_LE32(ap);
+  st ssz_offs + 8, LD_LE32(ap + 4);
+  ssz_check_offsets(ssz_offs, 2, 8, alen);
+  var a0 = lds 1 ssz_offs;
+  var a1 = lds 1 (ssz_offs + 8);
+  var {1,1} bn = ssz_optional_u64(ap + a0, a1 - a0);
+  var {1,1} ts = ssz_optional_u64(ap + a1, alen - a1);
+  st si + SI_BN_SOME, bn.0;
+  st si + SI_BN, bn.1;
+  st si + SI_TS_SOME, ts.0;
+  st si + SI_TS, ts.1;
+  /* public keys: List[ByteVector[65], 2^15] */
+  var 1 npk = ssz_fixed_list_count(len - o_pk, PUBKEY_SIZE, MAX_PUBLIC_KEYS);
+  st si + SI_PK, p + o_pk;
+  st si + SI_PK_N, npk;
+  return si;
+}
+
+/* ---- hash_tree_root(NewPayloadRequest) ------------------------------- */
+
+/* Root of a Withdrawal container from its 44 serialized bytes. */
+fun 1 htr_withdrawal(1 w, 1 out) {
+  var 1 mark = heap_mark();
+  var 1 ch = alloc(4 * 32);
+  htr_u64_at(w, ch);
+  htr_u64_at(w + 8, ch + 32);
+  htr_bytes_vector(w + 16, 20, ch + 64);
+  htr_u64_at(w + 36, ch + 96);
+  merkleize(ch, 4, 4, out);
+  heap_release(mark);
+  return 0;
+}
+
+/* List of fixed-size containers whose roots are already in `roots`. */
+fun 1 htr_list_roots(1 roots, 1 n, 1 lim, 1 out) {
+  merkleize(roots, n, lim, out);
+  mix_in_length(out, n, out);
+  return 0;
+}
+
+fun 1 htr_payload(1 pl, 1 out) {
+  var raw = lds 1 (pl + PL_RAW);
+  var 1 mark = heap_mark();
+  var 1 ch = alloc(19 * 32);
+  memcpy(ch, raw + PLO_PARENT_HASH, 32);
+  htr_bytes_vector(raw + PLO_FEE_RECIPIENT, 20, ch + 32);
+  memcpy(ch + 64, raw + PLO_STATE_ROOT, 32);
+  memcpy(ch + 96, raw + PLO_RECEIPTS_ROOT, 32);
+  htr_bytes_vector(raw + PLO_LOGS_BLOOM, 256, ch + 128);
+  memcpy(ch + 160, raw + PLO_PREV_RANDAO, 32);
+  htr_u64_at(raw + PLO_NUMBER, ch + 192);
+  htr_u64_at(raw + PLO_GAS_LIMIT, ch + 224);
+  htr_u64_at(raw + PLO_GAS_USED, ch + 256);
+  htr_u64_at(raw + PLO_TIMESTAMP, ch + 288);
+  htr_bytes_list(lds 1 (pl + PL_EXTRA), lds 1 (pl + PL_EXTRA_N), 1, ch + 320);
+  memcpy(ch + 352, raw + PLO_BASE_FEE, 32);
+  memcpy(ch + 384, raw + PLO_BLOCK_HASH, 32);
+  /* transactions */
+  var txs = lds 1 (pl + PL_TXS);
+  var ntx = lds 1 (pl + PL_TXS_N);
+  var 1 m2 = heap_mark();
+  var 1 roots = alloc(ntx * 32 + 32);
+  var i = 0;
+  while i < ntx {
+    htr_bytes_list(SLICE_PTR(txs, i), SLICE_LEN(txs, i), CHUNKS_2_30, roots + i * 32);
+    i = i + 1;
+  }
+  htr_list_roots(roots, ntx, MAX_TRANSACTIONS_PER_PAYLOAD, ch + 416);
+  heap_release(m2);
+  /* withdrawals */
+  var wd = lds 1 (pl + PL_WD);
+  var nwd = lds 1 (pl + PL_WD_N);
+  roots = alloc(nwd * 32 + 32);
+  i = 0;
+  while i < nwd {
+    htr_withdrawal(wd + i * WITHDRAWAL_SIZE, roots + i * 32);
+    i = i + 1;
+  }
+  htr_list_roots(roots, nwd, MAX_WITHDRAWALS_PER_PAYLOAD, ch + 448);
+  heap_release(m2);
+  htr_u64_at(raw + PLO_BLOB_GAS_USED, ch + 480);
+  htr_u64_at(raw + PLO_EXCESS_BLOB_GAS, ch + 512);
+  htr_bytes_list(lds 1 (pl + PL_BAL), lds 1 (pl + PL_BAL_N), CHUNKS_2_30, ch + 544);
+  htr_u64_at(raw + PLO_SLOT, ch + 576);
+  merkleize(ch, 19, 19, out);
+  heap_release(mark);
+  return 0;
+}
+
+/* Request element roots (all fixed-size containers of byte vectors/u64). */
+fun 1 htr_deposit(1 e, 1 out) {
+  var 1 mark = heap_mark();
+  var 1 ch = alloc(5 * 32);
+  htr_bytes_vector(e, 48, ch);
+  memcpy(ch + 32, e + 48, 32);
+  htr_u64_at(e + 80, ch + 64);
+  htr_bytes_vector(e + 88, 96, ch + 96);
+  htr_u64_at(e + 184, ch + 128);
+  merkleize(ch, 5, 5, out);
+  heap_release(mark);
+  return 0;
+}
+
+fun 1 htr_wdreq(1 e, 1 out) {
+  var 1 mark = heap_mark();
+  var 1 ch = alloc(3 * 32);
+  htr_bytes_vector(e, 20, ch);
+  htr_bytes_vector(e + 20, 48, ch + 32);
+  htr_u64_at(e + 68, ch + 64);
+  merkleize(ch, 3, 3, out);
+  heap_release(mark);
+  return 0;
+}
+
+fun 1 htr_cons(1 e, 1 out) {
+  var 1 mark = heap_mark();
+  var 1 ch = alloc(3 * 32);
+  htr_bytes_vector(e, 20, ch);
+  htr_bytes_vector(e + 20, 48, ch + 32);
+  htr_bytes_vector(e + 68, 48, ch + 64);
+  merkleize(ch, 3, 3, out);
+  heap_release(mark);
+  return 0;
+}
+
+fun 1 htr_bdep(1 e, 1 out) {
+  var 1 mark = heap_mark();
+  var 1 ch = alloc(4 * 32);
+  htr_bytes_vector(e, 48, ch);
+  memcpy(ch + 32, e + 48, 32);
+  htr_u64_at(e + 80, ch + 64);
+  htr_bytes_vector(e + 88, 96, ch + 96);
+  merkleize(ch, 4, 4, out);
+  heap_release(mark);
+  return 0;
+}
+
+fun 1 htr_bexit(1 e, 1 out) {
+  var 1 mark = heap_mark();
+  var 1 ch = alloc(2 * 32);
+  htr_bytes_vector(e, 20, ch);
+  htr_bytes_vector(e + 20, 48, ch + 32);
+  merkleize(ch, 2, 2, out);
+  heap_release(mark);
+  return 0;
+}
+
+/* kind: 0 deposit, 1 withdrawal, 2 consolidation, 3 builder deposit,
+   4 builder exit. Root of List[container, lim]. */
+fun 1 htr_request_list(1 kind, 1 p, 1 n, 1 sz, 1 lim, 1 out) {
+  var 1 mark = heap_mark();
+  var 1 roots = alloc(n * 32 + 32);
+  var i = 0;
+  while i < n {
+    if kind == 0 { htr_deposit(p + i * sz, roots + i * 32); }
+    if kind == 1 { htr_wdreq(p + i * sz, roots + i * 32); }
+    if kind == 2 { htr_cons(p + i * sz, roots + i * 32); }
+    if kind == 3 { htr_bdep(p + i * sz, roots + i * 32); }
+    if kind == 4 { htr_bexit(p + i * sz, roots + i * 32); }
+    i = i + 1;
+  }
+  htr_list_roots(roots, n, lim, out);
+  heap_release(mark);
+  return 0;
+}
+
+fun 1 htr_requests(1 rq, 1 out) {
+  var 1 mark = heap_mark();
+  var 1 ch = alloc(5 * 32);
+  htr_request_list(0, lds 1 (rq + REQ_DEP), lds 1 (rq + REQ_DEP_N), DEPOSIT_SIZE, MAX_DEPOSIT_REQUESTS_PER_PAYLOAD, ch);
+  htr_request_list(1, lds 1 (rq + REQ_WDR), lds 1 (rq + REQ_WDR_N), WDREQ_SIZE, MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD, ch + 32);
+  htr_request_list(2, lds 1 (rq + REQ_CONS), lds 1 (rq + REQ_CONS_N), CONS_SIZE, MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD, ch + 64);
+  htr_request_list(3, lds 1 (rq + REQ_BDEP), lds 1 (rq + REQ_BDEP_N), BDEP_SIZE, MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD, ch + 96);
+  htr_request_list(4, lds 1 (rq + REQ_BEXIT), lds 1 (rq + REQ_BEXIT_N), BEXIT_SIZE, MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD, ch + 128);
+  merkleize(ch, 5, 5, out);
+  heap_release(mark);
+  return 0;
+}
+
+/* compute_new_payload_request_root (Stateless.lean). */
+fun 1 htr_new_payload_request(1 si, 1 out) {
+  var 1 mark = heap_mark();
+  var 1 ch = alloc(4 * 32);
+  htr_payload(lds 1 (si + SI_PL), ch);
+  /* versioned hashes: List[Bytes32, 4096]; each root is the hash itself */
+  merkleize(lds 1 (si + SI_VH), lds 1 (si + SI_VH_N), MAX_BLOB_COMMITMENTS_PER_BLOCK, ch + 32);
+  mix_in_length(ch + 32, lds 1 (si + SI_VH_N), ch + 32);
+  memcpy(ch + 64, lds 1 (si + SI_PBBR), 32);
+  htr_requests(lds 1 (si + SI_REQ), ch + 96);
+  merkleize(ch, 4, 4, out);
+  heap_release(mark);
+  return 0;
+}
+
+/* ---- StatelessValidationResult serialization -------------------------- */
+
+/* serialize_stateless_output: root(32) ++ succ(1) ++ chain config.
+   chain config fields are passed explicitly so the sentinel can reuse it.
+   Returns the byte length written at out (61 + 8 per present optional). */
+fun 1 serialize_result(1 out, 1 root, 1 succ, 1 chain_id, 1 bn_some, 1 bn, 1 ts_some, 1 ts) {
+  memcpy(out, root, 32);
+  st8 out + 32, succ;
+  st_le32(out + 33, 37);
+  st_le64(out + 37, chain_id);
+  st_le32(out + 45, 12);
+  st_le32(out + 49, 4);
+  st_le32(out + 53, 8);
+  st_le32(out + 57, 8 + 8 * bn_some);
+  var n = 61;
+  if bn_some != 0 {
+    st_le64(out + n, bn);
+    n = n + 8;
+  }
+  if ts_some != 0 {
+    st_le64(out + n, ts);
+    n = n + 8;
+  }
+  return n;
+}

@@ -1,0 +1,42 @@
+/* lib/arith.pnk -- 64-bit helpers Pancake lacks (no div/mod instructions). */
+
+/* Unsigned <quotient, remainder>; traps on b == 0. */
+fun {1,1} udivmod(1 a, 1 b) {
+  if b == 0 {
+    @trap(@base, 0, @base, 0);
+  }
+  if a <+ b {
+    return <0, a>;
+  }
+  var q = 0;
+  var r = 0;
+  var i = 64;
+  while i > 0 {
+    i = i - 1;
+    r = (r << 1) | ((a >>> i) & 1);
+    if r >=+ b {
+      r = r - b;
+      q = q | (1 << i);
+    }
+  }
+  return <q, r>;
+}
+
+fun 1 udiv(1 a, 1 b) {
+  var {1,1} qr = udivmod(a, b);
+  return qr.0;
+}
+
+fun 1 umod(1 a, 1 b) {
+  var {1,1} qr = udivmod(a, b);
+  return qr.1;
+}
+
+/* Smallest d with 2^d >= n (ceilLog2 in SszCodec.lean; 0 for n <= 1). */
+fun 1 ceil_log2(1 n) {
+  var d = 0;
+  while (1 << d) <+ n {
+    d = d + 1;
+  }
+  return d;
+}

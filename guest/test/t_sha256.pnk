@@ -1,0 +1,14 @@
+#include "config.h"
+#include "lib/mem.pnk"
+#include "lib/sha256.pnk"
+fun 1 main() {
+  mem_init();
+  sha256_init();
+  var {1,1} inp = input_blob();
+  var 1 out = alloc(64);
+  sha256(inp.0, inp.1, out);
+  sha256_pair(out, out, out + 32);
+  output_write(out, 64);
+  @halt(@base, 0, @base, 0);
+  return 0;
+}
