@@ -1,0 +1,20 @@
+/* t_ripemd160.pnk -- ripemd160 of every prefix 0..min(n,150) of the input
+   blob, then of the whole blob; 20 bytes each (guest/test/exp_ripemd160.py). */
+#include "config.h"
+#include "lib/mem.pnk"
+#include "lib/ripemd160.pnk"
+fun 1 main() {
+  mem_init();
+  var {1,1} inp = input_blob();
+  var 1 k = min(inp.1, 150);
+  var 1 out = alloc((k + 2) * 20);
+  var i = 0;
+  while i <=+ k {
+    ripemd160(inp.0, i, out + i * 20);
+    i = i + 1;
+  }
+  ripemd160(inp.0, inp.1, out + i * 20);
+  output_write(out, (k + 2) * 20);
+  @halt(@base, 0, @base, 0);
+  return 0;
+}

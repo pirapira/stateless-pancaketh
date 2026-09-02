@@ -1,0 +1,30 @@
+/* t_modexp.pnk -- lib/modexp.pnk on records [4B BE blen][4B elen][4B mlen]
+   [base][exp][mod] of the input blob; mlen output bytes per record
+   (guest/test/exp_modexp.py, vectors from tools/gen_pre_vectors.py). */
+#include "config.h"
+#include "lib/mem.pnk"
+#include "lib/arith.pnk"
+#include "lib/u256.pnk"
+#include "lib/modexp.pnk"
+fun 1 main() {
+  mem_init();
+  var {1,1} inp = input_blob();
+  var 1 out = alloc(inp.1 + 8);
+  var o = 0;
+  var p = inp.0;
+  var end = inp.0 + inp.1;
+  while p + 12 <=+ end {
+    var blen = LD_BE32(p);
+    var elen = LD_BE32(p + 4);
+    var mlen = LD_BE32(p + 8);
+    var bp = p + 12;
+    var ep = bp + blen;
+    var mp = ep + elen;
+    modexp(bp, blen, ep, elen, mp, mlen, out + o);
+    o = o + mlen;
+    p = mp + mlen;
+  }
+  output_write(out, o);
+  @halt(@base, 0, @base, 0);
+  return 0;
+}

@@ -1,0 +1,38 @@
+/* precompiles_p256.pnk -- the P256VERIFY precompile (EIP-7951, address 0x100).
+   Port of evm-asm/execution-specs/src/ethereum/forks/amsterdam/vm/
+   precompiled_contracts/p256verify.py (`p256verify`): charge 6900 gas
+   (GasCosts.PRECOMPILE_P256VERIFY), require exactly 160 bytes of call data
+   [32 hash][32 r][32 s][32 qx][32 qy], and output 32 bytes = 1 (left padded)
+   when lib/p256.pnk verifies the signature, else EMPTY output (never a
+   failure: gas is consumed and the call succeeds with no return data).
+   Runs on the current frame `ev` like the other pre_* in precompiles.pnk. */
+#include "lib/p256.pnk"
+
+#define PRECOMPILE_P256VERIFY_GAS 6900
+#define P256VERIFY_INPUT_LEN 160
+
+fun 1 pre_p256verify() {
+  var msg = lds 1 (ev + EV_MSG);
+  charge_gas(PRECOMPILE_P256VERIFY_GAS);
+  var 1 empty = alloc(8);
+  st ev + EV_OUTPUT, empty;
+  st ev + EV_OUTPUT_N, 0;
+  var n = lds 1 (msg + MSG_DATA_N);
+  if n != P256VERIFY_INPUT_LEN {
+    return 0;
+  }
+  var data = lds 1 (msg + MSG_DATA);
+  var U256 r = u256_from_be(data + 32, 32);
+  var U256 s = u256_from_be(data + 64, 32);
+  var U256 qx = u256_from_be(data + 96, 32);
+  var U256 qy = u256_from_be(data + 128, 32);
+  var 1 ok = p256_verify(data, r, s, qx, qy);
+  if ok == 1 {
+    var 1 out = alloc(32);
+    memzero(out, 32);
+    st8 out + 31, 1;
+    st ev + EV_OUTPUT, out;
+    st ev + EV_OUTPUT_N, 32;
+  }
+  return 0;
+}

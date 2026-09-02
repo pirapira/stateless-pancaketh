@@ -2,8 +2,14 @@
    precompile_index(addr): 0 if not a precompile, else 1..18 (1..17 for
    0x01..0x11, 18 for 0x100 P256VERIFY). run_precompile(idx) executes on the
    current frame `ev` (charges gas, sets EV_OUTPUT). Implemented so far:
-   identity, sha256, ecrecover (via lib/secp256k1). Others raise BlockErr 99
-   (the guest cannot decide the block -> rejection, reported as a succ miss). */
+   identity, sha256, ecrecover (via lib/secp256k1), ripemd160, modexp,
+   blake2f (lib/ripemd160, lib/modexp, lib/blake2; PrecompilesHash.lean and
+   Precompiles.lean pModexp). Others raise BlockErr 99 (the guest cannot decide
+   the block -> rejection, reported as a succ miss). */
+#include "lib/ripemd160.pnk"
+#include "lib/blake2.pnk"
+#include "lib/modexp.pnk"
+#include "precompiles_p256.pnk"
 
 fun 1 precompile_index(1 addr) {
   var 1 z = is_zero_bytes(addr, 18);
@@ -81,10 +87,150 @@ fun 1 pre_ecrecover() {
   return 0;
 }
 
+/* ripemd160.py: 600 + 120 * words gas; 20-byte digest left-padded to 32. */
+fun 1 pre_ripemd160() {
+  var msg = lds 1 (ev + EV_MSG);
+  var n = lds 1 (msg + MSG_DATA_N);
+  var 1 w = words_of(n);
+  charge_gas(600 + 120 * w);
+  var 1 out = alloc(32);
+  memzero(out, 12);
+  ripemd160(lds 1 (msg + MSG_DATA), n, out + 12);
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, 32;
+  return 0;
+}
+
+/* blake2f.py: input must be exactly 213 bytes (InvalidParameter before any
+   gas), gas = rounds (big-endian u32), final flag byte must be 0 or 1
+   (InvalidParameter after the gas charge). */
+fun 1 pre_blake2f() {
+  var msg = lds 1 (ev + EV_MSG);
+  var n = lds 1 (msg + MSG_DATA_N);
+  if n != 213 {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  var data = lds 1 (msg + MSG_DATA);
+  var rounds = LD_BE32(data);
+  var f = ld8 (data + 212);
+  charge_gas(rounds);
+  if f >+ 1 {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  var 1 out = alloc(64);
+  var 1 mark = heap_mark();
+  var 1 h = alloc(64);
+  var 1 m = alloc(128);
+  var i = 0;
+  while i < 8 {
+    st h + i * 8, LD_LE64(data + 4 + i * 8);
+    i = i + 1;
+  }
+  i = 0;
+  while i < 16 {
+    st m + i * 8, LD_LE64(data + 68 + i * 8);
+    i = i + 1;
+  }
+  blake2b_f(rounds, h, m, LD_LE64(data + 196), LD_LE64(data + 204), f);
+  i = 0;
+  while i < 8 {
+    st_le64(out + i * 8, lds 1 (h + i * 8));
+    i = i + 1;
+  }
+  heap_release(mark);
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, 64;
+  return 0;
+}
+
+/* modexp.py gas_cost = max(500, complexity * iterations) (EIP-7883). */
+fun 1 modexp_gas(1 blen, 1 mlen, 1 elen, {1,1,1,1} head) {
+  var 1 maxlen = max(blen, mlen);
+  var words = (maxlen + 7) >>> 3;
+  var cplx = 16;
+  if maxlen >+ 32 {
+    cplx = 2 * words * words;
+  }
+  var 1 hbits = u256_bit_length(head);
+  if hbits >+ 0 {
+    hbits = hbits - 1;
+  }
+  var count = 0;
+  if elen <=+ 32 {
+    count = hbits;              /* 0 when head == 0 (hbits stays 0) */
+  } else {
+    count = 16 * (elen - 32) + hbits;
+  }
+  if count <+ 1 {
+    count = 1;
+  }
+  var cost = cplx * count;
+  if cost <+ 500 {
+    cost = 500;
+  }
+  return cost;
+}
+
+/* modexp.py (EIP-7823 length limit 1024 -> exceptional halt, as
+   .outOfGas in Precompiles.lean pModexp); output is modulus_length bytes. */
+fun 1 pre_modexp() {
+  var msg = lds 1 (ev + EV_MSG);
+  var data = lds 1 (msg + MSG_DATA);
+  var n = lds 1 (msg + MSG_DATA_N);
+  var 1 mark0 = heap_mark();
+  var 1 hdr = alloc(96);
+  buffer_read(data, n, 0, 96, hdr);
+  var {1,1,1,1} bl = u256_from_be(hdr, 32);
+  var 1 blen = sat_word(bl);
+  if blen >+ 1024 {
+    throw EvmErr E_OUT_OF_GAS;
+  }
+  var {1,1,1,1} el = u256_from_be(hdr + 32, 32);
+  var 1 elen = sat_word(el);
+  if elen >+ 1024 {
+    throw EvmErr E_OUT_OF_GAS;
+  }
+  var {1,1,1,1} ml = u256_from_be(hdr + 64, 32);
+  var 1 mlen = sat_word(ml);
+  if mlen >+ 1024 {
+    throw EvmErr E_OUT_OF_GAS;
+  }
+  var exp_start = 96 + blen;
+  var 1 hlen = min(32, elen);
+  buffer_read(data, n, exp_start, hlen, hdr);
+  var {1,1,1,1} head = u256_from_be(hdr, hlen);
+  var 1 cost = modexp_gas(blen, mlen, elen, head);
+  charge_gas(cost);
+  heap_release(mark0);
+  if (blen == 0) && (mlen == 0) {
+    var 1 empty = alloc(8);
+    st ev + EV_OUTPUT, empty;
+    st ev + EV_OUTPUT_N, 0;
+    return 0;
+  }
+  var 1 out = alloc(mlen + 8);
+  var 1 mark = heap_mark();
+  var 1 bp = alloc(blen + 8);
+  var 1 ep = alloc(elen + 8);
+  var 1 mp = alloc(mlen + 8);
+  buffer_read(data, n, 96, blen, bp);
+  buffer_read(data, n, exp_start, elen, ep);
+  buffer_read(data, n, exp_start + elen, mlen, mp);
+  modexp(bp, blen, ep, elen, mp, mlen, out);
+  heap_release(mark);
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, mlen;
+  return 0;
+}
+
 fun 1 run_precompile(1 idx) {
   if idx == 1 { pre_ecrecover(); return 0; }
   if idx == 2 { pre_sha256(); return 0; }
+  if idx == 3 { pre_ripemd160(); return 0; }
   if idx == 4 { pre_identity(); return 0; }
+  if idx == 5 { pre_modexp(); return 0; }
+  if idx == 9 { pre_blake2f(); return 0; }
+  if idx == 18 { pre_p256verify(); return 0; }
   throw BlockErr 99;   /* precompile not implemented in this guest */
   return 0;
 }

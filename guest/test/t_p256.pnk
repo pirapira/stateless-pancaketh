@@ -1,0 +1,37 @@
+/* t_p256.pnk -- exercise lib/p256.pnk against tools/gen_p256_vectors.py.
+   Input: N cases of 160 bytes [32 hash][32 r][32 s][32 qx][32 qy] (BE, the
+   P256VERIFY call data).  Output per case: 8 bytes LE, p256_verify result.
+   P256_SIMPLE_MUL (cpp) selects the u256_mulmod field multiply. */
+#include "config.h"
+#include "lib/mem.pnk"
+#include "lib/arith.pnk"
+#include "lib/u256.pnk"
+#include "lib/keccak.pnk"
+#include "lib/secp256k1.pnk"
+#include "lib/p256.pnk"
+
+#define CASE_IN 160
+#define CASE_OUT 8
+
+fun 1 main() {
+  mem_init();
+  var {1,1} inp = input_blob();
+  var {1,1} nq = udivmod(inp.1, CASE_IN);
+  var 1 ncase = nq.0;
+  var 1 out = alloc(ncase * CASE_OUT + 8);
+  memzero(out, ncase * CASE_OUT + 8);
+  var c = 0;
+  while c <+ ncase {
+    var p = inp.0 + c * CASE_IN;
+    var U256 r = u256_from_be(p + 32, 32);
+    var U256 s = u256_from_be(p + 64, 32);
+    var U256 qx = u256_from_be(p + 96, 32);
+    var U256 qy = u256_from_be(p + 128, 32);
+    var 1 ok = p256_verify(p, r, s, qx, qy);
+    st out + c * CASE_OUT, ok;
+    c = c + 1;
+  }
+  output_write(out, ncase * CASE_OUT);
+  @halt(@base, 0, @base, 0);
+  return 0;
+}

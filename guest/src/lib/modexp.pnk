@@ -1,0 +1,250 @@
+/* lib/modexp.pnk -- arbitrary-precision modular exponentiation over
+   big-endian byte strings (base/exponent/modulus each <= 1024 bytes, the
+   EIP-7823 limit pinned by SpecRef Precompiles.lean pModexp / modexp.py).
+   Bignums are little-endian arrays of 32-bit digits, one digit per 64-bit
+   word (the layout of lib/u256.pnk divmnu, whose helpers nlz32 / div64by32 /
+   digits_len are reused).  Schoolbook multiplication, Knuth algorithm D
+   reduction, left-to-right square-and-multiply.  Needs lib/mem.pnk,
+   lib/arith.pnk, lib/u256.pnk. */
+
+/* Big-endian nbytes at p -> digits at d; returns the digit count
+   ceil(nbytes / 4) (digits are not trimmed). */
+fun 1 bn_from_be(1 p, 1 nbytes, 1 d) {
+  var nd = (nbytes + 3) >>> 2;
+  var i = 0;
+  while i <+ nd {
+    st d + i * 8, 0;
+    i = i + 1;
+  }
+  i = 0;
+  while i <+ nbytes {
+    var k = nbytes - 1 - i;            /* byte significance, 0 = lowest */
+    var w = d + (k >>> 2) * 8;
+    st w, (lds 1 w) | ((ld8 (p + i)) << ((k & 3) * 8));
+    i = i + 1;
+  }
+  return nd;
+}
+
+/* The nd digits at d -> big-endian nbytes at out (left zero padded; digits
+   beyond nbytes are dropped). */
+fun 1 bn_to_be(1 d, 1 nd, 1 out, 1 nbytes) {
+  var i = 0;
+  while i <+ nbytes {
+    var k = nbytes - 1 - i;
+    var byte = 0;
+    if (k >>> 2) <+ nd {
+      byte = ((lds 1 (d + (k >>> 2) * 8)) >>> ((k & 3) * 8)) & 255;
+    }
+    st8 out + i, byte;
+    i = i + 1;
+  }
+  return 0;
+}
+
+/* out[0..na+nb) = a[0..na) * b[0..nb). out must not alias a or b. */
+fun 1 bn_mul(1 a, 1 na, 1 b, 1 nb, 1 out) {
+  var i = 0;
+  while i <+ na + nb {
+    st out + i * 8, 0;
+    i = i + 1;
+  }
+  i = 0;
+  while i <+ na {
+    var ai = lds 1 (a + i * 8);
+    var carry = 0;
+    var j = 0;
+    var o = out + i * 8;
+    while j <+ nb {
+      var t = ai * (lds 1 (b + j * 8)) + (lds 1 (o + j * 8)) + carry;
+      st o + j * 8, t & M32;
+      carry = t >>> 32;
+      j = j + 1;
+    }
+    st o + nb * 8, carry;
+    i = i + 1;
+  }
+  return 0;
+}
+
+/* Knuth algorithm D (lib/u256.pnk divmnu with caller-supplied scratch):
+   q[0..m) = u[0..m) / v[0..n), r[0..n) = u mod v.  Requires 1 <= n <= m,
+   v[n-1] != 0, digits < 2^32; un holds m+1 words, vn holds n words. */
+fun 1 bn_divmnu(1 q, 1 r, 1 u, 1 m, 1 v, 1 n, 1 un, 1 vn) {
+  var i = 0;
+  var j = 0;
+  if n == 1 {
+    var d = lds 1 v;
+    var k = 0;
+    j = m;
+    while j >+ 0 {
+      j = j - 1;
+      var {1,1} qr = div64by32(k, lds 1 (u + j * 8), d);
+      st q + j * 8, qr.0;
+      k = qr.1;
+    }
+    st r, k;
+    return 0;
+  }
+  var s = nlz32(lds 1 (v + (n - 1) * 8));
+  i = n - 1;
+  while i >+ 0 {
+    st vn + i * 8, (((lds 1 (v + i * 8)) << s) | ((lds 1 (v + (i - 1) * 8)) >>> (32 - s))) & M32;
+    i = i - 1;
+  }
+  st vn, ((lds 1 v) << s) & M32;
+  st un + m * 8, (lds 1 (u + (m - 1) * 8)) >>> (32 - s);
+  i = m - 1;
+  while i >+ 0 {
+    st un + i * 8, (((lds 1 (u + i * 8)) << s) | ((lds 1 (u + (i - 1) * 8)) >>> (32 - s))) & M32;
+    i = i - 1;
+  }
+  st un, ((lds 1 u) << s) & M32;
+  var vtop = lds 1 (vn + (n - 1) * 8);
+  var vsec = lds 1 (vn + (n - 2) * 8);
+  j = m - n + 1;
+  while j >+ 0 {
+    j = j - 1;
+    var ujn = lds 1 (un + (j + n) * 8);
+    var ujn1 = lds 1 (un + (j + n - 1) * 8);
+    var ujn2 = lds 1 (un + (j + n - 2) * 8);
+    var qhat = 0;
+    var rhat = 0;
+    if ujn >=+ vtop {
+      qhat = M32;
+      rhat = ((ujn << 32) | ujn1) - qhat * vtop;
+    } else {
+      var {1,1} qr = div64by32(ujn, ujn1, vtop);
+      qhat = qr.0;
+      rhat = qr.1;
+    }
+    var again = 1;
+    while again == 1 {
+      again = 0;
+      if rhat <+ B32 {
+        if (qhat * vsec) >+ ((rhat << 32) | ujn2) {
+          qhat = qhat - 1;
+          rhat = rhat + vtop;
+          again = 1;
+        }
+      }
+    }
+    var k = 0;
+    i = 0;
+    while i <+ n {
+      var p = qhat * (lds 1 (vn + i * 8));
+      var t = (lds 1 (un + (i + j) * 8)) - k - (p & M32);
+      st un + (i + j) * 8, t & M32;
+      k = (p >>> 32) - (t >> 32);
+      i = i + 1;
+    }
+    var tt = ujn - k;
+    if tt < 0 {
+      st q + j * 8, qhat - 1;
+      k = 0;
+      i = 0;
+      while i <+ n {
+        var t2 = (lds 1 (un + (i + j) * 8)) + (lds 1 (vn + i * 8)) + k;
+        st un + (i + j) * 8, t2 & M32;
+        k = t2 >>> 32;
+        i = i + 1;
+      }
+      st un + (j + n) * 8, (tt + k) & M32;
+    } else {
+      st q + j * 8, qhat;
+      st un + (j + n) * 8, tt;
+    }
+  }
+  j = m - n + 1;
+  while j <+ m {
+    st q + j * 8, 0;
+    j = j + 1;
+  }
+  i = 0;
+  while i <+ n {
+    st r + i * 8, ((lds 1 (un + i * 8)) >>> s) | (((lds 1 (un + (i + 1) * 8)) << (32 - s)) & M32);
+    i = i + 1;
+  }
+  return 0;
+}
+
+/* r[0..n) = u[0..m) mod v[0..n) with v[n-1] != 0.  Scratch: q (m words),
+   un (m+1 words), vn (n words).  u is not modified. */
+fun 1 bn_mod(1 u, 1 m, 1 v, 1 n, 1 r, 1 q, 1 un, 1 vn) {
+  var 1 mm = digits_len(u, m);
+  if mm <+ n {
+    memcpy(r, u, mm * 8);
+    memzero(r + mm * 8, (n - mm) * 8);
+    return 0;
+  }
+  bn_divmnu(q, r, u, mm, v, n, un, vn);
+  return 0;
+}
+
+/* Index (from the most significant end) of the first nonzero bit of the
+   big-endian nbytes at p: returns bit position t (0 = lowest bit of the last
+   byte) of the top set bit, or -1 if all zero. */
+fun 1 be_top_bit(1 p, 1 nbytes) {
+  var i = 0;
+  while i <+ nbytes {
+    var b = ld8 (p + i);
+    if b != 0 {
+      var 1 bl = bit_length64(b);
+      return (nbytes - 1 - i) * 8 + bl - 1;
+    }
+    i = i + 1;
+  }
+  return 0 - 1;
+}
+
+/* out[0..mlen) = big-endian (base ^ exp) mod modulus, where base = blen bytes
+   at bp, exp = elen bytes at ep, modulus = mlen bytes at mp (all big-endian).
+   modulus == 0 gives mlen zero bytes (modexp.py).  Uses heap scratch below the
+   current mark; out must already be allocated. */
+fun 1 modexp(1 bp, 1 blen, 1 ep, 1 elen, 1 mp, 1 mlen, 1 out) {
+  var 1 mark = heap_mark();
+  var 1 nmd = (mlen + 3) >>> 2;
+  var 1 md = alloc(nmd * 8 + 8);
+  bn_from_be(mp, mlen, md);
+  var 1 n = digits_len(md, nmd);
+  if n == 0 {
+    memzero(out, mlen);
+    heap_release(mark);
+    return 0;
+  }
+  var 1 nbd = (blen + 3) >>> 2;
+  var 1 big = max(nbd, 2 * n);
+  var 1 bd = alloc(big * 8 + 8);
+  var 1 base = alloc(n * 8);
+  var 1 r = alloc(n * 8);
+  var 1 prod = alloc(2 * n * 8);
+  var 1 q = alloc(big * 8 + 8);
+  var 1 un = alloc(big * 8 + 16);
+  var 1 vn = alloc(n * 8);
+  bn_from_be(bp, blen, bd);
+  bn_mod(bd, nbd, md, n, base, q, un, vn);
+  var 1 t = be_top_bit(ep, elen);
+  if t < 0 {
+    /* exponent 0: result 1 mod m */
+    memzero(r, n * 8);
+    if (n == 1) && ((lds 1 md) == 1) {
+      skip;
+    } else {
+      st r, 1;
+    }
+  } else {
+    memcpy(r, base, n * 8);
+    while t > 0 {
+      t = t - 1;
+      bn_mul(r, n, r, n, prod);
+      bn_mod(prod, 2 * n, md, n, r, q, un, vn);
+      if (((ld8 (ep + elen - 1 - (t >>> 3))) >>> (t & 7)) & 1) == 1 {
+        bn_mul(r, n, base, n, prod);
+        bn_mod(prod, 2 * n, md, n, r, q, un, vn);
+      }
+    }
+  }
+  bn_to_be(r, n, out, mlen);
+  heap_release(mark);
+  return 0;
+}

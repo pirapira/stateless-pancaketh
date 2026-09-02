@@ -1,0 +1,39 @@
+/* t_blake2f.pnk -- blake2b_f on each 213-byte record of the input blob
+   (rounds BE32 | h[8] LE | m[16] LE | t0 | t1 | f); 64 output bytes each
+   (guest/test/exp_blake2f.py). */
+#include "config.h"
+#include "lib/mem.pnk"
+#include "lib/blake2.pnk"
+fun 1 main() {
+  mem_init();
+  var {1,1} inp = input_blob();
+  var 1 h = alloc(64);
+  var 1 m = alloc(128);
+  var 1 out = alloc(inp.1);
+  var o = 0;
+  var p = inp.0;
+  var end = inp.0 + inp.1;
+  while p + 213 <=+ end {
+    var i = 0;
+    while i < 8 {
+      st h + i * 8, LD_LE64(p + 4 + i * 8);
+      i = i + 1;
+    }
+    i = 0;
+    while i < 16 {
+      st m + i * 8, LD_LE64(p + 68 + i * 8);
+      i = i + 1;
+    }
+    blake2b_f(LD_BE32(p), h, m, LD_LE64(p + 196), LD_LE64(p + 204), ld8 (p + 212));
+    i = 0;
+    while i < 8 {
+      st_le64(out + o + i * 8, lds 1 (h + i * 8));
+      i = i + 1;
+    }
+    o = o + 64;
+    p = p + 213;
+  }
+  output_write(out, o);
+  @halt(@base, 0, @base, 0);
+  return 0;
+}

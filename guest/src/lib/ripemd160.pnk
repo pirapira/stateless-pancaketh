@@ -1,0 +1,165 @@
+/* lib/ripemd160.pnk -- RIPEMD-160 (ISO/IEC 10118-3) on 64-bit words masked
+   to 32 bits.  Port of SpecRef PrecompilesHash.lean namespace Ripemd160
+   (compressBlock / hash); Python uses hashlib.new("ripemd160").
+   Needs lib/mem.pnk.  Tables are initialised lazily on first use. */
+
+/* The permutation / shift tables r, r', s, s' (80 nibbles each) packed 16 per
+   word: entry j of table k is nibble (j & 15) of word rmd_tab[5k + (j >> 4)]. */
+var 1 rmd_tab = 0;
+var 1 rmd_x = 0;     /* 16 message words */
+var 1 rmd_h = 0;     /* 5-word chaining state */
+var 1 rmd_pad = 0;   /* 128-byte padding scratch */
+
+#define RMD_TAB(k, j) (((lds 1 (rmd_tab + ((k) * 5 + ((j) >>> 4)) * 8)) >>> (((j) & 15) * 4)) & 15)
+#define ROTL32(x, n) ((((x) << (n)) | ((x) >>> (32 - (n)))) & M32)
+
+fun 1 ripemd160_init() {
+  if rmd_tab != 0 {
+    return 0;
+  }
+  rmd_tab = alloc(160);
+  rmd_x = alloc(128);
+  rmd_h = alloc(40);
+  rmd_pad = alloc(128);
+  /* r */
+  st rmd_tab + 0, -81985529216486896;
+  st rmd_tab + 8, -8367027248562561721;
+  st rmd_tab + 16, -4198093234477904221;
+  st rmd_tab + 24, 2764919063900629905;
+  st rmd_tab + 32, -2347638613140335356;
+  /* r' */
+  st rmd_tab + 40, -4350038065488001051;
+  st rmd_tab + 48, 2419779895833949110;
+  st rmd_tab + 56, -3167670409857912481;
+  st rmd_tab + 64, -1550976852838640536;
+  st rmd_tab + 72, -5102317628327638276;
+  /* s */
+  st rmd_tab + 80, -8541359424168144917;
+  st rmd_tab + 88, -3640140192597419929;
+  st rmd_tab + 96, 6324581712619534043;
+  st rmd_tab + 104, -4222012596942864693;
+  st rmd_tab + 112, 7317203453406000633;
+  /* s' */
+  st rmd_tab + 120, 7849414023404435864;
+  st rmd_tab + 128, -4758479102614405159;
+  st rmd_tab + 136, 6331469388073975673;
+  st rmd_tab + 144, -8116440256495044513;
+  st rmd_tab + 152, -4909109581246063528;
+  return 0;
+}
+
+/* Selection function f_j (j in 0..79) of the Lean `f`. */
+fun 1 rmd_f(1 j, 1 x, 1 y, 1 z) {
+  if j <+ 16 { return x ^ y ^ z; }
+  if j <+ 32 { return (x & y) | ((x ^ M32) & z); }
+  if j <+ 48 { return (x | (y ^ M32)) ^ z; }
+  if j <+ 64 { return (x & z) | (y & (z ^ M32)); }
+  return x ^ (y | (z ^ M32));
+}
+
+/* Round constant K[j/16] (left line) and K'[j/16] (right line). */
+fun 1 rmd_k(1 j) {
+  if j <+ 16 { return 0; }
+  if j <+ 32 { return 1518500249; }
+  if j <+ 48 { return 1859775393; }
+  if j <+ 64 { return 2400959708; }
+  return 2840853838;
+}
+
+fun 1 rmd_kp(1 j) {
+  if j <+ 16 { return 1352829926; }
+  if j <+ 32 { return 1548603684; }
+  if j <+ 48 { return 1836072691; }
+  if j <+ 64 { return 2053994217; }
+  return 0;
+}
+
+/* compressBlock: one 64-byte block at blk into the 5-word state at hp. */
+fun 1 ripemd160_block(1 hp, 1 blk) {
+  var i = 0;
+  while i < 16 {
+    st rmd_x + i * 8, LD_LE32(blk + i * 4);
+    i = i + 1;
+  }
+  var a = lds 1 hp;
+  var b = lds 1 (hp + 8);
+  var c = lds 1 (hp + 16);
+  var d = lds 1 (hp + 24);
+  var e = lds 1 (hp + 32);
+  var ap = a;
+  var bp = b;
+  var cp = c;
+  var dp = d;
+  var ep = e;
+  var j = 0;
+  while j < 80 {
+    /* left line */
+    var 1 fl = rmd_f(j, b, c, d);
+    var 1 kl = rmd_k(j);
+    var t = (a + fl + (lds 1 (rmd_x + RMD_TAB(0, j) * 8)) + kl) & M32;
+    var sl = RMD_TAB(2, j);
+    t = (ROTL32(t, sl) + e) & M32;
+    a = e;
+    e = d;
+    d = ROTL32(c, 10);
+    c = b;
+    b = t;
+    /* right line */
+    var 1 fr = rmd_f(79 - j, bp, cp, dp);
+    var 1 kr = rmd_kp(j);
+    var tp = (ap + fr + (lds 1 (rmd_x + RMD_TAB(1, j) * 8)) + kr) & M32;
+    var sr = RMD_TAB(3, j);
+    tp = (ROTL32(tp, sr) + ep) & M32;
+    ap = ep;
+    ep = dp;
+    dp = ROTL32(cp, 10);
+    cp = bp;
+    bp = tp;
+    j = j + 1;
+  }
+  var h0 = lds 1 hp;
+  var h1 = lds 1 (hp + 8);
+  var h2 = lds 1 (hp + 16);
+  var h3 = lds 1 (hp + 24);
+  var h4 = lds 1 (hp + 32);
+  st hp, (h1 + c + dp) & M32;
+  st hp + 8, (h2 + d + ep) & M32;
+  st hp + 16, (h3 + e + ap) & M32;
+  st hp + 24, (h4 + a + bp) & M32;
+  st hp + 32, (h0 + b + cp) & M32;
+  return 0;
+}
+
+/* RIPEMD-160 of the n bytes at p, written to the 20 bytes at out. */
+fun 1 ripemd160(1 p, 1 n, 1 out) {
+  ripemd160_init();
+  st rmd_h, 1732584193;
+  st rmd_h + 8, 4023233417;
+  st rmd_h + 16, 2562383102;
+  st rmd_h + 24, 271733878;
+  st rmd_h + 32, 3285377520;
+  var i = 0;
+  while i + 64 <=+ n {
+    ripemd160_block(rmd_h, p + i);
+    i = i + 64;
+  }
+  var rem = n - i;
+  memzero(rmd_pad, 128);
+  memcpy(rmd_pad, p + i, rem);
+  st8 rmd_pad + rem, 128;
+  var total = 64;
+  if rem >=+ 56 {
+    total = 128;
+  }
+  st_le64(rmd_pad + total - 8, n << 3);
+  ripemd160_block(rmd_h, rmd_pad);
+  if total == 128 {
+    ripemd160_block(rmd_h, rmd_pad + 64);
+  }
+  i = 0;
+  while i < 5 {
+    st_le32(out + i * 4, lds 1 (rmd_h + i * 8));
+    i = i + 1;
+  }
+  return 0;
+}

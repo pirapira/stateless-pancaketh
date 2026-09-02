@@ -30,6 +30,8 @@ fun 1 main() {
   ssz_init();
   mpt_init();
   u256_ws_init();
+  ripemd160_init();
+  blake2_init();
   hdr_zero8 = alloc(8);
   memzero(hdr_zero8, 8);
   evm_init();
