@@ -1,0 +1,1180 @@
+/* evm_calls.pnk -- port of Interpreter.lean: system instructions (RETURN,
+   REVERT, SELFDESTRUCT), EIP-7708 transfer logs, EIP-7702 delegation
+   (recover_authority, calculate_delegation_cost, set_delegation,
+   prepare_dispatch), process_message / process_create_message,
+   generic_create / CREATE / CREATE2, generic_call / CALL / CALLCODE /
+   DELEGATECALL / STATICCALL, the opcode dispatch loop (execute_code) and
+   process_message_call. Requires evm.pnk, state.pnk, tx.pnk (AUTH_* record
+   layout), lib/secp256k1.pnk (secp256k1_recover), precompiles.pnk
+   (precompile_index / run_precompile). */
+
+#include "secp_consts.h"
+
+/* MessageCallOutput */
+#define MCO_GAS_LEFT 0
+#define MCO_REFUND 8
+#define MCO_LOGS 16
+#define MCO_DELETE 24
+#define MCO_ERROR 32
+#define MCO_RETDATA 40
+#define MCO_RETDATA_N 48
+#define MCO_STATE_GAS_LEFT 56
+#define MCO_REGULAR_GAS_USED 64
+#define MCO_STATE_GAS_USED 72   /* signed */
+#define MCO_SIZE 80
+
+var 1 transfer_topic = 0;     /* keccak256("Transfer(address,address,uint256)") */
+var 1 vm_system_address = 0;  /* 0xfff...fe */
+var 1 null_address = 0;       /* 20 zero bytes */
+
+fun 1 evm_init() {
+  var 1 mark = heap_mark();
+  var 1 s = alloc(40);
+  /* "Transfer(address,address,uint256)" */
+  st8 s, 84; st8 s + 1, 114; st8 s + 2, 97; st8 s + 3, 110; st8 s + 4, 115; st8 s + 5, 102;
+  st8 s + 6, 101; st8 s + 7, 114; st8 s + 8, 40; st8 s + 9, 97; st8 s + 10, 100; st8 s + 11, 100;
+  st8 s + 12, 114; st8 s + 13, 101; st8 s + 14, 115; st8 s + 15, 115; st8 s + 16, 44; st8 s + 17, 97;
+  st8 s + 18, 100; st8 s + 19, 100; st8 s + 20, 114; st8 s + 21, 101; st8 s + 22, 115; st8 s + 23, 115;
+  st8 s + 24, 44; st8 s + 25, 117; st8 s + 26, 105; st8 s + 27, 110; st8 s + 28, 116; st8 s + 29, 50;
+  st8 s + 30, 53; st8 s + 31, 54; st8 s + 32, 41;
+  heap_release(mark);
+  transfer_topic = alloc(32);
+  keccak256(s, 33, transfer_topic);
+  vm_system_address = alloc(24);
+  var i = 0;
+  while i < 20 {
+    st8 vm_system_address + i, 255;
+    i = i + 1;
+  }
+  st8 vm_system_address + 19, 254;
+  null_address = alloc(24);
+  memzero(null_address, 24);
+  return 0;
+}
+
+/* emit_transfer_log(sender, recipient, amount) (EIP-7708) */
+fun 1 emit_transfer_log(1 sender, 1 recipient, {1,1,1,1} amount) {
+  var 1 z = u256_is_zero(amount);
+  if z != 0 {
+    return 0;
+  }
+  var 1 log = alloc(LOG_SIZE);
+  st log + LOG_ADDRESS, vm_system_address;
+  var 1 topics = alloc(96);
+  memcpy(topics, transfer_topic, 32);
+  memzero(topics + 32, 12);
+  memcpy(topics + 44, sender, 20);
+  memzero(topics + 64, 12);
+  memcpy(topics + 76, recipient, 20);
+  st log + LOG_TOPICS, topics;
+  st log + LOG_TOPICS_N, 3;
+  var 1 data = alloc(32);
+  u256_to_be32(amount, data);
+  st log + LOG_DATA, data;
+  st log + LOG_DATA_N, 32;
+  log_append(ev, log);
+  return 0;
+}
+
+/* ---- non-recursive system instructions ------------------------------------------- */
+
+fun 1 op_return() {
+  var {1,1,1,1} start = stack_pop();
+  var {1,1,1,1} size = stack_pop();
+  var {1,1} x = extend_memory_cost1(start, size);
+  charge_gas(x.0);
+  extend_memory(x.1);
+  var 1 n = sat_word(size);
+  var 1 s = sat_word(start);
+  var 1 out = alloc(n + 8);
+  memcpy(out, mem_ptr(s), n);
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, n;
+  st ev + EV_RUNNING, 0;
+  return 0;
+}
+
+fun 1 op_revert() {
+  var {1,1,1,1} start = stack_pop();
+  var {1,1,1,1} size = stack_pop();
+  var {1,1} x = extend_memory_cost1(start, size);
+  charge_gas(x.0);
+  extend_memory(x.1);
+  var 1 n = sat_word(size);
+  var 1 s = sat_word(start);
+  var 1 out = alloc(n + 8);
+  memcpy(out, mem_ptr(s), n);
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, n;
+  throw EvmErr E_REVERT;
+  return 0;
+}
+
+fun 1 op_selfdestruct() {
+  require_not_static();
+  var {1,1,1,1} bv = stack_pop();
+  var 1 beneficiary = to_address_masked(bv);
+  var 1 warm = is_warm_address(beneficiary);
+  var gas_cost = G_SELFDESTRUCT_BASE;
+  if warm == 0 {
+    gas_cost = gas_cost + G_COLD_ACCOUNT_ACCESS;
+  }
+  check_gas(gas_cost);
+  if warm == 0 {
+    warm_address(beneficiary);
+  }
+  var originator = lds 1 ((lds 1 (ev + EV_MSG)) + MSG_CURRENT_TARGET);
+  var 1 alive = is_account_alive(beneficiary);
+  var 1 oa = get_account(originator);
+  var 1 obz = u256_is_zero(lds {1,1,1,1} (oa + ACCT_BALANCE));
+  var state_gas = 0;
+  var aw = 0;
+  if (alive == 0) && (obz == 0) {
+    state_gas = SG_NEW_ACCOUNT;
+    aw = G_ACCOUNT_WRITE;
+  }
+  charge_gas(gas_cost + aw);
+  charge_state_gas(state_gas);
+  oa = get_account(originator);
+  var {1,1,1,1} bal = lds {1,1,1,1} (oa + ACCT_BALANCE);
+  move_ether(originator, beneficiary, bal);
+  var 1 same = memeq(beneficiary, originator, 20);
+  if same == 0 {
+    emit_transfer_log(originator, beneficiary, bal);
+  }
+  var 1 created = htab_has(lds 1 (ts + TS_CREATED), originator);
+  if created != 0 {
+    htab_set(lds 1 (ev + EV_DELETE), originator, 1);
+  }
+  st ev + EV_RUNNING, 0;
+  return 0;
+}
+
+/* ---- EIP-7702 delegation ------------------------------------------------------------ */
+
+/* get_delegated_code_address(code) -> ptr or 0 */
+fun 1 get_delegated_code_address(1 code, 1 n) {
+  var 1 v = is_valid_delegation(code, n);
+  if v == 0 {
+    return 0;
+  }
+  return code + 3;
+}
+
+/* recover_authority(auth) -> address ptr or 0 */
+fun 1 recover_authority(1 auth) {
+  var yp = lds 1 (auth + AUTH_Y_PARITY);
+  if (yp != 0) && (yp != 1) {
+    return 0;
+  }
+  var {1,1,1,1} r = lds {1,1,1,1} (auth + AUTH_R);
+  var {1,1,1,1} s = lds {1,1,1,1} (auth + AUTH_S);
+  var 1 rz = u256_is_zero(r);
+  var 1 rge = u256_lt(r, SECP256K1N_U256);
+  if (rz != 0) || (rge == 0) {
+    return 0;
+  }
+  var 1 sz = u256_is_zero(s);
+  var 1 sgt = u256_gt(s, SECP256K1N_HALF_U256);
+  if (sz != 0) || (sgt != 0) {
+    return 0;
+  }
+  var 1 mark = heap_mark();
+  var 1 buf = alloc(128);
+  var p = buf + 10;
+  var 1 w = rlp_put_u256(p, lds {1,1,1,1} (auth + AUTH_CHAIN_ID));
+  p = p + w;
+  w = rlp_encode_bytes(p, lds 1 (auth + AUTH_ADDRESS), 20);
+  p = p + w;
+  w = rlp_encode_word(p, lds 1 (auth + AUTH_NONCE));
+  p = p + w;
+  var payload = p - (buf + 10);
+  var 1 hl = rlp_list_header_len(payload);
+  var start = buf + 10 - hl;
+  rlp_encode_list_header(start, payload);
+  st8 start - 1, 5;   /* SET_CODE_TX_MAGIC */
+  var 1 h = alloc(32);
+  keccak256(start - 1, payload + hl + 1, h);
+  var 1 pt = alloc(64);
+  var 1 ok = secp256k1_recover(h, r, s, yp, pt);
+  if ok == 0 {
+    heap_release(mark);
+    return 0;
+  }
+  keccak256(pt, 64, h);
+  heap_release(mark);
+  var 1 addr = alloc(24);
+  memcpy(addr, h + 12, 20);
+  return addr;
+}
+
+/* calculate_delegation_cost(address) -> <is_delegated, code_address, cost> */
+fun {1,1,1} calculate_delegation_cost(1 addr) {
+  var {1,1} code = ext_code_of(addr);
+  var 1 v = is_valid_delegation(code.0, code.1);
+  if v == 0 {
+    return <0, addr, 0>;
+  }
+  var 1 da = alloc(24);
+  memcpy(da, code.0 + 3, 20);
+  var 1 warm = is_warm_address(da);
+  if warm != 0 {
+    return <1, da, G_WARM_ACCESS>;
+  }
+  return <1, da, G_COLD_ACCOUNT_ACCESS>;
+}
+
+/* validate_authorization_checks(auth, authority) -> 1 valid */
+fun 1 validate_authorization_checks(1 auth, 1 authority) {
+  var 1 a = get_account(authority);
+  var {1,1} code = get_code(lds 1 (a + ACCT_CODE_HASH), authority);
+  if code.1 != 0 {
+    var 1 v = is_valid_delegation(code.0, code.1);
+    if v == 0 {
+      return 0;
+    }
+  }
+  if (lds 1 (a + ACCT_NONCE)) != (lds 1 (auth + AUTH_NONCE)) {
+    return 0;
+  }
+  return 1;
+}
+
+/* set_delegation() at the top frame */
+fun 1 set_delegation() {
+  var msg = lds 1 (ev + EV_MSG);
+  var te = lds 1 (msg + MSG_TE);
+  var be = lds 1 (msg + MSG_BE);
+  var 1 written = htab_new(20, 8);
+  htab_set(written, lds 1 (te + TE_ORIGIN), 1);
+  var 1 vz = u256_is_zero(lds {1,1,1,1} (te + TE_VALUE));
+  if vz == 0 {
+    htab_set(written, lds 1 (msg + MSG_CURRENT_TARGET), 1);
+  }
+  var 1 set_for = htab_new(20, 8);
+  var auths = lds 1 (te + TE_AUTHS);
+  var n = lds 1 (te + TE_AUTHS_N);
+  var i = 0;
+  while i < n {
+    var auth = auths + i * AUTH_SIZE;
+    var authority = 0;
+    var {1,1,1,1} cid = lds {1,1,1,1} (auth + AUTH_CHAIN_ID);
+    var 1 cz = u256_is_zero(cid);
+    var 1 cfit = u256_fits_word(cid);
+    var cid_ok = 0;
+    if cz != 0 {
+      cid_ok = 1;
+    }
+    if (cfit != 0) && (cid.0 == (lds 1 (be + BE_CHAIN_ID))) {
+      cid_ok = 1;
+    }
+    if cid_ok != 0 {
+      if (lds 1 (auth + AUTH_NONCE)) <+ WORD_MAX {
+        var 1 rec = recover_authority(auth);
+        if rec != 0 {
+          warm_address(rec);
+          var 1 ok = validate_authorization_checks(auth, rec);
+          if ok != 0 {
+            authority = rec;
+          }
+        }
+      }
+    }
+    if authority != 0 {
+      var 1 ex = account_exists(authority);
+      if ex == 0 {
+        charge_state_gas(SG_NEW_ACCOUNT);
+      }
+      var 1 wr = htab_has(written, authority);
+      if wr == 0 {
+        charge_gas(G_ACCOUNT_WRITE);
+        htab_set(written, authority, 1);
+      }
+      var 1 pre = get_pre_state_account(authority);
+      var {1,1} pre_code = get_code(lds 1 (pre + ACCT_CODE_HASH), authority);
+      var 1 delegated_before = is_valid_delegation(pre_code.0, pre_code.1);
+      var 1 is_null = memeq(lds 1 (auth + AUTH_ADDRESS), null_address, 20);
+      if is_null != 0 {
+        set_code(authority, null_address, 0);
+      } else {
+        var 1 sf = htab_has(set_for, authority);
+        if (delegated_before == 0) && (sf == 0) {
+          charge_state_gas(SG_AUTH_BASE);
+        }
+        htab_set(set_for, authority, 1);
+        var 1 code = alloc(24);
+        st8 code, 239;
+        st8 code + 1, 1;
+        st8 code + 2, 0;
+        memcpy(code + 3, lds 1 (auth + AUTH_ADDRESS), 20);
+        set_code(authority, code, 23);
+      }
+      increment_nonce(authority);
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+/* prepare_dispatch() at depth 0 */
+fun 1 prepare_dispatch() {
+  var msg = lds 1 (ev + EV_MSG);
+  if (lds 1 (msg + MSG_TARGET)) == 0 {
+    var 1 pre = get_pre_state_account(lds 1 (msg + MSG_CURRENT_TARGET));
+    var 1 e = acct_is_empty(pre);
+    if e != 0 {
+      charge_state_gas(SG_NEW_ACCOUNT);
+    }
+    return 0;
+  }
+  var recipient = lds 1 (msg + MSG_CURRENT_TARGET);
+  var 1 vz = u256_is_zero(lds {1,1,1,1} (msg + MSG_VALUE));
+  if vz == 0 {
+    var 1 alive = is_account_alive(recipient);
+    if alive == 0 {
+      charge_state_gas(SG_NEW_ACCOUNT);
+    }
+  }
+  var {1,1} rcode = ext_code_of(recipient);
+  var code = rcode.0;
+  var code_n = rcode.1;
+  var 1 da = get_delegated_code_address(rcode.0, rcode.1);
+  if da != 0 {
+    var 1 daddr = alloc(24);
+    memcpy(daddr, da, 20);
+    var 1 warm = is_warm_address(daddr);
+    if warm != 0 {
+      charge_gas(G_WARM_ACCESS);
+    } else {
+      charge_gas(G_COLD_ACCOUNT_ACCESS);
+      warm_address(daddr);
+    }
+    var {1,1} dcode = ext_code_of(daddr);
+    code = dcode.0;
+    code_n = dcode.1;
+    st msg + MSG_DISABLE_PRECOMPILES, 1;
+    st msg + MSG_CODE_ADDRESS, daddr;
+  }
+  st msg + MSG_CODE, code;
+  st msg + MSG_CODE_N, code_n;
+  st ev + EV_CODE, code;
+  st ev + EV_CODE_N, code_n;
+  var 1 jd = compute_jumpdests(code, code_n);
+  st ev + EV_JUMPDESTS, jd;
+  return 0;
+}
+
+/* ---- dispatch loop --------------------------------------------------------------- */
+
+fun 1 op_dispatch(1 op) {
+  if op <+ 32 {
+    if op <+ 16 {
+      if op == 0 { op_stop(); return 0; }
+      if op == 1 { op_add(); return 0; }
+      if op == 2 { op_mul(); return 0; }
+      if op == 3 { op_sub(); return 0; }
+      if op == 4 { op_div(); return 0; }
+      if op == 5 { op_sdiv(); return 0; }
+      if op == 6 { op_mod(); return 0; }
+      if op == 7 { op_smod(); return 0; }
+      if op == 8 { op_addmod(); return 0; }
+      if op == 9 { op_mulmod(); return 0; }
+      if op == 10 { op_exp(); return 0; }
+      if op == 11 { op_signextend(); return 0; }
+    } else {
+      if op == 16 { op_lt(); return 0; }
+      if op == 17 { op_gt(); return 0; }
+      if op == 18 { op_slt(); return 0; }
+      if op == 19 { op_sgt(); return 0; }
+      if op == 20 { op_eq(); return 0; }
+      if op == 21 { op_iszero(); return 0; }
+      if op == 22 { op_and(); return 0; }
+      if op == 23 { op_or(); return 0; }
+      if op == 24 { op_xor(); return 0; }
+      if op == 25 { op_not(); return 0; }
+      if op == 26 { op_byte(); return 0; }
+      if op == 27 { op_shl(); return 0; }
+      if op == 28 { op_shr(); return 0; }
+      if op == 29 { op_sar(); return 0; }
+      if op == 30 { op_clz(); return 0; }
+    }
+    throw EvmErr E_INVALID_OPCODE;
+  }
+  if op <+ 96 {
+    if op <+ 64 {
+      if op == 32 { op_keccak(); return 0; }
+      if op == 48 { op_address(); return 0; }
+      if op == 49 { op_balance(); return 0; }
+      if op == 50 { op_origin(); return 0; }
+      if op == 51 { op_caller(); return 0; }
+      if op == 52 { op_callvalue(); return 0; }
+      if op == 53 { op_calldataload(); return 0; }
+      if op == 54 { op_calldatasize(); return 0; }
+      if op == 55 { op_calldatacopy(); return 0; }
+      if op == 56 { op_codesize(); return 0; }
+      if op == 57 { op_codecopy(); return 0; }
+      if op == 58 { op_gasprice(); return 0; }
+      if op == 59 { op_extcodesize(); return 0; }
+      if op == 60 { op_extcodecopy(); return 0; }
+      if op == 61 { op_returndatasize(); return 0; }
+      if op == 62 { op_returndatacopy(); return 0; }
+      if op == 63 { op_extcodehash(); return 0; }
+    } else {
+      if op == 64 { op_blockhash(); return 0; }
+      if op == 65 { op_coinbase(); return 0; }
+      if op == 66 { op_timestamp(); return 0; }
+      if op == 67 { op_number(); return 0; }
+      if op == 68 { op_prevrandao(); return 0; }
+      if op == 69 { op_gaslimit(); return 0; }
+      if op == 70 { op_chainid(); return 0; }
+      if op == 71 { op_selfbalance(); return 0; }
+      if op == 72 { op_basefee(); return 0; }
+      if op == 73 { op_blobhash(); return 0; }
+      if op == 74 { op_blobbasefee(); return 0; }
+      if op == 75 { op_slotnum(); return 0; }
+      if op == 80 { op_pop(); return 0; }
+      if op == 81 { op_mload(); return 0; }
+      if op == 82 { op_mstore(); return 0; }
+      if op == 83 { op_mstore8(); return 0; }
+      if op == 84 { op_sload(); return 0; }
+      if op == 85 { op_sstore(); return 0; }
+      if op == 86 { op_jump(); return 0; }
+      if op == 87 { op_jumpi(); return 0; }
+      if op == 88 { op_pc(); return 0; }
+      if op == 89 { op_msize(); return 0; }
+      if op == 90 { op_gas(); return 0; }
+      if op == 91 { op_jumpdest(); return 0; }
+      if op == 92 { op_tload(); return 0; }
+      if op == 93 { op_tstore(); return 0; }
+      if op == 94 { op_mcopy(); return 0; }
+      if op == 95 { op_push(0); return 0; }
+    }
+    throw EvmErr E_INVALID_OPCODE;
+  }
+  if op <+ 160 {
+    if op <+ 128 { op_push(op - 95); return 0; }
+    if op <+ 144 { op_dup(op - 128); return 0; }
+    op_swap(op - 143);
+    return 0;
+  }
+  if op <+ 165 { op_log(op - 160); return 0; }
+  if op == 230 { op_dupn(); return 0; }
+  if op == 231 { op_swapn(); return 0; }
+  if op == 232 { op_exchange(); return 0; }
+  if op == 240 { op_create(); return 0; }
+  if op == 241 { op_call(); return 0; }
+  if op == 242 { op_callcode(); return 0; }
+  if op == 243 { op_return(); return 0; }
+  if op == 244 { op_delegatecall(); return 0; }
+  if op == 245 { op_create2(); return 0; }
+  if op == 250 { op_staticcall(); return 0; }
+  if op == 253 { op_revert(); return 0; }
+  if op == 255 { op_selfdestruct(); return 0; }
+  throw EvmErr E_INVALID_OPCODE;
+  return 0;
+}
+
+/* execute_code's while loop */
+fun 1 execute_loop() {
+  while (lds 1 (ev + EV_RUNNING)) != 0 {
+    var pc = lds 1 (ev + EV_PC);
+    if pc >=+ (lds 1 (ev + EV_CODE_N)) {
+      break;
+    }
+    op_dispatch(ld8 ((lds 1 (ev + EV_CODE)) + pc));
+  }
+  return 0;
+}
+
+/* The body process_message runs inside its try. */
+fun 1 execute_body() {
+  var msg = lds 1 (ev + EV_MSG);
+  if (lds 1 (msg + MSG_TRANSFER_VALUE)) != 0 {
+    var {1,1,1,1} v = lds {1,1,1,1} (msg + MSG_VALUE);
+    var 1 z = u256_is_zero(v);
+    if z == 0 {
+      move_ether(lds 1 (msg + MSG_CALLER), lds 1 (msg + MSG_CURRENT_TARGET), v);
+      var 1 same = memeq(lds 1 (msg + MSG_CALLER), lds 1 (msg + MSG_CURRENT_TARGET), 20);
+      if same == 0 {
+        emit_transfer_log(lds 1 (msg + MSG_CALLER), lds 1 (msg + MSG_CURRENT_TARGET), v);
+      }
+    }
+  }
+  var ca = lds 1 (msg + MSG_CODE_ADDRESS);
+  if ca != 0 {
+    var 1 pi = precompile_index(ca);
+    if pi != 0 {
+      if (lds 1 (msg + MSG_DISABLE_PRECOMPILES)) == 0 {
+        run_precompile(pi);
+      }
+      return 0;
+    }
+  }
+  execute_loop();
+  return 0;
+}
+
+/* Fold a halt into the frame: all gas consumed, error recorded. */
+fun 1 frame_halt(1 err) {
+  st ev + EV_REGULAR_GAS_USED, (lds 1 (ev + EV_REGULAR_GAS_USED)) + (lds 1 (ev + EV_GAS_LEFT));
+  st ev + EV_GAS_LEFT, 0;
+  st ev + EV_ERROR, err;
+  return 0;
+}
+
+fun 1 depth0_prepare() {
+  var msg = lds 1 (ev + EV_MSG);
+  var te = lds 1 (msg + MSG_TE);
+  if (lds 1 (te + TE_AUTHS_N)) != 0 {
+    set_delegation();
+    var 1 used = frame_state_gas_used(ev);
+    st ev + EV_AUTH_STATE_GAS_USED, used;
+    st msg + MSG_RESERVOIR, lds 1 (ev + EV_STATE_GAS_LEFT);
+    st ev + EV_STATE_GAS_SPILLED, 0;
+  }
+  prepare_dispatch();
+  return 0;
+}
+
+/* process_message(msg) -> resulting frame record */
+fun 1 process_message(1 msg) {
+  if (lds 1 (msg + MSG_DEPTH)) >+ STACK_DEPTH_LIMIT {
+    throw EvmErr E_STACK_DEPTH_LIMIT;
+  }
+  var parent = ev;
+  var 1 child = frame_new(msg);
+  ev = child;
+  var err = 0;
+  if (lds 1 (msg + MSG_DEPTH)) == 0 {
+    var 1 prep_snapshot = state_snapshot();
+    var prep_reservoir = lds 1 (msg + MSG_RESERVOIR);
+    var perr = 0;
+    try depth0_prepare()
+    catch EvmErr => perr {
+      if perr == E_REVERT {
+        ev = parent;
+        throw EvmErr perr;
+      }
+      state_restore(prep_snapshot);
+      st msg + MSG_RESERVOIR, prep_reservoir;
+      st ev + EV_AUTH_STATE_GAS_USED, 0;
+      refill_frame_state_gas();
+      frame_halt(perr);
+      ev = parent;
+      return child;
+    }
+  }
+  var 1 snapshot = state_snapshot();
+  try execute_body()
+  catch EvmErr => err {
+    refill_frame_state_gas();
+    if err != E_REVERT {
+      frame_halt(err);
+      var 1 empty = alloc(8);
+      st ev + EV_OUTPUT, empty;
+      st ev + EV_OUTPUT_N, 0;
+    } else {
+      st ev + EV_ERROR, err;
+    }
+  }
+  if (lds 1 (child + EV_ERROR)) != 0 {
+    state_restore(snapshot);
+  }
+  ev = parent;
+  return child;
+}
+
+/* Post-processing of a successful create frame (runs in the child's registers). */
+fun 1 create_finish(1 msg, 1 child) {
+  var code = lds 1 (child + EV_OUTPUT);
+  var n = lds 1 (child + EV_OUTPUT_N);
+  if n >+ 0 {
+    if (ld8 code) == 239 {
+      throw EvmErr E_INVALID_CONTRACT_PREFIX;
+    }
+  }
+  if n >+ MAX_CODE_SIZE {
+    throw EvmErr E_OUT_OF_GAS;
+  }
+  var 1 w = words_of(n);
+  charge_gas(G_KECCAK256_PER_WORD * w);
+  charge_state_gas(n * SG_COST_PER_STATE_BYTE);
+  set_code(lds 1 (msg + MSG_CURRENT_TARGET), code, n);
+  return 0;
+}
+
+/* process_create_message(msg) -> frame */
+fun 1 process_create_message(1 msg) {
+  var 1 snapshot = state_snapshot();
+  var target = lds 1 (msg + MSG_CURRENT_TARGET);
+  destroy_storage(target);
+  mark_account_created(target);
+  increment_nonce(target);
+  var 1 child = process_message(msg);
+  if (lds 1 (child + EV_ERROR)) == 0 {
+    var parent = ev;
+    ev = child;
+    var err = 0;
+    try create_finish(msg, child)
+    catch EvmErr => err {
+      state_restore(snapshot);
+      refill_frame_state_gas();
+      frame_halt(err);
+      var 1 empty = alloc(8);
+      st ev + EV_OUTPUT, empty;
+      st ev + EV_OUTPUT_N, 0;
+    }
+    ev = parent;
+    return child;
+  }
+  state_restore(snapshot);
+  return child;
+}
+
+/* incorporate_child_on_error / _on_success */
+fun 1 incorporate_child_on_error(1 child) {
+  st ev + EV_GAS_LEFT, (lds 1 (ev + EV_GAS_LEFT)) + (lds 1 (child + EV_GAS_LEFT));
+  st ev + EV_STATE_GAS_LEFT, (lds 1 (ev + EV_STATE_GAS_LEFT)) + (lds 1 (child + EV_STATE_GAS_LEFT));
+  st ev + EV_REGULAR_GAS_USED, (lds 1 (ev + EV_REGULAR_GAS_USED)) + (lds 1 (child + EV_REGULAR_GAS_USED));
+  return 0;
+}
+
+fun 1 incorporate_child_on_success(1 child) {
+  incorporate_child_on_error(child);
+  st ev + EV_STATE_GAS_SPILLED, (lds 1 (ev + EV_STATE_GAS_SPILLED)) + (lds 1 (child + EV_STATE_GAS_SPILLED));
+  var cl = lds 1 (child + EV_LOGS);
+  var n = lds 1 (cl + LST_N);
+  var p = lds 1 (cl + LST_PTR);
+  var i = 0;
+  while i < n {
+    log_append(ev, lds 1 (p + i * 8));
+    i = i + 1;
+  }
+  st ev + EV_REFUND, (lds 1 (ev + EV_REFUND)) + (lds 1 (child + EV_REFUND));
+  htab_union_into(lds 1 (ev + EV_DELETE), lds 1 (child + EV_DELETE));
+  htab_union_into(lds 1 (ev + EV_ACC_ADDRS), lds 1 (child + EV_ACC_ADDRS));
+  htab_union_into(lds 1 (ev + EV_ACC_KEYS), lds 1 (child + EV_ACC_KEYS));
+  return 0;
+}
+
+/* Build a child message sharing block/tx env with the current frame. */
+fun 1 child_message(1 caller, 1 target, 1 current_target, 1 gas, 1 reservoir, {1,1,1,1} value,
+    1 data, 1 data_n, 1 code_address, 1 code, 1 code_n, 1 transfer, 1 is_static, 1 disable_pre) {
+  var pm = lds 1 (ev + EV_MSG);
+  var 1 m = msg_new();
+  st m + MSG_BE, lds 1 (pm + MSG_BE);
+  st m + MSG_TE, lds 1 (pm + MSG_TE);
+  st m + MSG_CALLER, caller;
+  st m + MSG_TARGET, target;
+  st m + MSG_CURRENT_TARGET, current_target;
+  st m + MSG_GAS, gas;
+  st m + MSG_RESERVOIR, reservoir;
+  st m + MSG_VALUE, value;
+  st m + MSG_DATA, data;
+  st m + MSG_DATA_N, data_n;
+  st m + MSG_CODE_ADDRESS, code_address;
+  st m + MSG_CODE, code;
+  st m + MSG_CODE_N, code_n;
+  st m + MSG_DEPTH, (lds 1 (pm + MSG_DEPTH)) + 1;
+  st m + MSG_TRANSFER_VALUE, transfer;
+  var stat = is_static;
+  if (lds 1 (pm + MSG_IS_STATIC)) != 0 {
+    stat = 1;
+  }
+  st m + MSG_IS_STATIC, stat;
+  var 1 aa = htab_copy(lds 1 (ev + EV_ACC_ADDRS));
+  st m + MSG_ACC_ADDRS, aa;
+  var 1 ak = htab_copy(lds 1 (ev + EV_ACC_KEYS));
+  st m + MSG_ACC_KEYS, ak;
+  st m + MSG_DISABLE_PRECOMPILES, disable_pre;
+  return m;
+}
+
+fun 1 set_retdata(1 p, 1 n) {
+  st ev + EV_RETDATA, p;
+  st ev + EV_RETDATA_N, n;
+  return 0;
+}
+
+/* ---- create ------------------------------------------------------------------------ */
+
+/* compute_contract_address(address, nonce) */
+fun 1 compute_contract_address(1 addr, 1 nonce, 1 out) {
+  var 1 mark = heap_mark();
+  var 1 buf = alloc(64);
+  var p = buf + 9;
+  var 1 w = rlp_encode_bytes(p, addr, 20);
+  p = p + w;
+  w = rlp_encode_word(p, nonce);
+  p = p + w;
+  var payload = p - (buf + 9);
+  var 1 hl = rlp_list_header_len(payload);
+  rlp_encode_list_header(buf + 9 - hl, payload);
+  var 1 h = alloc(32);
+  keccak256(buf + 9 - hl, payload + hl, h);
+  memcpy(out, h + 12, 20);
+  heap_release(mark);
+  return 0;
+}
+
+/* compute_create2_contract_address(address, salt32, init_code) */
+fun 1 compute_create2_contract_address(1 addr, 1 salt, 1 code, 1 n, 1 out) {
+  var 1 mark = heap_mark();
+  var 1 buf = alloc(96);
+  st8 buf, 255;
+  memcpy(buf + 1, addr, 20);
+  memcpy(buf + 21, salt, 32);
+  keccak256(code, n, buf + 53);
+  var 1 h = alloc(32);
+  keccak256(buf, 85, h);
+  memcpy(out, h + 12, 20);
+  heap_release(mark);
+  return 0;
+}
+
+/* generic_create(endowment, contract_address, memory_start, memory_size) */
+fun 1 generic_create({1,1,1,1} endowment, 1 contract_address, 1 mstart, 1 msize) {
+  if msize >+ MAX_INIT_CODE_SIZE {
+    throw EvmErr E_OUT_OF_GAS;
+  }
+  var 1 call_data = alloc(msize + 8);
+  memcpy(call_data, mem_ptr(mstart), msize);
+  var 1 empty = alloc(8);
+  set_retdata(empty, 0);
+  var msg = lds 1 (ev + EV_MSG);
+  var sender_address = lds 1 (msg + MSG_CURRENT_TARGET);
+  var 1 sender = get_account(sender_address);
+  var 1 insufficient = u256_lt(lds {1,1,1,1} (sender + ACCT_BALANCE), endowment);
+  if (insufficient != 0) || ((lds 1 (sender + ACCT_NONCE)) == WORD_MAX) || ((lds 1 (msg + MSG_DEPTH)) + 1 >+ STACK_DEPTH_LIMIT) {
+    stack_push(<0, 0, 0, 0>);
+    return 0;
+  }
+  warm_address(contract_address);
+  var 1 alive = is_account_alive(contract_address);
+  var new_account_charged = 0;
+  if alive == 0 {
+    new_account_charged = 1;
+    charge_state_gas(SG_NEW_ACCOUNT);
+  }
+  var gl = lds 1 (ev + EV_GAS_LEFT);
+  var create_gas = gl - (gl >>> 6);
+  st ev + EV_GAS_LEFT, gl - create_gas;
+  var 1 deployable = account_deployable(contract_address);
+  if deployable == 0 {
+    increment_nonce(sender_address);
+    st ev + EV_REGULAR_GAS_USED, (lds 1 (ev + EV_REGULAR_GAS_USED)) + create_gas;
+    if new_account_charged != 0 {
+      credit_state_gas_refund(SG_NEW_ACCOUNT);
+    }
+    stack_push(<0, 0, 0, 0>);
+    return 0;
+  }
+  var reservoir = lds 1 (ev + EV_STATE_GAS_LEFT);
+  st ev + EV_STATE_GAS_LEFT, 0;
+  increment_nonce(sender_address);
+  var 1 cm = child_message(sender_address, 0, contract_address, create_gas, reservoir, endowment,
+      empty, 0, 0, call_data, msize, 1, 0, 0);
+  var 1 child = process_create_message(cm);
+  if (lds 1 (child + EV_ERROR)) != 0 {
+    incorporate_child_on_error(child);
+    if new_account_charged != 0 {
+      credit_state_gas_refund(SG_NEW_ACCOUNT);
+    }
+    set_retdata(lds 1 (child + EV_OUTPUT), lds 1 (child + EV_OUTPUT_N));
+    stack_push(<0, 0, 0, 0>);
+  } else {
+    incorporate_child_on_success(child);
+    set_retdata(empty, 0);
+    var {1,1,1,1} av = address_to_u256(contract_address);
+    stack_push(av);
+  }
+  return 0;
+}
+
+fun 1 op_create() {
+  require_not_static();
+  var {1,1,1,1} endowment = stack_pop();
+  var {1,1,1,1} mstart = stack_pop();
+  var {1,1,1,1} msize = stack_pop();
+  var 1 n = sat_word(msize);
+  var {1,1} x = extend_memory_cost1(mstart, msize);
+  var 1 w = words_of(n);
+  var 1 cost = add_sat(G_CREATE_ACCESS + G_CODE_INIT_PER_WORD * w, x.0);
+  charge_gas(cost);
+  extend_memory(x.1);
+  var msg = lds 1 (ev + EV_MSG);
+  var 1 a = get_account(lds 1 (msg + MSG_CURRENT_TARGET));
+  var 1 ca = alloc(24);
+  compute_contract_address(lds 1 (msg + MSG_CURRENT_TARGET), lds 1 (a + ACCT_NONCE), ca);
+  var 1 s = sat_word(mstart);
+  generic_create(endowment, ca, s, n);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_create2() {
+  require_not_static();
+  var {1,1,1,1} endowment = stack_pop();
+  var {1,1,1,1} mstart = stack_pop();
+  var {1,1,1,1} msize = stack_pop();
+  var {1,1,1,1} saltv = stack_pop();
+  var 1 salt = alloc(32);
+  u256_to_be32(saltv, salt);
+  var 1 n = sat_word(msize);
+  var {1,1} x = extend_memory_cost1(mstart, msize);
+  var 1 w = words_of(n);
+  var 1 cost = add_sat(G_CREATE_ACCESS + G_KECCAK256_PER_WORD * w + G_CODE_INIT_PER_WORD * w, x.0);
+  charge_gas(cost);
+  extend_memory(x.1);
+  var msg = lds 1 (ev + EV_MSG);
+  var 1 s = sat_word(mstart);
+  var 1 ca = alloc(24);
+  compute_create2_contract_address(lds 1 (msg + MSG_CURRENT_TARGET), salt, mem_ptr(s), n, ca);
+  generic_create(endowment, ca, s, n);
+  pc_add(1);
+  return 0;
+}
+
+/* ---- calls -------------------------------------------------------------------------- */
+
+/* generic_call(...) */
+fun 1 generic_call(1 gas, 1 reservoir, {1,1,1,1} value, 1 caller, 1 to, 1 code_address,
+    1 transfer, 1 is_static, 1 in_start, 1 in_size, 1 out_start, 1 out_size,
+    1 code, 1 code_n, 1 disable_pre, 1 new_account_charged) {
+  var 1 empty = alloc(8);
+  set_retdata(empty, 0);
+  var msg = lds 1 (ev + EV_MSG);
+  if (lds 1 (msg + MSG_DEPTH)) + 1 >+ STACK_DEPTH_LIMIT {
+    st ev + EV_GAS_LEFT, (lds 1 (ev + EV_GAS_LEFT)) + gas;
+    st ev + EV_STATE_GAS_LEFT, (lds 1 (ev + EV_STATE_GAS_LEFT)) + reservoir;
+    if new_account_charged != 0 {
+      credit_state_gas_refund(SG_NEW_ACCOUNT);
+    }
+    stack_push(<0, 0, 0, 0>);
+    return 0;
+  }
+  var 1 call_data = alloc(in_size + 8);
+  memcpy(call_data, mem_ptr(in_start), in_size);
+  var 1 cm = child_message(caller, to, to, gas, reservoir, value, call_data, in_size,
+      code_address, code, code_n, transfer, is_static, disable_pre);
+  var 1 child = process_message(cm);
+  if (lds 1 (child + EV_ERROR)) != 0 {
+    incorporate_child_on_error(child);
+    if new_account_charged != 0 {
+      credit_state_gas_refund(SG_NEW_ACCOUNT);
+    }
+    set_retdata(lds 1 (child + EV_OUTPUT), lds 1 (child + EV_OUTPUT_N));
+    stack_push(<0, 0, 0, 0>);
+  } else {
+    incorporate_child_on_success(child);
+    set_retdata(lds 1 (child + EV_OUTPUT), lds 1 (child + EV_OUTPUT_N));
+    stack_push(<1, 0, 0, 0>);
+  }
+  var 1 actual = min(out_size, lds 1 (child + EV_OUTPUT_N));
+  if actual != 0 {
+    memcpy(mem_ptr(out_start), lds 1 (child + EV_OUTPUT), actual);
+  }
+  return 0;
+}
+
+/* calculate_message_call_gas(value, gas, gas_left, memory_cost, extra_gas) -> <cost, sub_call> */
+fun {1,1} calculate_message_call_gas({1,1,1,1} value, 1 gas, 1 gas_left, 1 memory_cost, 1 extra_gas) {
+  var 1 vz = u256_is_zero(value);
+  var stipend = 0;
+  if vz == 0 {
+    stipend = G_CALL_STIPEND;
+  }
+  var 1 need = add_sat(extra_gas, memory_cost);
+  if gas_left <+ need {
+    var 1 c = add_sat(gas, extra_gas);
+    var 1 s = add_sat(gas, stipend);
+    return <c, s>;
+  }
+  var avail = gas_left - memory_cost - extra_gas;
+  var 1 mx = avail - (avail >>> 6);
+  var g = gas;
+  if g >+ mx {
+    g = mx;
+  }
+  return <g + extra_gas, g + stipend>;
+}
+
+/* Shared tail of CALL/CALLCODE: gas split, memory extension, value check. */
+fun 1 op_call() {
+  var {1,1,1,1} gasv = stack_pop();
+  var {1,1,1,1} tov = stack_pop();
+  var 1 to = to_address_masked(tov);
+  var {1,1,1,1} value = stack_pop();
+  var {1,1,1,1} in_start = stack_pop();
+  var {1,1,1,1} in_size = stack_pop();
+  var {1,1,1,1} out_start = stack_pop();
+  var {1,1,1,1} out_size = stack_pop();
+  var msg = lds 1 (ev + EV_MSG);
+  var 1 vz = u256_is_zero(value);
+  if ((lds 1 (msg + MSG_IS_STATIC)) != 0) && (vz == 0) {
+    throw EvmErr E_WRITE_IN_STATIC;
+  }
+  var {1,1} x = extend_memory_cost2(in_start, in_size, out_start, out_size);
+  var 1 warm = is_warm_address(to);
+  var access_cost = G_WARM_ACCESS;
+  if warm == 0 {
+    access_cost = G_COLD_ACCOUNT_ACCESS;
+  }
+  var transfer_cost = 0;
+  if vz == 0 {
+    transfer_cost = G_CALL_VALUE;
+  }
+  var 1 need = add_sat(access_cost + transfer_cost, x.0);
+  check_gas(need);
+  if warm == 0 {
+    warm_address(to);
+  }
+  var extra_gas = access_cost + transfer_cost;
+  var {1,1,1} dl = calculate_delegation_cost(to);
+  var code_address = dl.1;
+  if dl.0 != 0 {
+    extra_gas = extra_gas + dl.2;
+    need = add_sat(extra_gas, x.0);
+    check_gas(need);
+    warm_address(code_address);
+  }
+  var {1,1} code = ext_code_of(code_address);
+  charge_gas(need);
+  var new_account_charged = 0;
+  if vz == 0 {
+    var 1 alive = is_account_alive(to);
+    if alive == 0 {
+      new_account_charged = 1;
+      charge_state_gas(SG_NEW_ACCOUNT);
+    }
+  }
+  var 1 gw = sat_word(gasv);
+  var {1,1} mcg = calculate_message_call_gas(value, gw, lds 1 (ev + EV_GAS_LEFT), 0, 0);
+  charge_gas(mcg.0);
+  st ev + EV_REGULAR_GAS_USED, (lds 1 (ev + EV_REGULAR_GAS_USED)) - mcg.1;
+  extend_memory(x.1);
+  var reservoir = lds 1 (ev + EV_STATE_GAS_LEFT);
+  st ev + EV_STATE_GAS_LEFT, 0;
+  var 1 sender = get_account(lds 1 (msg + MSG_CURRENT_TARGET));
+  var 1 insufficient = u256_lt(lds {1,1,1,1} (sender + ACCT_BALANCE), value);
+  if insufficient != 0 {
+    stack_push(<0, 0, 0, 0>);
+    var 1 empty = alloc(8);
+    set_retdata(empty, 0);
+    st ev + EV_GAS_LEFT, (lds 1 (ev + EV_GAS_LEFT)) + mcg.1;
+    st ev + EV_STATE_GAS_LEFT, (lds 1 (ev + EV_STATE_GAS_LEFT)) + reservoir;
+    if new_account_charged != 0 {
+      credit_state_gas_refund(SG_NEW_ACCOUNT);
+    }
+  } else {
+    var 1 is = sat_word(in_start);
+    var 1 isz = sat_word(in_size);
+    var 1 os = sat_word(out_start);
+    var 1 osz = sat_word(out_size);
+    generic_call(mcg.1, reservoir, value, lds 1 (msg + MSG_CURRENT_TARGET), to, code_address,
+        1, 0, is, isz, os, osz, code.0, code.1, dl.0, new_account_charged);
+  }
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_callcode() {
+  var {1,1,1,1} gasv = stack_pop();
+  var {1,1,1,1} cav = stack_pop();
+  var 1 code_address0 = to_address_masked(cav);
+  var {1,1,1,1} value = stack_pop();
+  var {1,1,1,1} in_start = stack_pop();
+  var {1,1,1,1} in_size = stack_pop();
+  var {1,1,1,1} out_start = stack_pop();
+  var {1,1,1,1} out_size = stack_pop();
+  var msg = lds 1 (ev + EV_MSG);
+  var to = lds 1 (msg + MSG_CURRENT_TARGET);
+  var {1,1} x = extend_memory_cost2(in_start, in_size, out_start, out_size);
+  var 1 warm = is_warm_address(code_address0);
+  var access_cost = G_WARM_ACCESS;
+  if warm == 0 {
+    access_cost = G_COLD_ACCOUNT_ACCESS;
+  }
+  var 1 vz = u256_is_zero(value);
+  var transfer_cost = 0;
+  if vz == 0 {
+    transfer_cost = G_CALL_VALUE;
+  }
+  var 1 need = add_sat(access_cost + transfer_cost, x.0);
+  check_gas(need);
+  if warm == 0 {
+    warm_address(code_address0);
+  }
+  var extra_gas = access_cost + transfer_cost;
+  var {1,1,1} dl = calculate_delegation_cost(code_address0);
+  var code_address = dl.1;
+  if dl.0 != 0 {
+    extra_gas = extra_gas + dl.2;
+    need = add_sat(extra_gas, x.0);
+    check_gas(need);
+    warm_address(code_address);
+  }
+  var {1,1} code = ext_code_of(code_address);
+  var 1 gw = sat_word(gasv);
+  var {1,1} mcg = calculate_message_call_gas(value, gw, lds 1 (ev + EV_GAS_LEFT), x.0, extra_gas);
+  var 1 tot = add_sat(mcg.0, x.0);
+  charge_gas(tot);
+  st ev + EV_REGULAR_GAS_USED, (lds 1 (ev + EV_REGULAR_GAS_USED)) - mcg.1;
+  extend_memory(x.1);
+  var reservoir = lds 1 (ev + EV_STATE_GAS_LEFT);
+  st ev + EV_STATE_GAS_LEFT, 0;
+  var 1 sender = get_account(to);
+  var 1 insufficient = u256_lt(lds {1,1,1,1} (sender + ACCT_BALANCE), value);
+  if insufficient != 0 {
+    stack_push(<0, 0, 0, 0>);
+    var 1 empty = alloc(8);
+    set_retdata(empty, 0);
+    st ev + EV_GAS_LEFT, (lds 1 (ev + EV_GAS_LEFT)) + mcg.1;
+    st ev + EV_STATE_GAS_LEFT, (lds 1 (ev + EV_STATE_GAS_LEFT)) + reservoir;
+  } else {
+    var 1 is = sat_word(in_start);
+    var 1 isz = sat_word(in_size);
+    var 1 os = sat_word(out_start);
+    var 1 osz = sat_word(out_size);
+    generic_call(mcg.1, reservoir, value, to, to, code_address,
+        1, 0, is, isz, os, osz, code.0, code.1, dl.0, 0);
+  }
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_delegatecall() {
+  var {1,1,1,1} gasv = stack_pop();
+  var {1,1,1,1} cav = stack_pop();
+  var 1 code_address0 = to_address_masked(cav);
+  var {1,1,1,1} in_start = stack_pop();
+  var {1,1,1,1} in_size = stack_pop();
+  var {1,1,1,1} out_start = stack_pop();
+  var {1,1,1,1} out_size = stack_pop();
+  var msg = lds 1 (ev + EV_MSG);
+  var {1,1} x = extend_memory_cost2(in_start, in_size, out_start, out_size);
+  var 1 warm = is_warm_address(code_address0);
+  var access_cost = G_WARM_ACCESS;
+  if warm == 0 {
+    access_cost = G_COLD_ACCOUNT_ACCESS;
+  }
+  var 1 need = add_sat(access_cost, x.0);
+  check_gas(need);
+  if warm == 0 {
+    warm_address(code_address0);
+  }
+  var extra_gas = access_cost;
+  var {1,1,1} dl = calculate_delegation_cost(code_address0);
+  var code_address = dl.1;
+  if dl.0 != 0 {
+    extra_gas = extra_gas + dl.2;
+    need = add_sat(extra_gas, x.0);
+    check_gas(need);
+    warm_address(code_address);
+  }
+  var {1,1} code = ext_code_of(code_address);
+  var 1 gw = sat_word(gasv);
+  var {1,1} mcg = calculate_message_call_gas(<0, 0, 0, 0>, gw, lds 1 (ev + EV_GAS_LEFT), x.0, extra_gas);
+  var 1 tot = add_sat(mcg.0, x.0);
+  charge_gas(tot);
+  st ev + EV_REGULAR_GAS_USED, (lds 1 (ev + EV_REGULAR_GAS_USED)) - mcg.1;
+  extend_memory(x.1);
+  var reservoir = lds 1 (ev + EV_STATE_GAS_LEFT);
+  st ev + EV_STATE_GAS_LEFT, 0;
+  var 1 is = sat_word(in_start);
+  var 1 isz = sat_word(in_size);
+  var 1 os = sat_word(out_start);
+  var 1 osz = sat_word(out_size);
+  generic_call(mcg.1, reservoir, lds {1,1,1,1} (msg + MSG_VALUE), lds 1 (msg + MSG_CALLER),
+      lds 1 (msg + MSG_CURRENT_TARGET), code_address, 0, 0, is, isz, os, osz, code.0, code.1, dl.0, 0);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_staticcall() {
+  var {1,1,1,1} gasv = stack_pop();
+  var {1,1,1,1} tov = stack_pop();
+  var 1 to = to_address_masked(tov);
+  var {1,1,1,1} in_start = stack_pop();
+  var {1,1,1,1} in_size = stack_pop();
+  var {1,1,1,1} out_start = stack_pop();
+  var {1,1,1,1} out_size = stack_pop();
+  var msg = lds 1 (ev + EV_MSG);
+  var {1,1} x = extend_memory_cost2(in_start, in_size, out_start, out_size);
+  var 1 warm = is_warm_address(to);
+  var access_cost = G_WARM_ACCESS;
+  if warm == 0 {
+    access_cost = G_COLD_ACCOUNT_ACCESS;
+  }
+  var 1 need = add_sat(access_cost, x.0);
+  check_gas(need);
+  if warm == 0 {
+    warm_address(to);
+  }
+  var extra_gas = access_cost;
+  var {1,1,1} dl = calculate_delegation_cost(to);
+  var code_address = dl.1;
+  if dl.0 != 0 {
+    extra_gas = extra_gas + dl.2;
+    need = add_sat(extra_gas, x.0);
+    check_gas(need);
+    warm_address(code_address);
+  }
+  var {1,1} code = ext_code_of(code_address);
+  var 1 gw = sat_word(gasv);
+  var {1,1} mcg = calculate_message_call_gas(<0, 0, 0, 0>, gw, lds 1 (ev + EV_GAS_LEFT), x.0, extra_gas);
+  var 1 tot = add_sat(mcg.0, x.0);
+  charge_gas(tot);
+  st ev + EV_REGULAR_GAS_USED, (lds 1 (ev + EV_REGULAR_GAS_USED)) - mcg.1;
+  extend_memory(x.1);
+  var reservoir = lds 1 (ev + EV_STATE_GAS_LEFT);
+  st ev + EV_STATE_GAS_LEFT, 0;
+  var 1 is = sat_word(in_start);
+  var 1 isz = sat_word(in_size);
+  var 1 os = sat_word(out_start);
+  var 1 osz = sat_word(out_size);
+  generic_call(mcg.1, reservoir, <0, 0, 0, 0>, lds 1 (msg + MSG_CURRENT_TARGET), to, code_address,
+      1, 1, is, isz, os, osz, code.0, code.1, dl.0, 0);
+  pc_add(1);
+  return 0;
+}
+
+/* ---- process_message_call ---------------------------------------------------------- */
+
+fun 1 process_message_call(1 msg) {
+  var 1 out = alloc(MCO_SIZE);
+  memzero(out, MCO_SIZE);
+  var frame = 0;
+  if (lds 1 (msg + MSG_TARGET)) == 0 {
+    var 1 dep = account_deployable(lds 1 (msg + MSG_CURRENT_TARGET));
+    if dep == 0 {
+      st out + MCO_ERROR, E_ADDRESS_COLLISION;
+      st out + MCO_STATE_GAS_LEFT, lds 1 (msg + MSG_RESERVOIR);
+      st out + MCO_REGULAR_GAS_USED, lds 1 (msg + MSG_GAS);
+      var 1 empty = alloc(8);
+      st out + MCO_RETDATA, empty;
+      return out;
+    }
+    frame = process_create_message(msg);
+  } else {
+    frame = process_message(msg);
+  }
+  st out + MCO_GAS_LEFT, lds 1 (frame + EV_GAS_LEFT);
+  st out + MCO_ERROR, lds 1 (frame + EV_ERROR);
+  st out + MCO_RETDATA, lds 1 (frame + EV_OUTPUT);
+  st out + MCO_RETDATA_N, lds 1 (frame + EV_OUTPUT_N);
+  st out + MCO_STATE_GAS_LEFT, lds 1 (frame + EV_STATE_GAS_LEFT);
+  st out + MCO_REGULAR_GAS_USED, lds 1 (frame + EV_REGULAR_GAS_USED);
+  var 1 fsg = frame_state_gas_used(frame);
+  st out + MCO_STATE_GAS_USED, fsg + (lds 1 (frame + EV_AUTH_STATE_GAS_USED));
+  if (lds 1 (frame + EV_ERROR)) == 0 {
+    st out + MCO_LOGS, lds 1 (frame + EV_LOGS);
+    st out + MCO_DELETE, lds 1 (frame + EV_DELETE);
+    var rc = lds 1 (frame + EV_REFUND);
+    if rc < 0 {
+      rc = 0;
+    }
+    st out + MCO_REFUND, rc;
+  }
+  return out;
+}

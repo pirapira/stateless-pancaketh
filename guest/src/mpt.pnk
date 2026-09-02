@@ -1,0 +1,981 @@
+/* mpt.pnk -- Merkle-Patricia-trie layer of the stateless guest.
+   Ports (function names follow the Lean/Python names):
+   * EvmAsm/Stateless/SpecRef/WitnessState.lean: build_node_db / build_code_db
+     (nodedb_build), MutableNode, keyToNibbles (key_to_nibbles), trieLookup
+     (trie_lookup), decode_account_from_leaf, EMPTY_TRIE_ROOT / EMPTY_CODE_HASH
+     (globals empty_trie_root / empty_code_hash, filled by mpt_init).
+   * EvmAsm/Stateless/SpecRef/IncrementalMpt.lean: compact_to_nibbles,
+     _resolve_child_ref, _decode_witness_node, decode_witness_to_mpt.
+   * EvmAsm/Stateless/SpecRef/IncrementalMptWrite.lean: IncrementalMpt (mpt_new),
+     mpt_get, mpt_set (_mpt_insert_node / _insert_into_leaf /
+     _create_branch_from_two_leaves / _insert_into_extension / _split_extension /
+     _insert_into_branch, _mpt_delete_node / _delete_from_extension /
+     _delete_from_branch / _collapse_branch), mpt_root, node encoding
+     (_encode_mutable_node -> node_rlp, _encode_mutable_node_to_extended ->
+     node_write_ref, _compute_node_hash_and_rlp -> node_hash),
+     nibble_list_to_compact, common_prefix_length, encode_account; and
+     SeamShell.lean indexedTrieRoot (build_mpt_indexed).
+   Python originals: execution-specs ethereum/forks/amsterdam/incremental_mpt.py,
+   witness_state.py, ethereum/merkle_patricia_trie.py.
+
+   Design: nodes are heap records (alloc) tagged by NODE_KIND. Like the Python
+   (and unlike the pure Lean model) the write path MUTATES nodes in place --
+   leaf/branch values and branch child slots are overwritten, new nodes are
+   allocated only where the Python allocates them (splits, collapses). The
+   observable result (root hash, lookups) is identical because a decoded tree is
+   never shared with another trie handle. Each node caches its RLP encoding and
+   (for the root / >= 32-byte encodings) its keccak hash, mirroring the Python
+   _rlp/_hash memo fields: witness-decoded nodes start with their preimage
+   bytes as the cached RLP and the parent's 32-byte reference as the cached
+   hash, so mpt_root on an unmodified witness trie needs no keccak at all, and
+   _invalidate_hash (node_invalidate) clears the cache along every write path.
+   Nibbles are stored one per byte. Values are already-encoded bytes <ptr,len>
+   (the caller does _prepare_data / encode_node); a NULL or empty value in
+   mpt_set means the trie default, i.e. delete.
+   The Lean fuel arguments (cycle guards) are not modeled: a reference cycle
+   needs a keccak fixpoint among the witness preimages.
+   Every reference-side error raises MptErr with a code (MPT_E_*). RlpErr from
+   the RLP library is caught and re-raised as MptErr. Requires lib/mem.pnk,
+   lib/keccak.pnk, lib/rlp.pnk, lib/htab.pnk (keccak_init done by the caller). */
+
+exception MptErr : 1;
+
+#define MPT_E_ROOT_MISSING    1   /* decode_witness_to_mpt: node_db[root_hash] KeyError */
+#define MPT_E_HASHED          2   /* unresolved HashedNode reached (lookup / write / encode) */
+#define MPT_E_RLP             3   /* witness node RLP decode failed */
+#define MPT_E_NODE_SHAPE      4   /* non-empty bytes node or list length not 2 / 17 */
+#define MPT_E_PATH            5   /* node path not bytes / empty compact encoding */
+#define MPT_E_LEAF_VALUE      6   /* leaf value must be bytes */
+#define MPT_E_EXT_EMPTY       7   /* ExtensionNode must have a non-empty path */
+#define MPT_E_EXT_CHILD       8   /* ExtensionNode child must be a BranchNode */
+#define MPT_E_BRANCH_OCC      9   /* BranchNode must have at least 2 occupied entries */
+#define MPT_E_CHILD_REF_LEN  10   /* Unexpected child ref length */
+#define MPT_E_SPLIT_COLLISION 11  /* Unexpected collision during split */
+#define MPT_E_EMPTY_BRANCH   12   /* _collapse_branch: empty branch */
+#define MPT_E_ACCT_MALFORMED 20   /* account leaf is not a 4-item list of bytes */
+#define MPT_E_ACCT_NONCE     21   /* nonce wider than 8 bytes (guest envelope) */
+#define MPT_E_ACCT_BALANCE   22   /* balance wider than 32 bytes */
+#define MPT_E_ACCT_ROOT      23   /* storage_root neither empty nor 32 bytes */
+#define MPT_E_ACCT_CODE      24   /* code_hash neither empty nor 32 bytes */
+
+/* Node record layout (byte offsets). */
+#define NODE_HASHED   0
+#define NODE_LEAF     1
+#define NODE_EXT      2
+#define NODE_BRANCH   3
+#define NODE_KIND     0
+#define NODE_RLP      8    /* cached RLP encoding ptr (0 = not cached) */
+#define NODE_RLP_LEN  16
+#define NODE_HASH     24   /* cached 32-byte keccak ptr (0 = not cached); the hash of a hashed node */
+#define NODE_NIB      32   /* leaf rest_of_key / extension key_segment: nibble ptr */
+#define NODE_NIB_LEN  40
+#define NODE_VAL      48   /* leaf value ptr */
+#define NODE_VAL_LEN  56
+#define NODE_CHILD    48   /* extension child */
+#define NODE_CHILDREN 32   /* branch: 16 child ptrs (0 = none) */
+#define BR_VAL        160
+#define BR_VAL_LEN    168
+#define HASHED_SIZE   32
+#define LEAF_SIZE     64
+#define EXT_SIZE      56
+#define BRANCH_SIZE   176
+#define NODE_CHILD_AT(n, i) (lds 1 ((n) + NODE_CHILDREN + (i) * 8))
+
+/* IncrementalMpt handle: root node ptr (0 = empty trie) and secured flag. */
+#define MPT_ROOT     0
+#define MPT_SECURED  8
+#define MPT_SIZE     16
+
+/* Account record written by decode_account_from_leaf. */
+#define ACCT_NONCE         0
+#define ACCT_BALANCE       8    /* U256, 4 LE limbs */
+#define ACCT_STORAGE_ROOT  40   /* ptr to 32 bytes */
+#define ACCT_CODE_HASH     48   /* ptr to 32 bytes */
+#define ACCT_SIZE          56
+
+var 1 empty_trie_root = 0;   /* keccak256(0x80) */
+var 1 empty_code_hash = 0;   /* keccak256("") */
+var 1 mpt_nib_scratch = 0;   /* 64 nibbles for trie_lookup */
+var 1 mpt_hash_scratch = 0;  /* 40 bytes: keccak / balance scratch */
+var 1 mpt_key_scratch = 0;   /* 16 bytes: rlp(index) keys */
+
+fun 1 mpt_fail(1 code) {
+  throw MptErr code;
+  return 0;
+}
+
+fun 1 mpt_init() {
+  empty_trie_root = alloc(32);
+  empty_code_hash = alloc(32);
+  mpt_nib_scratch = alloc(64);
+  mpt_hash_scratch = alloc(40);
+  mpt_key_scratch = alloc(16);
+  st8 mpt_hash_scratch, 128;
+  keccak256(mpt_hash_scratch, 1, empty_trie_root);
+  keccak256(mpt_hash_scratch, 0, empty_code_hash);
+  return 0;
+}
+
+/* ---- nibble helpers ------------------------------------------------- */
+
+/* keyToNibbles / bytes_to_nibble_list: 2n nibbles at out. */
+fun 1 key_to_nibbles(1 key, 1 n, 1 out) {
+  var i = 0;
+  while i <+ n {
+    var b = ld8 (key + i);
+    st8 out + 2 * i, b >>> 4;
+    st8 out + 2 * i + 1, b & 15;
+    i = i + 1;
+  }
+  return 0;
+}
+
+/* compact_to_nibbles: <nibbles ptr, nibble count, is_leaf>. */
+fun {1,1,1} compact_to_nibbles(1 p, 1 n) {
+  if n == 0 {
+    mpt_fail(MPT_E_PATH);
+  }
+  var c0 = ld8 p;
+  var first = c0 >>> 4;
+  var is_leaf = (first >>> 1) & 1;
+  var odd = first & 1;
+  var 1 out = alloc(2 * n);
+  var k = 0;
+  if odd != 0 {
+    st8 out, c0 & 15;
+    k = 1;
+  }
+  key_to_nibbles(p + 1, n - 1, out + k);
+  return <out, k + 2 * (n - 1), is_leaf>;
+}
+
+/* nibble_list_to_compact: writes 1 + n/2 bytes at dst, returns the count. */
+fun 1 nibble_list_to_compact(1 nibs, 1 n, 1 is_leaf, 1 dst) {
+  var flag = is_leaf * 2;
+  var i = 0;
+  if (n & 1) == 0 {
+    st8 dst, 16 * flag;
+  } else {
+    st8 dst, 16 * (flag + 1) + (ld8 nibs);
+    i = 1;
+  }
+  var o = 1;
+  while i <+ n {
+    st8 dst + o, ((ld8 (nibs + i)) << 4) | (ld8 (nibs + i + 1));
+    i = i + 2;
+    o = o + 1;
+  }
+  return o;
+}
+
+fun 1 common_prefix_length(1 a, 1 al, 1 b, 1 bl) {
+  var n = min(al, bl);
+  var i = 0;
+  while i <+ n {
+    if (ld8 (a + i)) != (ld8 (b + i)) {
+      return i;
+    }
+    i = i + 1;
+  }
+  return n;
+}
+
+/* Fresh nibble buffer holding the a-nibbles followed by the b-nibbles. */
+fun 1 nibbles_concat(1 a, 1 al, 1 b, 1 bl) {
+  var 1 out = alloc(al + bl);
+  memcpy(out, a, al);
+  memcpy(out + al, b, bl);
+  return out;
+}
+
+/* ---- node DB (build_node_db / build_code_db) -------------------------- */
+
+/* keccak256(entry) -> address of the entry's <ptr,len> record (arr + i*16). */
+fun 1 nodedb_build(1 slice_arr, 1 n) {
+  var cap = 4;
+  while cap <+ 2 * n + 2 {
+    cap = cap * 2;
+  }
+  var 1 t = htab_new(32, cap);
+  var i = 0;
+  while i <+ n {
+    keccak256(SLICE_PTR(slice_arr, i), SLICE_LEN(slice_arr, i), mpt_hash_scratch);
+    htab_set(t, mpt_hash_scratch, slice_arr + i * 16);
+    i = i + 1;
+  }
+  return t;
+}
+
+/* <found, ptr, len> of the preimage of the 32-byte hash. */
+fun {1,1,1} nodedb_lookup(1 db, 1 hash) {
+  var {1,1} r = htab_get(db, hash);
+  if r.0 == 0 {
+    return <0, 0, 0>;
+  }
+  return <1, lds 1 (r.1), lds 1 (r.1 + 8)>;
+}
+
+/* ---- node constructors ---------------------------------------------- */
+
+fun 1 node_new_hashed(1 hash) {
+  var 1 nd = alloc(HASHED_SIZE);
+  st nd + NODE_KIND, NODE_HASHED;
+  st nd + NODE_RLP, 0;
+  st nd + NODE_RLP_LEN, 0;
+  st nd + NODE_HASH, hash;
+  return nd;
+}
+
+fun 1 node_new_leaf(1 nib, 1 nlen, 1 vptr, 1 vlen) {
+  var 1 nd = alloc(LEAF_SIZE);
+  st nd + NODE_KIND, NODE_LEAF;
+  st nd + NODE_RLP, 0;
+  st nd + NODE_RLP_LEN, 0;
+  st nd + NODE_HASH, 0;
+  st nd + NODE_NIB, nib;
+  st nd + NODE_NIB_LEN, nlen;
+  st nd + NODE_VAL, vptr;
+  st nd + NODE_VAL_LEN, vlen;
+  return nd;
+}
+
+fun 1 node_new_ext(1 nib, 1 nlen, 1 child) {
+  var 1 nd = alloc(EXT_SIZE);
+  st nd + NODE_KIND, NODE_EXT;
+  st nd + NODE_RLP, 0;
+  st nd + NODE_RLP_LEN, 0;
+  st nd + NODE_HASH, 0;
+  st nd + NODE_NIB, nib;
+  st nd + NODE_NIB_LEN, nlen;
+  st nd + NODE_CHILD, child;
+  return nd;
+}
+
+/* Branch with no children and an empty value. */
+fun 1 node_new_branch() {
+  var 1 nd = alloc(BRANCH_SIZE);
+  memzero(nd, BRANCH_SIZE);
+  st nd + NODE_KIND, NODE_BRANCH;
+  return nd;
+}
+
+/* _invalidate_hash (caller has excluded hashed nodes). */
+fun 1 node_invalidate(1 nd) {
+  st nd + NODE_RLP, 0;
+  st nd + NODE_RLP_LEN, 0;
+  st nd + NODE_HASH, 0;
+  return 0;
+}
+
+/* ---- witness decoding (IncrementalMpt.lean) --------------------------- */
+
+/* _decode_witness_node(node_db, rlp_bytes): node ptr, 0 for the empty node. */
+fun 1 _decode_witness_node(1 db, 1 p, 1 n) {
+  var {1,1,1,1} it = <0, 0, 0, 0>;
+  var e = 0;
+  try it = rlp_decode_fully(p, n)
+  catch RlpErr => e {
+    mpt_fail(MPT_E_RLP);
+  }
+  if it.0 == 0 {
+    if it.2 == 0 {
+      return 0;
+    }
+    mpt_fail(MPT_E_NODE_SHAPE);
+  }
+  var {1,1} sl = rlp_list_to_slices(it.1, it.2);
+  var arr = sl.0;
+  if sl.1 == 2 {
+    var {1,1,1,1} pi = rlp_item(SLICE_PTR(arr, 0), SLICE_LEN(arr, 0));
+    if pi.0 != 0 {
+      mpt_fail(MPT_E_PATH);
+    }
+    var {1,1,1} cn = compact_to_nibbles(pi.1, pi.2);
+    if cn.2 != 0 {
+      var {1,1,1,1} vi = rlp_item(SLICE_PTR(arr, 1), SLICE_LEN(arr, 1));
+      if vi.0 != 0 {
+        mpt_fail(MPT_E_LEAF_VALUE);
+      }
+      var 1 lf = node_new_leaf(cn.0, cn.1, vi.1, vi.2);
+      st lf + NODE_RLP, p;
+      st lf + NODE_RLP_LEN, n;
+      return lf;
+    }
+    if cn.1 == 0 {
+      mpt_fail(MPT_E_EXT_EMPTY);
+    }
+    var 1 ch = _resolve_child_ref(db, SLICE_PTR(arr, 1), SLICE_LEN(arr, 1));
+    if ch == 0 {
+      mpt_fail(MPT_E_EXT_CHILD);
+    }
+    var ck = lds 1 (ch + NODE_KIND);
+    if (ck != NODE_BRANCH) && (ck != NODE_HASHED) {
+      mpt_fail(MPT_E_EXT_CHILD);
+    }
+    var 1 ex = node_new_ext(cn.0, cn.1, ch);
+    st ex + NODE_RLP, p;
+    st ex + NODE_RLP_LEN, n;
+    return ex;
+  }
+  if sl.1 != 17 {
+    mpt_fail(MPT_E_NODE_SHAPE);
+  }
+  var 1 br = node_new_branch();
+  var occ = 0;
+  var i = 0;
+  while i < 16 {
+    var 1 c = _resolve_child_ref(db, SLICE_PTR(arr, i), SLICE_LEN(arr, i));
+    st br + NODE_CHILDREN + i * 8, c;
+    if c != 0 {
+      occ = occ + 1;
+    }
+    i = i + 1;
+  }
+  var {1,1,1,1} bv = rlp_item(SLICE_PTR(arr, 16), SLICE_LEN(arr, 16));
+  if bv.0 == 0 {
+    /* a nested-list 17th item degrades to b"" (Python), i.e. stays empty */
+    st br + BR_VAL, bv.1;
+    st br + BR_VAL_LEN, bv.2;
+    if bv.2 != 0 {
+      occ = occ + 1;
+    }
+  }
+  if occ <+ 2 {
+    mpt_fail(MPT_E_BRANCH_OCC);
+  }
+  st br + NODE_RLP, p;
+  st br + NODE_RLP_LEN, n;
+  return br;
+}
+
+/* _resolve_child_ref on the encoded item at (p, n): empty -> 0; 32-byte hash
+   -> DB preimage decode (absent -> hashed placeholder); inline list -> decode. */
+fun 1 _resolve_child_ref(1 db, 1 p, 1 n) {
+  var {1,1,1,1} it = <0, 0, 0, 0>;
+  var e = 0;
+  try it = rlp_item(p, n)
+  catch RlpErr => e {
+    mpt_fail(MPT_E_RLP);
+  }
+  if it.0 == 0 {
+    if it.2 == 0 {
+      return 0;
+    }
+    if it.2 != 32 {
+      mpt_fail(MPT_E_CHILD_REF_LEN);
+    }
+    var {1,1,1} r = nodedb_lookup(db, it.1);
+    if r.0 == 0 {
+      return node_new_hashed(it.1);
+    }
+    var 1 nd = _decode_witness_node(db, r.1, r.2);
+    if nd != 0 {
+      st nd + NODE_HASH, it.1;
+    }
+    return nd;
+  }
+  return _decode_witness_node(db, p, n);
+}
+
+/* decode_witness_to_mpt: root node ptr, 0 for EMPTY_TRIE_ROOT. */
+fun 1 decode_witness_to_mpt(1 db, 1 root_hash) {
+  var 1 is_empty = memeq(root_hash, empty_trie_root, 32);
+  if is_empty != 0 {
+    return 0;
+  }
+  var {1,1,1} r = nodedb_lookup(db, root_hash);
+  if r.0 == 0 {
+    mpt_fail(MPT_E_ROOT_MISSING);
+  }
+  var 1 nd = _decode_witness_node(db, r.1, r.2);
+  if nd != 0 {
+    var 1 h = alloc(32);
+    memcpy(h, root_hash, 32);
+    st nd + NODE_HASH, h;
+  }
+  return nd;
+}
+
+/* ---- lookup (trieLookup / _mpt_traverse_for_witness) ------------------- */
+
+/* Walk from node along the nlen nibbles at nibs: <found, value ptr, len>. */
+fun {1,1,1} trie_walk(1 node, 1 nibs, 1 nlen) {
+  var pos = 0;
+  while node != 0 {
+    var k = lds 1 (node + NODE_KIND);
+    if k == NODE_HASHED {
+      mpt_fail(MPT_E_HASHED);
+    }
+    if k == NODE_LEAF {
+      var rl = lds 1 (node + NODE_NIB_LEN);
+      if rl == nlen - pos {
+        var 1 eq = memeq(lds 1 (node + NODE_NIB), nibs + pos, rl);
+        if eq != 0 {
+          return <1, lds 1 (node + NODE_VAL), lds 1 (node + NODE_VAL_LEN)>;
+        }
+      }
+      return <0, 0, 0>;
+    }
+    if k == NODE_EXT {
+      var sl = lds 1 (node + NODE_NIB_LEN);
+      if sl >+ nlen - pos {
+        return <0, 0, 0>;
+      }
+      var 1 eq2 = memeq(lds 1 (node + NODE_NIB), nibs + pos, sl);
+      if eq2 == 0 {
+        return <0, 0, 0>;
+      }
+      pos = pos + sl;
+      node = lds 1 (node + NODE_CHILD);
+    } else {
+      /* branch */
+      if pos == nlen {
+        var vl = lds 1 (node + BR_VAL_LEN);
+        if vl == 0 {
+          return <0, 0, 0>;
+        }
+        return <1, lds 1 (node + BR_VAL), vl>;
+      }
+      node = NODE_CHILD_AT(node, ld8 (nibs + pos));
+      pos = pos + 1;
+    }
+  }
+  return <0, 0, 0>;
+}
+
+/* trieLookup(root, key_hash): key already hashed (32 bytes). */
+fun {1,1,1} trie_lookup(1 root, 1 key_hash32) {
+  key_to_nibbles(key_hash32, 32, mpt_nib_scratch);
+  return trie_walk(root, mpt_nib_scratch, 64);
+}
+
+/* ---- IncrementalMpt handle -------------------------------------------- */
+
+fun 1 mpt_new(1 root_node, 1 secured) {
+  var 1 m = alloc(MPT_SIZE);
+  st m + MPT_ROOT, root_node;
+  st m + MPT_SECURED, secured;
+  return m;
+}
+
+fun 1 mpt_from_witness(1 db, 1 root_hash, 1 secured) {
+  var 1 root = decode_witness_to_mpt(db, root_hash);
+  return mpt_new(root, secured);
+}
+
+/* Nibble key of key (keccak first when secured): fresh <nibbles, count>. */
+fun {1,1} mpt_nibble_key(1 m, 1 key, 1 klen) {
+  if (lds 1 (m + MPT_SECURED)) != 0 {
+    keccak256(key, klen, mpt_hash_scratch);
+    var 1 nb = alloc(64);
+    key_to_nibbles(mpt_hash_scratch, 32, nb);
+    return <nb, 64>;
+  }
+  var 1 nb2 = alloc(2 * klen);
+  key_to_nibbles(key, klen, nb2);
+  return <nb2, 2 * klen>;
+}
+
+/* mpt_get: <found, value ptr, len>; raises MptErr on a hashed node. */
+fun {1,1,1} mpt_get(1 m, 1 key, 1 klen) {
+  var 1 mark = heap_mark();
+  var {1,1} nk = mpt_nibble_key(m, key, klen);
+  var {1,1,1} r = trie_walk(lds 1 (m + MPT_ROOT), nk.0, nk.1);
+  heap_release(mark);
+  return r;
+}
+
+/* ---- insertion -------------------------------------------------------- */
+
+fun 1 _create_branch_from_two_leaves(1 k1, 1 l1, 1 v1, 1 vl1, 1 k2, 1 l2, 1 v2, 1 vl2) {
+  var 1 br = node_new_branch();
+  if l1 == 0 {
+    st br + BR_VAL, v1;
+    st br + BR_VAL_LEN, vl1;
+  } else {
+    var 1 lf1 = node_new_leaf(k1 + 1, l1 - 1, v1, vl1);
+    st br + NODE_CHILDREN + (ld8 k1) * 8, lf1;
+  }
+  if l2 == 0 {
+    st br + BR_VAL, v2;
+    st br + BR_VAL_LEN, vl2;
+  } else {
+    var 1 lf2 = node_new_leaf(k2 + 1, l2 - 1, v2, vl2);
+    st br + NODE_CHILDREN + (ld8 k2) * 8, lf2;
+  }
+  return br;
+}
+
+fun 1 _insert_into_leaf(1 node, 1 rk, 1 rl, 1 vptr, 1 vlen) {
+  var ek = lds 1 (node + NODE_NIB);
+  var el = lds 1 (node + NODE_NIB_LEN);
+  if el == rl {
+    var 1 eq = memeq(ek, rk, el);
+    if eq != 0 {
+      st node + NODE_VAL, vptr;
+      st node + NODE_VAL_LEN, vlen;
+      return node;
+    }
+  }
+  var 1 pl = common_prefix_length(ek, el, rk, rl);
+  var 1 br = _create_branch_from_two_leaves(ek + pl, el - pl, lds 1 (node + NODE_VAL), lds 1 (node + NODE_VAL_LEN), rk + pl, rl - pl, vptr, vlen);
+  if pl >+ 0 {
+    return node_new_ext(ek, pl, br);
+  }
+  return br;
+}
+
+fun 1 _split_extension(1 node, 1 rk, 1 rl, 1 vptr, 1 vlen, 1 pl) {
+  var seg = lds 1 (node + NODE_NIB);
+  var sl = lds 1 (node + NODE_NIB_LEN);
+  var child = lds 1 (node + NODE_CHILD);
+  var 1 br = node_new_branch();
+  var sal = sl - pl;
+  if sal == 1 {
+    st br + NODE_CHILDREN + (ld8 (seg + pl)) * 8, child;
+  }
+  if sal >+ 1 {
+    var 1 ex = node_new_ext(seg + pl + 1, sal - 1, child);
+    st br + NODE_CHILDREN + (ld8 (seg + pl)) * 8, ex;
+  }
+  var kal = rl - pl;
+  if kal == 0 {
+    st br + BR_VAL, vptr;
+    st br + BR_VAL_LEN, vlen;
+  } else {
+    var idx = ld8 (rk + pl);
+    if NODE_CHILD_AT(br, idx) != 0 {
+      mpt_fail(MPT_E_SPLIT_COLLISION);
+    }
+    var 1 lf = node_new_leaf(rk + pl + 1, kal - 1, vptr, vlen);
+    st br + NODE_CHILDREN + idx * 8, lf;
+  }
+  return br;
+}
+
+fun 1 _insert_into_extension(1 node, 1 key, 1 klen, 1 level, 1 vptr, 1 vlen) {
+  var seg = lds 1 (node + NODE_NIB);
+  var sl = lds 1 (node + NODE_NIB_LEN);
+  var 1 pl = common_prefix_length(seg, sl, key + level, klen - level);
+  if pl == sl {
+    var 1 c = _mpt_insert_node(lds 1 (node + NODE_CHILD), key, klen, level + pl, vptr, vlen);
+    st node + NODE_CHILD, c;
+    return node;
+  }
+  var 1 br = _split_extension(node, key + level, klen - level, vptr, vlen, pl);
+  if pl >+ 0 {
+    return node_new_ext(seg, pl, br);
+  }
+  return br;
+}
+
+fun 1 _insert_into_branch(1 node, 1 key, 1 klen, 1 level, 1 vptr, 1 vlen) {
+  if level == klen {
+    st node + BR_VAL, vptr;
+    st node + BR_VAL_LEN, vlen;
+    return node;
+  }
+  var idx = ld8 (key + level);
+  var 1 c = _mpt_insert_node(NODE_CHILD_AT(node, idx), key, klen, level + 1, vptr, vlen);
+  st node + NODE_CHILDREN + idx * 8, c;
+  return node;
+}
+
+/* _mpt_insert_node: key = nibble array (klen nibbles), consumed up to level. */
+fun 1 _mpt_insert_node(1 node, 1 key, 1 klen, 1 level, 1 vptr, 1 vlen) {
+  if node == 0 {
+    return node_new_leaf(key + level, klen - level, vptr, vlen);
+  }
+  var k = lds 1 (node + NODE_KIND);
+  if k == NODE_HASHED {
+    mpt_fail(MPT_E_HASHED);
+  }
+  node_invalidate(node);
+  if k == NODE_LEAF {
+    return _insert_into_leaf(node, key + level, klen - level, vptr, vlen);
+  }
+  if k == NODE_EXT {
+    return _insert_into_extension(node, key, klen, level, vptr, vlen);
+  }
+  return _insert_into_branch(node, key, klen, level, vptr, vlen);
+}
+
+/* ---- deletion --------------------------------------------------------- */
+
+fun 1 _collapse_branch(1 node) {
+  var count = 0;
+  var idx = 0;
+  var i = 0;
+  while i < 16 {
+    if NODE_CHILD_AT(node, i) != 0 {
+      count = count + 1;
+      idx = i;
+    }
+    i = i + 1;
+  }
+  var vl = lds 1 (node + BR_VAL_LEN);
+  if count == 0 {
+    if vl == 0 {
+      mpt_fail(MPT_E_EMPTY_BRANCH);
+    }
+    return node_new_leaf(node, 0, lds 1 (node + BR_VAL), vl);
+  }
+  if (count == 1) && (vl == 0) {
+    var child = NODE_CHILD_AT(node, idx);
+    var ck = lds 1 (child + NODE_KIND);
+    if ck == NODE_HASHED {
+      mpt_fail(MPT_E_HASHED);
+    }
+    var 1 nib = alloc(8);
+    st8 nib, idx;
+    if ck == NODE_BRANCH {
+      return node_new_ext(nib, 1, child);
+    }
+    var 1 cat = nibbles_concat(nib, 1, lds 1 (child + NODE_NIB), lds 1 (child + NODE_NIB_LEN));
+    if ck == NODE_LEAF {
+      return node_new_leaf(cat, 1 + (lds 1 (child + NODE_NIB_LEN)), lds 1 (child + NODE_VAL), lds 1 (child + NODE_VAL_LEN));
+    }
+    return node_new_ext(cat, 1 + (lds 1 (child + NODE_NIB_LEN)), lds 1 (child + NODE_CHILD));
+  }
+  return node;
+}
+
+fun 1 _delete_from_extension(1 node, 1 key, 1 klen, 1 level) {
+  var seg = lds 1 (node + NODE_NIB);
+  var sl = lds 1 (node + NODE_NIB_LEN);
+  var 1 pl = common_prefix_length(seg, sl, key + level, klen - level);
+  if pl <+ sl {
+    return node;
+  }
+  var 1 nc = _mpt_delete_node(lds 1 (node + NODE_CHILD), key, klen, level + sl);
+  if nc == 0 {
+    return 0;
+  }
+  var ck = lds 1 (nc + NODE_KIND);
+  if ck == NODE_BRANCH {
+    st node + NODE_CHILD, nc;
+    return node;
+  }
+  if ck == NODE_HASHED {
+    mpt_fail(MPT_E_HASHED);
+  }
+  var 1 cat = nibbles_concat(seg, sl, lds 1 (nc + NODE_NIB), lds 1 (nc + NODE_NIB_LEN));
+  var cl = sl + (lds 1 (nc + NODE_NIB_LEN));
+  if ck == NODE_EXT {
+    return node_new_ext(cat, cl, lds 1 (nc + NODE_CHILD));
+  }
+  return node_new_leaf(cat, cl, lds 1 (nc + NODE_VAL), lds 1 (nc + NODE_VAL_LEN));
+}
+
+fun 1 _delete_from_branch(1 node, 1 key, 1 klen, 1 level) {
+  if level == klen {
+    if (lds 1 (node + BR_VAL_LEN)) == 0 {
+      return node;
+    }
+    st node + BR_VAL, 0;
+    st node + BR_VAL_LEN, 0;
+  } else {
+    var idx = ld8 (key + level);
+    var 1 nc = _mpt_delete_node(NODE_CHILD_AT(node, idx), key, klen, level + 1);
+    st node + NODE_CHILDREN + idx * 8, nc;
+  }
+  return _collapse_branch(node);
+}
+
+/* _mpt_delete_node: the updated node for this position (may be 0). */
+fun 1 _mpt_delete_node(1 node, 1 key, 1 klen, 1 level) {
+  if node == 0 {
+    return 0;
+  }
+  var k = lds 1 (node + NODE_KIND);
+  if k == NODE_HASHED {
+    mpt_fail(MPT_E_HASHED);
+  }
+  node_invalidate(node);
+  if k == NODE_LEAF {
+    if (lds 1 (node + NODE_NIB_LEN)) == klen - level {
+      var 1 eq = memeq(lds 1 (node + NODE_NIB), key + level, klen - level);
+      if eq != 0 {
+        return 0;
+      }
+    }
+    return node;
+  }
+  if k == NODE_EXT {
+    return _delete_from_extension(node, key, klen, level);
+  }
+  return _delete_from_branch(node, key, klen, level);
+}
+
+/* mpt_set: val_ptr == 0 or val_len == 0 (the trie default) deletes. */
+fun 1 mpt_set(1 m, 1 key, 1 klen, 1 vptr, 1 vlen) {
+  var {1,1} nk = mpt_nibble_key(m, key, klen);
+  var root = lds 1 (m + MPT_ROOT);
+  if (vptr == 0) || (vlen == 0) {
+    root = _mpt_delete_node(root, nk.0, nk.1, 0);
+  } else {
+    root = _mpt_insert_node(root, nk.0, nk.1, 0, vptr, vlen);
+  }
+  st m + MPT_ROOT, root;
+  return 0;
+}
+
+/* ---- node encoding ---------------------------------------------------- */
+
+/* rlp.encode(_encode_mutable_node(node)) as <ptr, len>, cached in the node. */
+fun {1,1} node_rlp(1 node) {
+  var cached = lds 1 (node + NODE_RLP);
+  if cached != 0 {
+    return <cached, lds 1 (node + NODE_RLP_LEN)>;
+  }
+  var k = lds 1 (node + NODE_KIND);
+  if k == NODE_HASHED {
+    mpt_fail(MPT_E_HASHED);
+  }
+  var payload = 0;
+  var cbuf = 0;
+  var clen = 0;
+  if k != NODE_BRANCH {
+    var nlen = lds 1 (node + NODE_NIB_LEN);
+    cbuf = alloc((nlen >>> 1) + 2);
+    var isl = 0;
+    if k == NODE_LEAF {
+      isl = 1;
+    }
+    clen = nibble_list_to_compact(lds 1 (node + NODE_NIB), nlen, isl, cbuf);
+    var 1 el = rlp_bytes_encoded_len(ld8 cbuf, clen);
+    payload = el;
+    if k == NODE_LEAF {
+      var 1 vl = rlp_value_encoded_len(lds 1 (node + NODE_VAL), lds 1 (node + NODE_VAL_LEN));
+      payload = payload + vl;
+    } else {
+      var 1 rl = node_ref_len(lds 1 (node + NODE_CHILD));
+      payload = payload + rl;
+    }
+  } else {
+    var i = 0;
+    while i < 16 {
+      var 1 rl2 = node_ref_len(NODE_CHILD_AT(node, i));
+      payload = payload + rl2;
+      i = i + 1;
+    }
+    var 1 vl2 = rlp_value_encoded_len(lds 1 (node + BR_VAL), lds 1 (node + BR_VAL_LEN));
+    payload = payload + vl2;
+  }
+  var 1 hl = rlp_list_header_len(payload);
+  var 1 buf = alloc(hl + payload);
+  rlp_encode_list_header(buf, payload);
+  var off = hl;
+  if k != NODE_BRANCH {
+    var 1 w = rlp_encode_bytes(buf + off, cbuf, clen);
+    off = off + w;
+    if k == NODE_LEAF {
+      var 1 w2 = rlp_encode_bytes(buf + off, lds 1 (node + NODE_VAL), lds 1 (node + NODE_VAL_LEN));
+      off = off + w2;
+    } else {
+      var 1 w3 = node_write_ref(lds 1 (node + NODE_CHILD), buf + off);
+      off = off + w3;
+    }
+  } else {
+    var j = 0;
+    while j < 16 {
+      var 1 w4 = node_write_ref(NODE_CHILD_AT(node, j), buf + off);
+      off = off + w4;
+      j = j + 1;
+    }
+    var 1 w5 = rlp_encode_bytes(buf + off, lds 1 (node + BR_VAL), lds 1 (node + BR_VAL_LEN));
+    off = off + w5;
+  }
+  st node + NODE_RLP, buf;
+  st node + NODE_RLP_LEN, off;
+  return <buf, off>;
+}
+
+/* Encoded length of a byte-string value (empty -> 0x80). */
+fun 1 rlp_value_encoded_len(1 p, 1 n) {
+  var fb = 0;
+  if n >+ 0 {
+    fb = ld8 p;
+  }
+  return rlp_bytes_encoded_len(fb, n);
+}
+
+/* Length of _encode_mutable_node_to_extended(child) once RLP-encoded. */
+fun 1 node_ref_len(1 child) {
+  if child == 0 {
+    return 1;
+  }
+  if (lds 1 (child + NODE_KIND)) == NODE_HASHED {
+    return 33;
+  }
+  var {1,1} r = node_rlp(child);
+  if r.1 <+ 32 {
+    return r.1;
+  }
+  return 33;
+}
+
+/* Write _encode_mutable_node_to_extended(child) at dst; returns the length:
+   inline RLP when < 32 bytes, otherwise 0xa0 || keccak(rlp). */
+fun 1 node_write_ref(1 child, 1 dst) {
+  if child == 0 {
+    st8 dst, 128;
+    return 1;
+  }
+  if (lds 1 (child + NODE_KIND)) == NODE_HASHED {
+    st8 dst, 160;
+    memcpy(dst + 1, lds 1 (child + NODE_HASH), 32);
+    return 33;
+  }
+  var {1,1} r = node_rlp(child);
+  if r.1 <+ 32 {
+    memcpy(dst, r.0, r.1);
+    return r.1;
+  }
+  var 1 h = node_hash(child);
+  st8 dst, 160;
+  memcpy(dst + 1, h, 32);
+  return 33;
+}
+
+/* keccak256 of the node RLP (ptr to 32 bytes, cached); a hashed node is
+   its hash (_compute_node_hash_and_rlp / mpt_root). */
+fun 1 node_hash(1 node) {
+  var cached = lds 1 (node + NODE_HASH);
+  if cached != 0 {
+    return cached;
+  }
+  var {1,1} r = node_rlp(node);
+  var 1 h = alloc(32);
+  keccak256(r.0, r.1, h);
+  st node + NODE_HASH, h;
+  return h;
+}
+
+/* mpt_root: 32 bytes at out (EMPTY_TRIE_ROOT for the empty trie). */
+fun 1 mpt_root(1 m, 1 out) {
+  var root = lds 1 (m + MPT_ROOT);
+  if root == 0 {
+    memcpy(out, empty_trie_root, 32);
+    return 0;
+  }
+  var 1 h = node_hash(root);
+  memcpy(out, h, 32);
+  return 0;
+}
+
+/* indexedTrieRoot (SeamShell.lean): unsecured trie {rlp(i) -> slice_i};
+   root written to out. Scratch allocations are released. */
+fun 1 build_mpt_indexed(1 slice_arr, 1 n, 1 out) {
+  var 1 mark = heap_mark();
+  var 1 m = mpt_new(0, 0);
+  var i = 0;
+  while i <+ n {
+    var 1 klen = rlp_encode_word(mpt_key_scratch, i);
+    mpt_set(m, mpt_key_scratch, klen, SLICE_PTR(slice_arr, i), SLICE_LEN(slice_arr, i));
+    i = i + 1;
+  }
+  mpt_root(m, out);
+  heap_release(mark);
+  return 0;
+}
+
+/* ---- accounts --------------------------------------------------------- */
+
+/* decode_account_from_leaf(leaf_value) -> account record at acct_out
+   (ACCT_* offsets). Scalars are big-endian without a canonicality check
+   (Python int.from_bytes); nonce > 8 bytes is rejected (guest envelope),
+   balance > 32 bytes is a U256 overflow in the reference too. */
+fun 1 decode_account_from_leaf(1 p, 1 n, 1 acct_out) {
+  var {1,1,1,1} it = <0, 0, 0, 0>;
+  var e = 0;
+  try it = rlp_decode_fully(p, n)
+  catch RlpErr => e {
+    mpt_fail(MPT_E_ACCT_MALFORMED);
+  }
+  if it.0 != 1 {
+    mpt_fail(MPT_E_ACCT_MALFORMED);
+  }
+  var {1,1} sl = rlp_list_to_slices(it.1, it.2);
+  if sl.1 != 4 {
+    mpt_fail(MPT_E_ACCT_MALFORMED);
+  }
+  var arr = sl.0;
+  var {1,1,1,1} f0 = rlp_item(SLICE_PTR(arr, 0), SLICE_LEN(arr, 0));
+  var {1,1,1,1} f1 = rlp_item(SLICE_PTR(arr, 1), SLICE_LEN(arr, 1));
+  var {1,1,1,1} f2 = rlp_item(SLICE_PTR(arr, 2), SLICE_LEN(arr, 2));
+  var {1,1,1,1} f3 = rlp_item(SLICE_PTR(arr, 3), SLICE_LEN(arr, 3));
+  if (f0.0 | f1.0 | f2.0 | f3.0) != 0 {
+    mpt_fail(MPT_E_ACCT_MALFORMED);
+  }
+  /* nonce */
+  if f0.2 >+ 8 {
+    mpt_fail(MPT_E_ACCT_NONCE);
+  }
+  var nonce = 0;
+  var i = 0;
+  while i <+ f0.2 {
+    nonce = (nonce << 8) | (ld8 (f0.1 + i));
+    i = i + 1;
+  }
+  st acct_out + ACCT_NONCE, nonce;
+  /* balance: big-endian bytes -> 4 LE limbs */
+  if f1.2 >+ 32 {
+    mpt_fail(MPT_E_ACCT_BALANCE);
+  }
+  memzero(acct_out + ACCT_BALANCE, 32);
+  i = 0;
+  while i <+ f1.2 {
+    var pos = f1.2 - 1 - i;
+    var lp = acct_out + ACCT_BALANCE + (pos >>> 3) * 8;
+    st lp, (lds 1 lp) | ((ld8 (f1.1 + i)) << ((pos & 7) * 8));
+    i = i + 1;
+  }
+  /* storage_root / code_hash */
+  if f2.2 == 0 {
+    st acct_out + ACCT_STORAGE_ROOT, empty_trie_root;
+  } else {
+    if f2.2 != 32 {
+      mpt_fail(MPT_E_ACCT_ROOT);
+    }
+    st acct_out + ACCT_STORAGE_ROOT, f2.1;
+  }
+  if f3.2 == 0 {
+    st acct_out + ACCT_CODE_HASH, empty_code_hash;
+  } else {
+    if f3.2 != 32 {
+      mpt_fail(MPT_E_ACCT_CODE);
+    }
+    st acct_out + ACCT_CODE_HASH, f3.1;
+  }
+  return 0;
+}
+
+/* encode_account: rlp([nonce, balance, storage_root, code_hash]) at out
+   (at most 110 bytes); returns the length. Balance is a U256 (4 LE limbs). */
+fun 1 encode_account(1 nonce, {1,1,1,1} balance, 1 storage_root, 1 code_hash, 1 out) {
+  /* payload is always 68..108 bytes, so the list header is 0xf8 <len> */
+  var off = 2;
+  var 1 w = rlp_encode_word(out + off, nonce);
+  off = off + w;
+  st_be64(mpt_hash_scratch, balance.3);
+  st_be64(mpt_hash_scratch + 8, balance.2);
+  st_be64(mpt_hash_scratch + 16, balance.1);
+  st_be64(mpt_hash_scratch + 24, balance.0);
+  var z = 0;
+  while z <+ 32 {
+    if (ld8 (mpt_hash_scratch + z)) != 0 {
+      break;
+    }
+    z = z + 1;
+  }
+  var 1 wb = rlp_encode_bytes(out + off, mpt_hash_scratch + z, 32 - z);
+  off = off + wb;
+  var 1 ws = rlp_encode_bytes(out + off, storage_root, 32);
+  off = off + ws;
+  var 1 wc = rlp_encode_bytes(out + off, code_hash, 32);
+  off = off + wc;
+  st8 out, 248;
+  st8 out + 1, off - 2;
+  return off;
+}

@@ -1,0 +1,298 @@
+/* t_mpt.pnk -- MPT unit test. Replays an op stream produced by
+   tools/gen_mpt_vectors.py and appends one result record per op:
+   [u8 status (0 ok / 1 MptErr)][u8 MptErr code][6 zero] followed by an
+   op-specific fixed payload (see the generator for the layouts). */
+#include "config.h"
+#include "types.h"
+#include "lib/mem.pnk"
+#include "lib/arith.pnk"
+#include "lib/keccak.pnk"
+#include "lib/rlp.pnk"
+#include "lib/htab.pnk"
+#include "mpt.pnk"
+
+#define LD_LE16(p) ((ld8 (p)) | ((ld8 ((p) + 1)) << 8))
+
+#define OP_NEW 1
+#define OP_SET 2
+#define OP_ROOT 3
+#define OP_GET 4
+#define OP_INDEXED 5
+#define OP_WITNESS 6
+#define OP_LOOKUP_ACCT 7
+#define OP_LOOKUP_SLOT 8
+#define OP_SET_ACCT 9
+#define OP_DECODE_ACCT 10
+#define OP_ENCODE_ACCT 11
+#define OP_KECCAK 13
+
+var 1 outbuf = 0;
+var 1 outn = 0;
+var 1 cur = 0;     /* current mpt handle */
+var 1 t_db = 0;    /* current node DB */
+var 1 t_acct = 0;  /* ACCT_SIZE record */
+var 1 t_tmp = 0;   /* 256-byte scratch */
+
+fun 1 emit_status(1 status, 1 code) {
+  memzero(outbuf + outn, 8);
+  st8 outbuf + outn, status;
+  st8 outbuf + outn + 1, code;
+  outn = outn + 8;
+  return 0;
+}
+
+/* 32-byte payload: hash or zeros. */
+fun 1 emit_hash(1 ok, 1 p) {
+  memzero(outbuf + outn, 32);
+  if ok != 0 {
+    memcpy(outbuf + outn, p, 32);
+  }
+  outn = outn + 32;
+  return 0;
+}
+
+/* 40-byte value payload: [found][0 0 0][u32 len][32: value padded, or keccak if len > 32] */
+fun 1 emit_value(1 found, 1 vp, 1 vl) {
+  var rec = outbuf + outn;
+  memzero(rec, 40);
+  if found != 0 {
+    st8 rec, 1;
+    st_le32(rec + 4, vl);
+    if vl <=+ 32 {
+      memcpy(rec + 8, vp, vl);
+    } else {
+      keccak256(vp, vl, rec + 8);
+    }
+  }
+  outn = outn + 40;
+  return 0;
+}
+
+/* 112-byte account payload from t_acct: [found][0 x7][nonce u64][balance 32 LE][root 32][code 32] */
+fun 1 emit_acct(1 found) {
+  var rec = outbuf + outn;
+  memzero(rec, 112);
+  if found != 0 {
+    st8 rec, 1;
+    st rec + 8, lds 1 (t_acct + ACCT_NONCE);
+    memcpy(rec + 16, t_acct + ACCT_BALANCE, 32);
+    memcpy(rec + 48, lds 1 (t_acct + ACCT_STORAGE_ROOT), 32);
+    memcpy(rec + 80, lds 1 (t_acct + ACCT_CODE_HASH), 32);
+  }
+  outn = outn + 112;
+  return 0;
+}
+
+/* Parse [u32 n] n x [u16 len][bytes] into a slice array. Returns <arr, n, consumed>. */
+fun {1,1,1} parse_items(1 p) {
+  var n = LD_LE32(p);
+  var 1 arr = alloc(n * 16 + 8);
+  var off = 4;
+  var i = 0;
+  while i <+ n {
+    var l = LD_LE16(p + off);
+    st arr + i * 16, p + off + 2;
+    st arr + i * 16 + 8, l;
+    off = off + 2 + l;
+    i = i + 1;
+  }
+  return <arr, n, off>;
+}
+
+/* get_account_optional core: 1 if found (record in t_acct). */
+fun 1 t_lookup_acct(1 addr) {
+  keccak256(addr, 20, t_tmp);
+  var {1,1,1} r = trie_lookup(lds 1 (cur + MPT_ROOT), t_tmp);
+  if r.0 == 0 {
+    return 0;
+  }
+  decode_account_from_leaf(r.1, r.2, t_acct);
+  return 1;
+}
+
+/* get_storage core: raw leaf value of slot in the account's storage trie. */
+fun {1,1,1} t_lookup_slot(1 addr, 1 slot) {
+  var 1 found = t_lookup_acct(addr);
+  if found == 0 {
+    return <0, 0, 0>;
+  }
+  var sr = lds 1 (t_acct + ACCT_STORAGE_ROOT);
+  var 1 empty = memeq(sr, empty_trie_root, 32);
+  if empty != 0 {
+    return <0, 0, 0>;
+  }
+  var 1 sroot = decode_witness_to_mpt(t_db, sr);
+  keccak256(slot, 32, t_tmp);
+  return trie_lookup(sroot, t_tmp);
+}
+
+/* [20 addr][u8 present][u64 nonce][32 balance LE][32 root][32 code] */
+fun 1 t_set_acct(1 p) {
+  if (ld8 (p + 20)) == 0 {
+    mpt_set(cur, p, 20, 0, 0);
+    return 0;
+  }
+  var {1,1,1,1} bal = <LD_LE64(p + 29), LD_LE64(p + 37), LD_LE64(p + 45), LD_LE64(p + 53)>;
+  var 1 vb = alloc(128);
+  var 1 len = encode_account(LD_LE64(p + 21), bal, p + 61, p + 93, vb);
+  mpt_set(cur, p, 20, vb, len);
+  return 0;
+}
+
+fun 1 t_encode_acct(1 p) {
+  var {1,1,1,1} bal = <LD_LE64(p + 8), LD_LE64(p + 16), LD_LE64(p + 24), LD_LE64(p + 32)>;
+  return encode_account(LD_LE64(p), bal, p + 40, p + 72, t_tmp);
+}
+
+fun 1 t_keccak_bench(1 n, 1 reps) {
+  var 1 buf = alloc(n + 8);
+  memzero(buf, n);
+  var i = 0;
+  while i <+ reps {
+    keccak256(buf, n, t_tmp);
+    i = i + 1;
+  }
+  return 0;
+}
+
+/* Execute the op at p; returns the number of bytes consumed. */
+fun 1 run_op(1 p) {
+  var op = ld8 p;
+  var e = 0;
+  var r = 0;
+  var status = 0;
+  if op == OP_NEW {
+    cur = mpt_new(0, ld8 (p + 1));
+    emit_status(0, 0);
+    return 2;
+  }
+  if op == OP_SET {
+    var klen = LD_LE16(p + 1);
+    var vlen = LD_LE16(p + 3 + klen);
+    try r = mpt_set(cur, p + 3, klen, p + 5 + klen, vlen)
+    catch MptErr => e {
+      status = 1;
+    }
+    emit_status(status, e);
+    return 5 + klen + vlen;
+  }
+  if op == OP_ROOT {
+    try r = mpt_root(cur, t_tmp)
+    catch MptErr => e {
+      status = 1;
+    }
+    emit_status(status, e);
+    emit_hash(1 - status, t_tmp);
+    return 1;
+  }
+  if op == OP_GET {
+    var klen2 = LD_LE16(p + 1);
+    var {1,1,1} g = <0, 0, 0>;
+    try g = mpt_get(cur, p + 3, klen2)
+    catch MptErr => e {
+      status = 1;
+    }
+    emit_status(status, e);
+    emit_value(g.0, g.1, g.2);
+    return 3 + klen2;
+  }
+  if op == OP_INDEXED {
+    var {1,1,1} it = parse_items(p + 1);
+    try r = build_mpt_indexed(it.0, it.1, t_tmp)
+    catch MptErr => e {
+      status = 1;
+    }
+    emit_status(status, e);
+    emit_hash(1 - status, t_tmp);
+    return 1 + it.2;
+  }
+  if op == OP_WITNESS {
+    var {1,1,1} nodes = parse_items(p + 1);
+    t_db = nodedb_build(nodes.0, nodes.1);
+    var q = p + 1 + nodes.2;
+    try cur = mpt_from_witness(t_db, q, ld8 (q + 32))
+    catch MptErr => e {
+      status = 1;
+      cur = mpt_new(0, 1);
+    }
+    emit_status(status, e);
+    return 1 + nodes.2 + 33;
+  }
+  if op == OP_LOOKUP_ACCT {
+    var found = 0;
+    try found = t_lookup_acct(p + 1)
+    catch MptErr => e {
+      status = 1;
+    }
+    emit_status(status, e);
+    emit_acct(found);
+    return 21;
+  }
+  if op == OP_LOOKUP_SLOT {
+    var {1,1,1} sv = <0, 0, 0>;
+    try sv = t_lookup_slot(p + 1, p + 21)
+    catch MptErr => e {
+      status = 1;
+    }
+    emit_status(status, e);
+    emit_value(sv.0, sv.1, sv.2);
+    return 53;
+  }
+  if op == OP_SET_ACCT {
+    try r = t_set_acct(p + 1)
+    catch MptErr => e {
+      status = 1;
+    }
+    emit_status(status, e);
+    return 126;
+  }
+  if op == OP_DECODE_ACCT {
+    var alen = LD_LE16(p + 1);
+    try r = decode_account_from_leaf(p + 3, alen, t_acct)
+    catch MptErr => e {
+      status = 1;
+    }
+    emit_status(status, e);
+    emit_acct(1 - status);
+    return 3 + alen;
+  }
+  if op == OP_ENCODE_ACCT {
+    var 1 elen = t_encode_acct(p + 1);
+    emit_status(0, 0);
+    emit_value(1, t_tmp, elen);
+    return 105;
+  }
+  if op == OP_KECCAK {
+    t_keccak_bench(LD_LE32(p + 1), LD_LE32(p + 5));
+    emit_status(0, 0);
+    emit_hash(1, t_tmp);
+    return 9;
+  }
+  /* unknown op: stop */
+  return 0;
+}
+
+fun 1 main() {
+  mem_init();
+  keccak_init();
+  mpt_init();
+  var {1,1} inp = input_blob();
+  outbuf = alloc(65536);
+  t_acct = alloc(ACCT_SIZE);
+  t_tmp = alloc(256);
+  cur = mpt_new(0, 0);
+  var off = 0;
+  while off <+ inp.1 {
+    var 1 used = run_op(inp.0 + off);
+    if used == 0 {
+      break;
+    }
+    off = off + used;
+    if outn >+ 60000 {
+      break;
+    }
+  }
+  output_write(outbuf, outn);
+  @halt(@base, 0, @base, 0);
+  return 0;
+}

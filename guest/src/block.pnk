@@ -1,0 +1,371 @@
+/* block.pnk -- block-level helpers of Fork.lean / SeamShell.lean that do not
+   depend on the transaction record: bloom.py (add_to_bloom, logs_bloom),
+   Receipt / encode_receipt, withdrawal RLP, encode_execution_requests /
+   compute_requests_hash, extract_deposit_data, and the post-state root
+   (WitnessStateRoot.lean compute_state_root_and_trie_changes).
+   Requires evm.pnk (LOG_*), state.pnk, mpt.pnk, lib/*. */
+
+/* ---- bloom ------------------------------------------------------------------------- */
+
+fun 1 add_to_bloom(1 bloom, 1 entry, 1 n) {
+  var 1 mark = heap_mark();
+  var 1 h = alloc(32);
+  keccak256(entry, n, h);
+  var idx = 0;
+  while idx < 6 {
+    var bit = (((ld8 (h + idx)) << 8) | (ld8 (h + idx + 1))) & 2047;
+    var bit_index = 2047 - bit;
+    var byte_index = bit_index >>> 3;
+    var bv = 1 << (7 - (bit_index & 7));
+    st8 bloom + byte_index, (ld8 (bloom + byte_index)) | bv;
+    idx = idx + 2;
+  }
+  heap_release(mark);
+  return 0;
+}
+
+/* logs_bloom over a list (LST) of log record pointers -> 256 bytes at out */
+fun 1 logs_bloom(1 logs, 1 out) {
+  memzero(out, 256);
+  var n = lds 1 (logs + LST_N);
+  var p = lds 1 (logs + LST_PTR);
+  var i = 0;
+  while i < n {
+    var log = lds 1 (p + i * 8);
+    add_to_bloom(out, lds 1 (log + LOG_ADDRESS), 20);
+    var nt = lds 1 (log + LOG_TOPICS_N);
+    var j = 0;
+    while j < nt {
+      add_to_bloom(out, (lds 1 (log + LOG_TOPICS)) + j * 32, 32);
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+/* ---- RLP nesting helper: finish a list whose payload was written at
+   dst+9; moves the payload down and writes the header. Returns total. ---- */
+fun 1 rlp_finish_list(1 dst, 1 payload_end) {
+  var payload = payload_end - (dst + 9);
+  var 1 hl = rlp_list_header_len(payload);
+  memcpy(dst + hl, dst + 9, payload);
+  rlp_encode_list_header(dst, payload);
+  return hl + payload;
+}
+
+/* ---- receipts ---------------------------------------------------------------------- */
+
+/* Encoded size upper bound of a log list. */
+fun 1 logs_encoded_bound(1 logs) {
+  var n = lds 1 (logs + LST_N);
+  var p = lds 1 (logs + LST_PTR);
+  var total = 16;
+  var i = 0;
+  while i < n {
+    var log = lds 1 (p + i * 8);
+    total = total + 64 + (lds 1 (log + LOG_TOPICS_N)) * 33 + (lds 1 (log + LOG_DATA_N));
+    i = i + 1;
+  }
+  return total;
+}
+
+/* rlp of the logs list at dst; returns bytes written. */
+fun 1 encode_logs(1 dst, 1 logs) {
+  var n = lds 1 (logs + LST_N);
+  var p = lds 1 (logs + LST_PTR);
+  var q = dst + 9;
+  var i = 0;
+  while i < n {
+    var log = lds 1 (p + i * 8);
+    var r = q + 9;
+    var 1 w = rlp_encode_bytes(r, lds 1 (log + LOG_ADDRESS), 20);
+    r = r + w;
+    var tstart = r;
+    var t = r + 9;
+    var nt = lds 1 (log + LOG_TOPICS_N);
+    var j = 0;
+    while j < nt {
+      w = rlp_encode_bytes(t, (lds 1 (log + LOG_TOPICS)) + j * 32, 32);
+      t = t + w;
+      j = j + 1;
+    }
+    w = rlp_finish_list(tstart, t);
+    r = tstart + w;
+    w = rlp_encode_bytes(r, lds 1 (log + LOG_DATA), lds 1 (log + LOG_DATA_N));
+    r = r + w;
+    w = rlp_finish_list(q, r);
+    q = q + w;
+    i = i + 1;
+  }
+  var 1 total = rlp_finish_list(dst, q);
+  return total;
+}
+
+/* encode_receipt(tx_type, succeeded, cumulative_gas_used, logs) -> <ptr, len> */
+fun {1,1} encode_receipt(1 tx_type, 1 succeeded, 1 cumulative_gas, 1 logs) {
+  var 1 bound = logs_encoded_bound(logs);
+  var 1 buf = alloc(bound + 400);
+  var start = buf + 1;
+  var p = start + 9;
+  var 1 w = 0;
+  if succeeded != 0 {
+    st8 p, 1;
+    w = 1;
+  } else {
+    st8 p, 128;
+    w = 1;
+  }
+  p = p + w;
+  w = rlp_encode_word(p, cumulative_gas);
+  p = p + w;
+  var 1 bloom = alloc(256);
+  logs_bloom(logs, bloom);
+  w = rlp_encode_bytes(p, bloom, 256);
+  p = p + w;
+  w = encode_logs(p, logs);
+  p = p + w;
+  w = rlp_finish_list(start, p);
+  if tx_type != 0 {
+    st8 start - 1, tx_type;
+    return <start - 1, w + 1>;
+  }
+  return <start, w>;
+}
+
+/* ---- withdrawals ------------------------------------------------------------------- */
+
+/* rlp([index, validator_index, address, amount]) from a 44-byte SSZ withdrawal */
+fun {1,1} encode_withdrawal_rlp(1 wd) {
+  var 1 buf = alloc(64);
+  var p = buf + 9;
+  var 1 w = rlp_encode_word(p, LD_LE64(wd));
+  p = p + w;
+  w = rlp_encode_word(p, LD_LE64(wd + 8));
+  p = p + w;
+  w = rlp_encode_bytes(p, wd + 16, 20);
+  p = p + w;
+  w = rlp_encode_word(p, LD_LE64(wd + 36));
+  p = p + w;
+  var 1 total = rlp_finish_list(buf, p);
+  return <buf, total>;
+}
+
+/* ---- requests (SeamShell.lean) ---------------------------------------------------- */
+
+/* encode_execution_requests from the payload's SSZ ExecutionRequests record:
+   each non-empty list becomes TYPE || concat(elements) (the SSZ element
+   encodings coincide with _encode_* byte layouts). Returns <slice array, count>. */
+fun {1,1} encode_execution_requests(1 rq) {
+  var 1 arr = alloc(5 * 16);
+  var n = 0;
+  var i = 0;
+  while i < 5 {
+    var p = lds 1 (rq + REQ_DEP + i * 16);
+    var cnt = lds 1 (rq + REQ_DEP_N + i * 16);
+    var sz = DEPOSIT_SIZE;
+    if i == 1 { sz = WDREQ_SIZE; }
+    if i == 2 { sz = CONS_SIZE; }
+    if i == 3 { sz = BDEP_SIZE; }
+    if i == 4 { sz = BEXIT_SIZE; }
+    if cnt != 0 {
+      var 1 blob = alloc(cnt * sz + 8);
+      st8 blob, i;
+      memcpy(blob + 1, p, cnt * sz);
+      st arr + n * 16, blob;
+      st arr + n * 16 + 8, cnt * sz + 1;
+      n = n + 1;
+    }
+    i = i + 1;
+  }
+  return <arr, n>;
+}
+
+/* compute_requests_hash(requests as slice array) -> 32 bytes at out */
+fun 1 compute_requests_hash(1 arr, 1 n, 1 out) {
+  var 1 mark = heap_mark();
+  var 1 cat = alloc(n * 32 + 8);
+  var i = 0;
+  while i < n {
+    sha256(SLICE_PTR(arr, i), SLICE_LEN(arr, i), cat + i * 32);
+    i = i + 1;
+  }
+  sha256(cat, n * 32, out);
+  heap_release(mark);
+  return 0;
+}
+
+/* extract_deposit_data(data, n) -> appends 192 bytes at out; raises BlockErr */
+fun 1 extract_deposit_data(1 data, 1 n, 1 out) {
+  if n != 576 {
+    throw BlockErr 60;
+  }
+  var 1 mark = heap_mark();
+  var ok = 1;
+  var 1 z = is_zero_bytes(data, 24);
+  var i = 0;
+  /* words at 0,32,64,96,128 must be 160,256,320,384,512; at 160,256,320,384,512
+     must be 48,32,8,96,8 */
+  var 1 w0 = ld_be64(data + 24);
+  z = is_zero_bytes(data, 24);
+  if (z == 0) || (w0 != 160) { ok = 0; }
+  z = is_zero_bytes(data + 32, 24);
+  w0 = ld_be64(data + 56);
+  if (z == 0) || (w0 != 256) { ok = 0; }
+  z = is_zero_bytes(data + 64, 24);
+  w0 = ld_be64(data + 88);
+  if (z == 0) || (w0 != 320) { ok = 0; }
+  z = is_zero_bytes(data + 96, 24);
+  w0 = ld_be64(data + 120);
+  if (z == 0) || (w0 != 384) { ok = 0; }
+  z = is_zero_bytes(data + 128, 24);
+  w0 = ld_be64(data + 152);
+  if (z == 0) || (w0 != 512) { ok = 0; }
+  z = is_zero_bytes(data + 160, 24);
+  w0 = ld_be64(data + 184);
+  if (z == 0) || (w0 != 48) { ok = 0; }
+  z = is_zero_bytes(data + 256, 24);
+  w0 = ld_be64(data + 280);
+  if (z == 0) || (w0 != 32) { ok = 0; }
+  z = is_zero_bytes(data + 320, 24);
+  w0 = ld_be64(data + 344);
+  if (z == 0) || (w0 != 8) { ok = 0; }
+  z = is_zero_bytes(data + 384, 24);
+  w0 = ld_be64(data + 408);
+  if (z == 0) || (w0 != 96) { ok = 0; }
+  z = is_zero_bytes(data + 512, 24);
+  w0 = ld_be64(data + 536);
+  if (z == 0) || (w0 != 8) { ok = 0; }
+  heap_release(mark);
+  if ok == 0 {
+    throw BlockErr 61;
+  }
+  memcpy(out, data + 192, 48);
+  memcpy(out + 48, data + 288, 32);
+  memcpy(out + 80, data + 352, 8);
+  memcpy(out + 88, data + 416, 96);
+  memcpy(out + 184, data + 544, 8);
+  return 0;
+}
+
+/* ---- post-state root (WitnessStateRoot.lean) ----------------------------------------- */
+
+/* The `_storage_root_cache` is modeled as the set of read addresses
+   (BS_PRE_READS) plus the fills performed here; the value is always the
+   deterministic ws_storage_root_of. */
+fun 1 cache_get_root(1 cache, 1 addr) {
+  var 1 has = htab_has(cache, addr);
+  if has == 0 {
+    return empty_trie_root;
+  }
+  var 1 r = ws_storage_root_of(addr);
+  return r;
+}
+
+/* compute_state_root_and_trie_changes(account_changes = bs accountWrites,
+   storage_changes = bs storageWrites, storage_clears = []) -> 32 bytes at out */
+fun 1 compute_state_root(1 out) {
+  var 1 cache = htab_copy(lds 1 (bs + BS_PRE_READS));
+  var 1 new_roots = htab_new(20, 64);   /* addr -> ptr to 32-byte root */
+  var sw = lds 1 (bs + BS_STOR_WRITES);
+  var aw = lds 1 (bs + BS_ACCT_WRITES);
+  var nodedb = lds 1 (ws + WS_NODEDB);
+  /* Pass 1: storage tries */
+  var cap = lds 1 (sw + HT_CAP);
+  var i = 0;
+  while i < cap {
+    var {1,1,1} s = htab_slot(sw, i);
+    if s.0 != 0 {
+      var addr = s.1;
+      var inner = s.2;
+      var 1 has = htab_has(cache, addr);
+      if has == 0 {
+        htab_set(cache, addr, 1);
+      }
+      var 1 old_root = ws_storage_root_of(addr);
+      var 1 mpt = mpt_from_witness(nodedb, old_root, 1);
+      var icap = lds 1 (inner + HT_CAP);
+      var 1 vbuf = alloc(40);
+      /* insertions/updates first, then deletions */
+      var pass = 0;
+      while pass < 2 {
+        var j = 0;
+        while j < icap {
+          var {1,1,1} e = htab_slot(inner, j);
+          if e.0 != 0 {
+            var {1,1,1,1} v = lds {1,1,1,1} (e.2);
+            var 1 z = u256_is_zero(v);
+            if (pass == 0) && (z == 0) {
+              var 1 n = u256_to_be_min(v, vbuf + 8);
+              var 1 w = rlp_encode_bytes(vbuf + 8 + 32, vbuf + 8, n);
+              var 1 enc = alloc(40);
+              memcpy(enc, vbuf + 40, w);
+              mpt_set(mpt, e.1, 32, enc, w);
+            }
+            if (pass == 1) && (z != 0) {
+              mpt_set(mpt, e.1, 32, 0, 0);
+            }
+          }
+          j = j + 1;
+        }
+        pass = pass + 1;
+      }
+      var 1 root = alloc(32);
+      mpt_root(mpt, root);
+      htab_set(new_roots, addr, root);
+    }
+    i = i + 1;
+  }
+  /* The state trie */
+  var 1 state_mpt = mpt_from_witness(nodedb, lds 1 (ws + WS_STATE_ROOT), 1);
+  /* Pass 2: storage-touched addresses absent from account_changes */
+  i = 0;
+  while i < cap {
+    var {1,1,1} s2 = htab_slot(sw, i);
+    if s2.0 != 0 {
+      var 1 inaw = htab_has(aw, s2.1);
+      if inaw == 0 {
+        var 1 a = ws_get_account_optional(s2.1);
+        htab_set(cache, s2.1, 1);
+        if a != ACCT_NONE {
+          var {1,1} nr = htab_get(new_roots, s2.1);
+          var sr = empty_trie_root;
+          if nr.0 != 0 {
+            sr = nr.1;
+          }
+          var 1 enc = alloc(128);
+          var 1 n = encode_account(lds 1 (a + ACCT_NONCE), lds {1,1,1,1} (a + ACCT_BALANCE), sr, lds 1 (a + ACCT_CODE_HASH), enc);
+          mpt_set(state_mpt, s2.1, 20, enc, n);
+        }
+      }
+    }
+    i = i + 1;
+  }
+  /* Pass 3: account changes */
+  var acap = lds 1 (aw + HT_CAP);
+  i = 0;
+  while i < acap {
+    var {1,1,1} s3 = htab_slot(aw, i);
+    if s3.0 != 0 {
+      var addr3 = s3.1;
+      var acct = s3.2;
+      if acct == ACCT_NONE {
+        mpt_set(state_mpt, addr3, 20, 0, 0);
+      } else {
+        var {1,1} nr2 = htab_get(new_roots, addr3);
+        var sr2 = 0;
+        if nr2.0 != 0 {
+          sr2 = nr2.1;
+        } else {
+          sr2 = cache_get_root(cache, addr3);
+        }
+        var 1 enc2 = alloc(128);
+        var 1 n2 = encode_account(lds 1 (acct + ACCT_NONCE), lds {1,1,1,1} (acct + ACCT_BALANCE), sr2, lds 1 (acct + ACCT_CODE_HASH), enc2);
+        mpt_set(state_mpt, addr3, 20, enc2, n2);
+      }
+    }
+    i = i + 1;
+  }
+  mpt_root(state_mpt, out);
+  return 0;
+}

@@ -220,3 +220,21 @@ fun {1,1} htab_keys(1 t) {
   }
   return <out, n>;
 }
+
+/* Shallow copy (same keys/values). */
+fun 1 htab_copy(1 t) {
+  var cap = lds 1 (t + HT_CAP);
+  var stride = lds 1 (t + HT_KEYSTRIDE);
+  var 1 n = alloc(HT_SIZE);
+  memcpy(n, t, HT_SIZE);
+  var 1 keys = alloc(cap * stride);
+  memcpy(keys, lds 1 (t + HT_KEYS), cap * stride);
+  st n + HT_KEYS, keys;
+  var 1 vals = alloc(cap * 8);
+  memcpy(vals, lds 1 (t + HT_VALS), cap * 8);
+  st n + HT_VALS, vals;
+  var 1 used = alloc(cap);
+  memcpy(used, lds 1 (t + HT_USED), cap);
+  st n + HT_USED, used;
+  return n;
+}

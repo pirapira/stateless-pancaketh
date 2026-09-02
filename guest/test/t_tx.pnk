@@ -1,0 +1,100 @@
+#include "config.h"
+#include "types.h"
+#include "lib/mem.pnk"
+#include "lib/arith.pnk"
+#include "lib/u256.pnk"
+#include "lib/sha256.pnk"
+#include "lib/keccak.pnk"
+#include "lib/rlp.pnk"
+#include "ssz.pnk"
+#include "tx.pnk"
+#include "secp_stub.pnk"
+/* For every payload transaction, a 152-byte record (see exp_tx.py):
+   [type][nonce low][gas][to flag][data len][access count][blob count]
+   [auth count][signing hash 32][recid][intrinsic regular][calldata floor]
+   [re-encode == raw][chain_id some][chain_id value][validate code].
+   A decode failure gives type = -1 and zeros. */
+#define REC 152
+fun 1 main() {
+  mem_init();
+  sha256_init();
+  keccak_init();
+  ssz_len_chunk = alloc(32);
+  ssz_offs = alloc(64);
+  ssz_init();
+  var {1,1} inp = input_blob();
+  var 1 si = decode_stateless_input(inp.0, inp.1);
+  var pl = lds 1 (si + SI_PL);
+  var arr = lds 1 (pl + PL_TXS);
+  var n = lds 1 (pl + PL_TXS_N);
+  var 1 out = alloc(n * REC + 16);
+  memzero(out, n * REC + 16);
+  var 1 sender = alloc(24);
+  memzero(sender, 24);
+  var i = 0;
+  while i <+ n {
+    var r = out + i * REC;
+    var 1 tx = 0;
+    var err = 0;
+    try tx = decode_transaction(SLICE_PTR(arr, i), SLICE_LEN(arr, i))
+    catch TxErr => err {
+      st r, 0 - 1;
+      i = i + 1;
+      continue;
+    }
+    st r, lds 1 (tx + TX_TYPE);
+    var {1,1,1,1} nonce = tx_nonce(tx);
+    st r + 8, nonce.0;
+    st r + 16, lds 1 (tx + TX_GAS);
+    var to_flag = 0;
+    if (lds 1 (tx + TX_TO)) != 0 { to_flag = 1; }
+    st r + 24, to_flag;
+    st r + 32, lds 1 (tx + TX_DATA_N);
+    st r + 40, lds 1 (tx + TX_ACCESS_LIST_N);
+    st r + 48, lds 1 (tx + TX_BLOB_HASHES_N);
+    st r + 56, lds 1 (tx + TX_AUTHORIZATIONS_N);
+    /* chain id + recovery parameters (hash at r+64, recid at r+96) */
+    var {1,1} cid = <0, 0>;
+    var recid = 0 - 1;
+    var ok = 1;
+    try cid = tx_chain_id(tx)
+    catch TxErr => err {
+      ok = 0;
+    }
+    if ok == 1 {
+      try recid = signature_recovery_parameters(tx, cid.1, r + 64)
+      catch TxErr => err {
+        ok = 0;
+      }
+    }
+    if ok == 0 {
+      cid = <0, 0>;
+      recid = 0 - 1;
+      memzero(r + 64, 32);
+    }
+    st r + 96, recid;
+    var {1,1,1} ic = calculate_intrinsic_cost(tx, sender);
+    st r + 104, ic.0;
+    st r + 112, ic.2;
+    var 1 mark = heap_mark();
+    var {1,1} enc = encode_transaction(tx);
+    var flag = 0;
+    if enc.1 == (lds 1 (tx + TX_RAW_N)) {
+      flag = memeq(enc.0, lds 1 (tx + TX_RAW), enc.1);
+    }
+    heap_release(mark);
+    st r + 120, flag;
+    st r + 128, cid.0;
+    st r + 136, cid.1;
+    var vcode = 0;
+    try ic = validate_transaction(tx, sender)
+    catch TxErr => vcode {
+      skip;
+    }
+    st r + 144, vcode;
+    i = i + 1;
+  }
+  output_write(out, n * REC);
+  @halt(@base, 0, @base, 0);
+  return 0;
+}

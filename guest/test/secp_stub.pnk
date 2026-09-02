@@ -1,0 +1,6 @@
+/* secp_stub.pnk -- unit-test stand-in for lib/secp256k1.pnk: recovery
+   always fails (returns 0) so tx.pnk tests exercise everything but the
+   curve arithmetic. Same signature as the real secp256k1_recover. */
+fun 1 secp256k1_recover(1 msg_hash32, {1,1,1,1} r, {1,1,1,1} s, 1 recid, 1 out64) {
+  return 0;
+}

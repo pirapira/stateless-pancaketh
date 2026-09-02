@@ -1,0 +1,524 @@
+/* lib/secp256k1.pnk -- secp256k1 ECDSA public-key recovery (ECRECOVER).
+   Port of evm-asm/EvmAsm/Stateless/SpecRef/Secp256k1Recover.lean:
+     p, n, b, gx, gy      curve parameters (SEC 2 v2.0 section 2.4.1)
+     pointAdd / scalarMul the affine group law with identity (Option Point)
+     decompressR          x = r + (recid bit 1) * n, reject x >= p,
+                          y0 = (x^3 + 7)^((p+1)/4), require y0^2 == x^3 + 7,
+                          y = y0 if parity(y0) == recid bit 0 else (p - y0) % p
+     recover              0 < r < n, 0 < s < n, rinv = r^(n-2) mod n,
+                          u1 = (n - e mod n) mod n * rinv, u2 = s * rinv,
+                          Q = u1*G + u2*R, fail at infinity
+     addressOfPoint       keccak256(x || y)[12:32]
+     ecrecoverAddress     v in {27, 28}, recid = v - 27
+
+   Internally the two scalar multiplications and the final addition run in
+   Jacobian coordinates (X, Y, Z) with (x, y) = (X / Z^2, Y / Z^3); the result
+   is normalised to affine before use, so the returned point is exactly the
+   affine value the Lean spec computes (the Jacobian formulas realise the same
+   group law; the x1 == x2 case split of pointAdd -- identity when y1 + y2 == 0,
+   doubling otherwise -- is reproduced on the cross-multiplied coordinates).
+   A point lives in memory as 3 U256 (X at +0, Y at +32, Z at +64, little-endian
+   limbs); Z == 0 encodes the identity.
+
+   Field multiplication: fp_mul reduces the 512-bit product with two folds by
+   2^32 + 977 (p = 2^256 - 2^32 - 977); compile with -DSECP_SIMPLE_MUL to use
+   u256_mulmod instead (cross-check).  Scalar (mod n) arithmetic uses
+   u256_mulmod / u256_addmod throughout (one inversion per recovery).
+   Needs lib/mem.pnk, lib/arith.pnk, lib/u256.pnk, lib/keccak.pnk. */
+
+/* p = 2^256 - 2^32 - 977 (limbs as signed decimals: see PANCAKE-NOTES) */
+#define SECP_P <-4294968273, -1, -1, -1>
+#define SECP_P_MINUS_2 <-4294968275, -1, -1, -1>
+/* (p + 1) / 4 = 2^254 - 2^30 - 244 */
+#define SECP_SQRT_EXP <-1073742068, -1, -1, 4611686018427387903>
+/* 2^32 + 977: the fold constant, p = 2^256 - SECP_C */
+#define SECP_C 4294968273
+/* n = FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFE BAAEDCE6 AF48A03B BFD25E8C D0364141 */
+#define SECP_N <-4624529908474429119, -4994812053365940165, -2, -1>
+#define SECP_N_MINUS_2 <-4624529908474429121, -4994812053365940165, -2, -1>
+#define SECP_GX <6481385041966929816, 188021827762530521, 6170039885052185351, 8772561819708210092>
+#define SECP_GY <-7185545363635252040, -209500633525038055, 6747795201694173352, 5204712524664259685>
+#define SECP_B <7, 0, 0, 0>
+
+#define EC_X(pt) (pt)
+#define EC_Y(pt) ((pt) + 32)
+#define EC_Z(pt) ((pt) + 64)
+#define EC_POINT_BYTES 96
+
+/* ---------- field arithmetic mod p (inputs and outputs in [0, p)) ---------- */
+
+/* (a + b) mod p; a, b < p so the exact sum is < 2p and one subtraction suffices. */
+fun U256 fp_add(U256 a, U256 b) {
+  var {1,1,1,1,1} s = u256_add_carry(a, b);
+  var U256 r = <s.0, s.1, s.2, s.3>;
+  if s.4 == 1 {
+    return u256_sub(r, SECP_P);
+  }
+  var 1 lt = u256_lt(r, SECP_P);
+  if lt == 0 {
+    return u256_sub(r, SECP_P);
+  }
+  return r;
+}
+
+/* (a - b) mod p. */
+fun U256 fp_sub(U256 a, U256 b) {
+  var 1 lt = u256_lt(a, b);
+  var U256 d = u256_sub(a, b);
+  if lt == 1 {
+    d = u256_add(d, SECP_P);
+  }
+  return d;
+}
+
+/* (p - a) mod p (0 for a == 0), the Lean `(p - y0) % p`. */
+fun U256 fp_neg(U256 a) {
+  var 1 z = u256_is_zero(a);
+  if z == 1 {
+    return U256_ZERO;
+  }
+  return u256_sub(SECP_P, a);
+}
+
+/* a mod p for any 256-bit a (one conditional subtraction, a < 2^256 < 2p). */
+fun U256 fp_reduce(U256 a) {
+  var 1 lt = u256_lt(a, SECP_P);
+  if lt == 0 {
+    return u256_sub(a, SECP_P);
+  }
+  return a;
+}
+
+#ifdef SECP_SIMPLE_MUL
+fun U256 fp_mul(U256 a, U256 b) {
+  return u256_mulmod(a, b, SECP_P);
+}
+#else
+/* (a * b) mod p by folding: with t = hi * 2^256 + lo, t == hi * C + lo (mod p)
+   where C = 2^32 + 977.  hi * C < 2^289, so u = hi * C + lo < 2^290 = u_hi * 2^256 + u_lo
+   with u_hi < 2^34; then v = u_hi * C + u_lo < 2^256 + 2^67.  If v overflows 2^256
+   the result is (v - 2^256) + C (< p); else one conditional subtraction of p. */
+fun U256 fp_mul(U256 a, U256 b) {
+  var U512 t = u256_mul_full(a, b);
+  /* hi * C as 5 limbs (m0..m3, m4 < 2^33) */
+  var {1,1} q0 = mul64x64(t.4, SECP_C);
+  var {1,1} q1 = mul64x64(t.5, SECP_C);
+  var {1,1} q2 = mul64x64(t.6, SECP_C);
+  var {1,1} q3 = mul64x64(t.7, SECP_C);
+  var {1,1} c1 = __add_with_carry__(q1.0, q0.1, 0);
+  var {1,1} c2 = __add_with_carry__(q2.0, q1.1, c1.1);
+  var {1,1} c3 = __add_with_carry__(q3.0, q2.1, c2.1);
+  var m4 = q3.1 + c3.1;
+  /* u = (hi * C) + lo */
+  var {1,1} s0 = __add_with_carry__(q0.0, t.0, 0);
+  var {1,1} s1 = __add_with_carry__(c1.0, t.1, s0.1);
+  var {1,1} s2 = __add_with_carry__(c2.0, t.2, s1.1);
+  var {1,1} s3 = __add_with_carry__(c3.0, t.3, s2.1);
+  var uhi = m4 + s3.1;                       /* < 2^34 */
+  /* v = u_hi * C + u_lo; u_hi * C < 2^67 fits <lo, hi> with hi < 8 */
+  var {1,1} w = mul64x64(uhi, SECP_C);
+  var {1,1} v0 = __add_with_carry__(s0.0, w.0, 0);
+  var {1,1} v1 = __add_with_carry__(s1.0, w.1, v0.1);
+  var {1,1} v2 = __add_with_carry__(s2.0, 0, v1.1);
+  var {1,1} v3 = __add_with_carry__(s3.0, 0, v2.1);
+  var U256 r = <v0.0, v1.0, v2.0, v3.0>;
+  if v3.1 == 1 {
+    /* r + C < 2^68: no carry, and < p */
+    return u256_add(r, <SECP_C, 0, 0, 0>);
+  }
+  return fp_reduce(r);
+}
+#endif
+
+fun U256 fp_sqr(U256 a) {
+  return fp_mul(a, a);
+}
+
+/* a ^ e mod p, square-and-multiply from the most significant set bit. */
+fun U256 fp_pow(U256 a, U256 e) {
+  var U256 r = <1, 0, 0, 0>;
+  var started = 0;
+  var i = 256;
+  while i >+ 0 {
+    i = i - 1;
+    if started == 1 {
+      r = fp_mul(r, r);
+    }
+    var 1 bit = u256_bit(e, i);
+    if bit == 1 {
+      r = fp_mul(r, a);
+      started = 1;
+    }
+  }
+  return r;
+}
+
+/* a^(p-2) = a^-1 mod p (Fermat; 0 for a == 0). */
+fun U256 fp_inv(U256 a) {
+  return fp_pow(a, SECP_P_MINUS_2);
+}
+
+/* Square-root candidate a^((p+1)/4) mod p (Lean sqrtCand); the caller checks
+   that its square is a. */
+fun U256 fp_sqrt(U256 a) {
+  return fp_pow(a, SECP_SQRT_EXP);
+}
+
+/* ---------- scalar arithmetic mod n ---------- */
+
+fun U256 fn_mul(U256 a, U256 b) {
+  return u256_mulmod(a, b, SECP_N);
+}
+
+fun U256 fn_add(U256 a, U256 b) {
+  return u256_addmod(a, b, SECP_N);
+}
+
+/* a ^ e mod n. */
+fun U256 fn_pow(U256 a, U256 e) {
+  var U256 r = <1, 0, 0, 0>;
+  var started = 0;
+  var i = 256;
+  while i >+ 0 {
+    i = i - 1;
+    if started == 1 {
+      r = fn_mul(r, r);
+    }
+    var 1 bit = u256_bit(e, i);
+    if bit == 1 {
+      r = fn_mul(r, a);
+      started = 1;
+    }
+  }
+  return r;
+}
+
+/* a^(n-2) = a^-1 mod n (Lean Accel.invMod r n). */
+fun U256 fn_inv(U256 a) {
+  return fn_pow(a, SECP_N_MINUS_2);
+}
+
+/* ---------- Jacobian point arithmetic (points in memory, see header) ---------- */
+
+fun 1 ec_set_infinity(1 pt) {
+  st EC_X(pt), <1, 0, 0, 0>;
+  st EC_Y(pt), <1, 0, 0, 0>;
+  st EC_Z(pt), U256_ZERO;
+  return 0;
+}
+
+fun 1 ec_set_affine(1 pt, U256 x, U256 y) {
+  st EC_X(pt), x;
+  st EC_Y(pt), y;
+  st EC_Z(pt), <1, 0, 0, 0>;
+  return 0;
+}
+
+fun 1 ec_is_infinity(1 pt) {
+  var U256 z = lds U256 EC_Z(pt);
+  return u256_is_zero(z);
+}
+
+/* pt = 2 * pt.  Lean: pointAdd P P is the identity when (y + y) % p == 0, i.e.
+   y == 0 (the curve has no such point, but the case is kept), else curveDbl. */
+fun 1 ec_double(1 pt) {
+  var U256 z = lds U256 EC_Z(pt);
+  var 1 zz = u256_is_zero(z);
+  if zz == 1 {
+    return 0;
+  }
+  var U256 y = lds U256 EC_Y(pt);
+  var 1 yz = u256_is_zero(y);
+  if yz == 1 {
+    ec_set_infinity(pt);
+    return 0;
+  }
+  var U256 x = lds U256 EC_X(pt);
+  var U256 yy = fp_mul(y, y);            /* Y^2 */
+  var U256 s = fp_mul(x, yy);            /* X Y^2 */
+  s = fp_add(s, s);
+  s = fp_add(s, s);                      /* S = 4 X Y^2 */
+  var U256 m = fp_mul(x, x);
+  var U256 m2 = fp_add(m, m);
+  m = fp_add(m2, m);                     /* M = 3 X^2 */
+  var U256 x3 = fp_mul(m, m);
+  var U256 s2 = fp_add(s, s);
+  x3 = fp_sub(x3, s2);                   /* X3 = M^2 - 2S */
+  var U256 t = fp_sub(s, x3);
+  t = fp_mul(m, t);                      /* M (S - X3) */
+  var U256 y4 = fp_mul(yy, yy);
+  y4 = fp_add(y4, y4);
+  y4 = fp_add(y4, y4);
+  y4 = fp_add(y4, y4);                   /* 8 Y^4 */
+  var U256 y3 = fp_sub(t, y4);
+  var U256 z3 = fp_mul(y, z);
+  z3 = fp_add(z3, z3);                   /* Z3 = 2 Y Z */
+  st EC_X(pt), x3;
+  st EC_Y(pt), y3;
+  st EC_Z(pt), z3;
+  return 0;
+}
+
+/* pt = pt + (ax, ay) with (ax, ay) an affine point (Z2 = 1; mixed addition).
+   Same-x case split as Lean pointAdd on the cross-multiplied coordinates. */
+fun 1 ec_add_affine(1 pt, U256 ax, U256 ay) {
+  var U256 z1 = lds U256 EC_Z(pt);
+  var 1 zz = u256_is_zero(z1);
+  if zz == 1 {
+    ec_set_affine(pt, ax, ay);
+    return 0;
+  }
+  var U256 x1 = lds U256 EC_X(pt);
+  var U256 y1 = lds U256 EC_Y(pt);
+  var U256 z1z1 = fp_mul(z1, z1);
+  var U256 u2 = fp_mul(ax, z1z1);        /* U2 = x2 Z1^2 */
+  var U256 s2 = fp_mul(z1, z1z1);
+  s2 = fp_mul(ay, s2);                   /* S2 = y2 Z1^3 */
+  var 1 samex = u256_eq(u2, x1);
+  if samex == 1 {
+    var U256 ysum = fp_add(s2, y1);
+    var 1 ysz = u256_is_zero(ysum);
+    if ysz == 1 {
+      ec_set_infinity(pt);
+      return 0;
+    }
+    ec_double(pt);
+    return 0;
+  }
+  var U256 h = fp_sub(u2, x1);           /* H = U2 - X1 */
+  var U256 rr = fp_sub(s2, y1);          /* R = S2 - Y1 */
+  var U256 hh = fp_mul(h, h);
+  var U256 hhh = fp_mul(h, hh);
+  var U256 v = fp_mul(x1, hh);           /* V = X1 H^2 */
+  var U256 x3 = fp_mul(rr, rr);
+  x3 = fp_sub(x3, hhh);
+  var U256 v2 = fp_add(v, v);
+  x3 = fp_sub(x3, v2);                   /* X3 = R^2 - H^3 - 2V */
+  var U256 y3 = fp_sub(v, x3);
+  y3 = fp_mul(rr, y3);
+  var U256 t = fp_mul(y1, hhh);
+  y3 = fp_sub(y3, t);                    /* Y3 = R (V - X3) - Y1 H^3 */
+  var U256 z3 = fp_mul(z1, h);           /* Z3 = Z1 H */
+  st EC_X(pt), x3;
+  st EC_Y(pt), y3;
+  st EC_Z(pt), z3;
+  return 0;
+}
+
+/* pt = pt + q, both Jacobian (general addition, Lean pointAdd). */
+fun 1 ec_add(1 pt, 1 q) {
+  var U256 z2 = lds U256 EC_Z(q);
+  var 1 z2z = u256_is_zero(z2);
+  if z2z == 1 {
+    return 0;
+  }
+  var U256 z1 = lds U256 EC_Z(pt);
+  var 1 z1z = u256_is_zero(z1);
+  if z1z == 1 {
+    memcpy(pt, q, EC_POINT_BYTES);
+    return 0;
+  }
+  var U256 x1 = lds U256 EC_X(pt);
+  var U256 y1 = lds U256 EC_Y(pt);
+  var U256 x2 = lds U256 EC_X(q);
+  var U256 y2 = lds U256 EC_Y(q);
+  var U256 z1z1 = fp_mul(z1, z1);
+  var U256 z2z2 = fp_mul(z2, z2);
+  var U256 u1 = fp_mul(x1, z2z2);        /* U1 = X1 Z2^2 */
+  var U256 u2 = fp_mul(x2, z1z1);        /* U2 = X2 Z1^2 */
+  var U256 s1 = fp_mul(z2, z2z2);
+  s1 = fp_mul(y1, s1);                   /* S1 = Y1 Z2^3 */
+  var U256 s2 = fp_mul(z1, z1z1);
+  s2 = fp_mul(y2, s2);                   /* S2 = Y2 Z1^3 */
+  var 1 samex = u256_eq(u1, u2);
+  if samex == 1 {
+    var U256 ysum = fp_add(s1, s2);
+    var 1 ysz = u256_is_zero(ysum);
+    if ysz == 1 {
+      ec_set_infinity(pt);
+      return 0;
+    }
+    ec_double(pt);
+    return 0;
+  }
+  var U256 h = fp_sub(u2, u1);
+  var U256 rr = fp_sub(s2, s1);
+  var U256 hh = fp_mul(h, h);
+  var U256 hhh = fp_mul(h, hh);
+  var U256 v = fp_mul(u1, hh);
+  var U256 x3 = fp_mul(rr, rr);
+  x3 = fp_sub(x3, hhh);
+  var U256 v2 = fp_add(v, v);
+  x3 = fp_sub(x3, v2);
+  var U256 y3 = fp_sub(v, x3);
+  y3 = fp_mul(rr, y3);
+  var U256 t = fp_mul(s1, hhh);
+  y3 = fp_sub(y3, t);
+  var U256 z3 = fp_mul(z1, z2);
+  z3 = fp_mul(z3, h);
+  st EC_X(pt), x3;
+  st EC_Y(pt), y3;
+  st EC_Z(pt), z3;
+  return 0;
+}
+
+/* out = k * (ax, ay), MSB-first double-and-add (same group element as the
+   Lean LSB-first scalarMul; k == 0 gives the identity). */
+fun 1 ec_mul(1 out, U256 k, U256 ax, U256 ay) {
+  ec_set_infinity(out);
+  var 1 len = u256_bit_length(k);
+  var i = len;
+  while i >+ 0 {
+    i = i - 1;
+    ec_double(out);
+    var 1 bit = u256_bit(k, i);
+    if bit == 1 {
+      ec_add_affine(out, ax, ay);
+    }
+  }
+  return 0;
+}
+
+/* Normalise pt to affine (X, Y, 1); returns 0 (and leaves pt) at infinity. */
+fun 1 ec_to_affine(1 pt) {
+  var U256 z = lds U256 EC_Z(pt);
+  var 1 zz = u256_is_zero(z);
+  if zz == 1 {
+    return 0;
+  }
+  var U256 zi = fp_inv(z);
+  var U256 zi2 = fp_mul(zi, zi);
+  var U256 zi3 = fp_mul(zi2, zi);
+  var U256 x = lds U256 EC_X(pt);
+  var U256 y = lds U256 EC_Y(pt);
+  x = fp_mul(x, zi2);
+  y = fp_mul(y, zi3);
+  ec_set_affine(pt, x, y);
+  return 1;
+}
+
+/* 1 if (x, y) satisfies y^2 == x^3 + 7 (Lean onCurve). */
+fun 1 ec_on_curve(U256 x, U256 y) {
+  var U256 l = fp_mul(y, y);
+  var U256 r = fp_mul(x, x);
+  r = fp_mul(r, x);
+  r = fp_add(r, SECP_B);
+  return u256_eq(l, r);
+}
+
+/* ---------- recovery ---------- */
+
+/* Lean decompressR: writes the affine R at out (96-byte point); returns 1, or
+   0 on xOutOfRange / xNotSquare. */
+fun 1 secp256k1_decompress_r(U256 r, 1 recid, 1 out) {
+  var U256 x = r;
+  if ((recid >>> 1) & 1) == 1 {
+    var {1,1,1,1,1} xs = u256_add_carry(r, SECP_N);
+    if xs.4 == 1 {
+      return 0;                              /* r + n >= 2^256 > p */
+    }
+    x = <xs.0, xs.1, xs.2, xs.3>;
+  }
+  var 1 xlt = u256_lt(x, SECP_P);
+  if xlt == 0 {
+    return 0;                                /* xOutOfRange */
+  }
+  var U256 rhs = fp_mul(x, x);
+  rhs = fp_mul(rhs, x);
+  rhs = fp_add(rhs, SECP_B);                 /* x^3 + 7 */
+  var U256 y0 = fp_sqrt(rhs);
+  var U256 chk = fp_mul(y0, y0);
+  var 1 sq = u256_eq(chk, rhs);
+  if sq == 0 {
+    return 0;                                /* xNotSquare */
+  }
+  var U256 y = y0;
+  if (y0.0 & 1) != (recid & 1) {
+    y = fp_neg(y0);
+  }
+  ec_set_affine(out, x, y);
+  return 1;
+}
+
+/* Lean recover.  msg_hash: 32 big-endian bytes (e); r, s: signature scalars;
+   recid: bit 0 = parity of R.y, bit 1 selects x = r + n.  On success writes
+   the 64-byte uncompressed point (BE x || BE y) at out and returns 1; returns
+   0 on rOutOfRange / sOutOfRange / xOutOfRange / xNotSquare / atInfinity. */
+fun 1 secp256k1_recover(1 msg_hash, U256 r, U256 s, 1 recid, 1 out) {
+  var 1 rz = u256_is_zero(r);
+  if rz == 1 { return 0; }
+  var 1 rlt = u256_lt(r, SECP_N);
+  if rlt == 0 { return 0; }
+  var 1 sz = u256_is_zero(s);
+  if sz == 1 { return 0; }
+  var 1 slt = u256_lt(s, SECP_N);
+  if slt == 0 { return 0; }
+  var mark = heap_mark();
+  var pq = alloc(EC_POINT_BYTES);            /* accumulates u1 G, then Q */
+  var pr = alloc(EC_POINT_BYTES);            /* R, then u2 R */
+  var 1 okr = secp256k1_decompress_r(r, recid, pr);
+  if okr == 0 {
+    heap_release(mark);
+    return 0;
+  }
+  var U256 rx = lds U256 EC_X(pr);
+  var U256 ry = lds U256 EC_Y(pr);
+  /* e mod n: e < 2^256 < 2n, one conditional subtraction (Lean reduce_once_eq_mod) */
+  var U256 e = u256_from_be(msg_hash, 32);
+  var 1 elt = u256_lt(e, SECP_N);
+  if elt == 0 {
+    e = u256_sub(e, SECP_N);
+  }
+  var U256 rinv = fn_inv(r);
+  var U256 nege = U256_ZERO;                 /* (n - e mod n) mod n */
+  var 1 ez = u256_is_zero(e);
+  if ez == 0 {
+    nege = u256_sub(SECP_N, e);
+  }
+  var U256 u1 = fn_mul(nege, rinv);
+  var U256 u2 = fn_mul(s, rinv);
+  ec_mul(pq, u1, SECP_GX, SECP_GY);
+  ec_mul(pr, u2, rx, ry);
+  ec_add(pq, pr);
+  var 1 ok = ec_to_affine(pq);
+  if ok == 1 {
+    var U256 qx = lds U256 EC_X(pq);
+    var U256 qy = lds U256 EC_Y(pq);
+    u256_to_be32(qx, out);
+    u256_to_be32(qy, out + 32);
+  }
+  heap_release(mark);
+  return ok;
+}
+
+/* Lean addressOfPoint: keccak256 of the 64-byte point at pub64, last 20 bytes
+   to out20.  Requires keccak_init() (called here if it has not been). */
+fun 1 secp256k1_address_of_point(1 pub64, 1 out20) {
+  if keccak_st == 0 {
+    keccak_init();
+  }
+  var mark = heap_mark();
+  var h = alloc(32);
+  keccak256(pub64, 64, h);
+  memcpy(out20, h + 12, 20);
+  heap_release(mark);
+  return 0;
+}
+
+/* Lean ecrecoverAddress (the ECRECOVER precompile): v must be 27 or 28, recid
+   = v - 27; on success writes the 20-byte address at out20 and returns 1. */
+fun 1 secp256k1_ecrecover(1 msg_hash, 1 v, U256 r, U256 s, 1 out20) {
+  if v != 27 {
+    if v != 28 {
+      return 0;
+    }
+  }
+  var mark = heap_mark();
+  var pub = alloc(64);
+  var 1 ok = secp256k1_recover(msg_hash, r, s, v - 27, pub);
+  if ok == 1 {
+    secp256k1_address_of_point(pub, out20);
+  }
+  heap_release(mark);
+  return ok;
+}

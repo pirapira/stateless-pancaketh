@@ -1,0 +1,1565 @@
+/* evm.pnk -- the EVM machine layer and non-system instructions: port of
+   Vm.lean (BlockEnvironment, TransactionEnvironment, Message, Evm, stack,
+   memory, gas charging), InstructionsCore.lean, InstructionsEnv.lean,
+   Runtime.lean (jump destinations) and Gas.lean (memory/call gas).
+   The current frame is the global `ev`; child frames swap it (Interpreter.lean
+   frame model). EvmErr carries the ExceptionalHalt/Revert taxonomy.
+   Requires: lib/*, state.pnk, header.pnk (calculate_blob_gas_price), tx.pnk. */
+
+exception EvmErr : 1;
+#define E_REVERT 1
+#define E_STACK_UNDERFLOW 2
+#define E_STACK_OVERFLOW 3
+#define E_OUT_OF_GAS 4
+#define E_INVALID_OPCODE 5
+#define E_INVALID_JUMPDEST 6
+#define E_STACK_DEPTH_LIMIT 7
+#define E_WRITE_IN_STATIC 8
+#define E_OUT_OF_BOUNDS_READ 9
+#define E_INVALID_PARAMETER 10
+#define E_INVALID_CONTRACT_PREFIX 11
+#define E_ADDRESS_COLLISION 12
+#define E_KZG_PROOF 13
+
+/* BlockEnvironment */
+#define BE_CHAIN_ID 0
+#define BE_GAS_LIMIT 8
+#define BE_BLOCK_HASHES 16
+#define BE_BLOCK_HASHES_N 24
+#define BE_COINBASE 32
+#define BE_NUMBER 40
+#define BE_BASE_FEE 48        /* U256 */
+#define BE_TIME 80
+#define BE_PREV_RANDAO 88
+#define BE_EXCESS_BLOB_GAS 96
+#define BE_PBBR 104
+#define BE_SLOT 112
+#define BE_PUBKEYS 120
+#define BE_PUBKEYS_N 128
+#define BE_SIZE 136
+
+/* TransactionEnvironment */
+#define TE_ORIGIN 0
+#define TE_RECIPIENT 8        /* 0 = creation */
+#define TE_VALUE 16           /* U256 */
+#define TE_GAS_PRICE 48       /* U256 */
+#define TE_GAS 80
+#define TE_RESERVOIR 88
+#define TE_AL_ADDRS 96        /* ptr to n address ptrs */
+#define TE_AL_ADDRS_N 104
+#define TE_AL_KEYS 112        /* ptr to n*52 bytes (addr||key) */
+#define TE_AL_KEYS_N 120
+#define TE_BLOB_HASHES 128
+#define TE_BLOB_HASHES_N 136
+#define TE_AUTHS 144          /* ptr to authorization records (tx.pnk layout) */
+#define TE_AUTHS_N 152
+#define TE_INDEX_SOME 160
+#define TE_INDEX 168
+#define TE_TX_HASH 176
+#define TE_INTRINSIC_REGULAR 184
+#define TE_INTRINSIC_STATE 192
+#define TE_SIZE 200
+
+/* Message */
+#define MSG_BE 0
+#define MSG_TE 8
+#define MSG_CALLER 16
+#define MSG_TARGET 24         /* 0 = creation */
+#define MSG_CURRENT_TARGET 32
+#define MSG_GAS 40
+#define MSG_RESERVOIR 48
+#define MSG_VALUE 56          /* U256 */
+#define MSG_DATA 88
+#define MSG_DATA_N 96
+#define MSG_CODE_ADDRESS 104  /* 0 = none */
+#define MSG_CODE 112
+#define MSG_CODE_N 120
+#define MSG_DEPTH 128
+#define MSG_TRANSFER_VALUE 136
+#define MSG_IS_STATIC 144
+#define MSG_ACC_ADDRS 152     /* htab(20) */
+#define MSG_ACC_KEYS 160      /* htab(52) */
+#define MSG_DISABLE_PRECOMPILES 168
+#define MSG_SIZE 176
+
+/* Evm frame */
+#define EV_PC 0
+#define EV_STACK 8
+#define EV_SP 16
+#define EV_MEM 24
+#define EV_MEM_LEN 32
+#define EV_MEM_CAP 40
+#define EV_CODE 48
+#define EV_CODE_N 56
+#define EV_GAS_LEFT 64
+#define EV_STATE_GAS_LEFT 72
+#define EV_JUMPDESTS 80
+#define EV_LOGS 88            /* growable list of log record ptrs (8-byte elems) */
+#define EV_REFUND 96          /* signed */
+#define EV_RUNNING 104
+#define EV_MSG 112
+#define EV_OUTPUT 120
+#define EV_OUTPUT_N 128
+#define EV_DELETE 136         /* htab(20) accounts_to_delete */
+#define EV_RETDATA 144
+#define EV_RETDATA_N 152
+#define EV_ERROR 160          /* 0 = none */
+#define EV_ACC_ADDRS 168
+#define EV_ACC_KEYS 176
+#define EV_REGULAR_GAS_USED 184
+#define EV_STATE_GAS_SPILLED 192
+#define EV_AUTH_STATE_GAS_USED 200   /* signed */
+#define EV_SIZE 208
+
+/* Log record */
+#define LOG_ADDRESS 0
+#define LOG_TOPICS 8
+#define LOG_TOPICS_N 16
+#define LOG_DATA 24
+#define LOG_DATA_N 32
+#define LOG_SIZE 40
+
+/* Gas constants (Gas.lean GasCosts / StateGasCosts / InstructionsCore) */
+#define G_BASE 2
+#define G_VERY_LOW 3
+#define G_LOW 5
+#define G_MID 8
+#define G_HIGH 10
+#define G_WARM_ACCESS 100
+#define G_COLD_ACCOUNT_ACCESS 3000
+#define G_COLD_STORAGE_ACCESS 3000
+#define G_STORAGE_WRITE 10000
+#define G_CALL_VALUE 10300
+#define G_CALL_STIPEND 2300
+#define G_ACCOUNT_WRITE 8000
+#define G_CODE_DEPOSIT_PER_BYTE 200
+#define G_CODE_INIT_PER_WORD 2
+#define G_CREATE_ACCESS 11000
+#define G_MEMORY_PER_WORD 3
+#define G_FAST_STEP 5
+#define G_REFUND_STORAGE_CLEAR 12480
+#define G_KECCAK256_BASE 30
+#define G_KECCAK256_PER_WORD 6
+#define G_COPY_PER_WORD 3
+#define G_LOG_BASE 375
+#define G_LOG_DATA_PER_BYTE 8
+#define G_LOG_TOPIC 375
+#define G_EXP_BASE 10
+#define G_EXP_PER_BYTE 50
+#define G_SELFDESTRUCT_BASE 5000
+#define G_BLOCKHASH 20
+#define SG_COST_PER_STATE_BYTE 1530
+#define SG_STORAGE_SET 97920
+#define SG_NEW_ACCOUNT 183600
+#define SG_AUTH_BASE 35190
+#define STACK_DEPTH_LIMIT 1024
+#define MAX_CODE_SIZE 65536
+#define MAX_INIT_CODE_SIZE 131072
+#define WORD_MAX 18446744073709551615
+
+var 1 ev = 0;          /* current frame */
+
+/* ---- small helpers ---------------------------------------------------- */
+
+/* U256 -> word, saturating at WORD_MAX. */
+fun 1 sat_word({1,1,1,1} v) {
+  if (v.1 | v.2 | v.3) != 0 {
+    return WORD_MAX;
+  }
+  return v.0;
+}
+
+fun 1 add_sat(1 a, 1 b) {
+  var s = a + b;
+  if s <+ a {
+    return WORD_MAX;
+  }
+  return s;
+}
+
+/* ceil32(value) saturating */
+fun 1 ceil32(1 v) {
+  var r = v & 31;
+  if r == 0 {
+    return v;
+  }
+  var 1 s = add_sat(v, 32 - r);
+  return s;
+}
+
+fun 1 words_of(1 n) {
+  var 1 c = ceil32(n);
+  return c >>> 5;
+}
+
+/* to_address_masked: low 20 bytes of a U256 -> fresh 20-byte buffer */
+fun 1 to_address_masked({1,1,1,1} v) {
+  var 1 a = alloc(24);
+  st_be32(a, v.2);
+  st_be64(a + 4, v.1);
+  st_be64(a + 12, v.0);
+  return a;
+}
+
+/* Address (20 bytes) -> U256 */
+fun {1,1,1,1} address_to_u256(1 a) {
+  var {1,1,1,1} v = u256_from_be(a, 20);
+  return v;
+}
+
+fun 1 is_valid_delegation(1 code, 1 n) {
+  if n != 23 {
+    return 0;
+  }
+  if ((ld8 code) == 239) && ((ld8 (code + 1)) == 1) && ((ld8 (code + 2)) == 0) {
+    return 1;
+  }
+  return 0;
+}
+
+/* ---- gas (Vm.lean) ----------------------------------------------------------- */
+
+fun 1 check_gas(1 amount) {
+  if (lds 1 (ev + EV_GAS_LEFT)) <+ amount {
+    throw EvmErr E_OUT_OF_GAS;
+  }
+  return 0;
+}
+
+fun 1 charge_gas(1 amount) {
+  var gl = lds 1 (ev + EV_GAS_LEFT);
+  if gl <+ amount {
+    throw EvmErr E_OUT_OF_GAS;
+  }
+  st ev + EV_GAS_LEFT, gl - amount;
+  st ev + EV_REGULAR_GAS_USED, (lds 1 (ev + EV_REGULAR_GAS_USED)) + amount;
+  return 0;
+}
+
+fun 1 charge_state_gas(1 amount) {
+  var sgl = lds 1 (ev + EV_STATE_GAS_LEFT);
+  var gl = lds 1 (ev + EV_GAS_LEFT);
+  if sgl >=+ amount {
+    st ev + EV_STATE_GAS_LEFT, sgl - amount;
+    return 0;
+  }
+  var 1 tot = add_sat(sgl, gl);
+  if tot >=+ amount {
+    var rem = amount - sgl;
+    st ev + EV_STATE_GAS_LEFT, 0;
+    st ev + EV_GAS_LEFT, gl - rem;
+    st ev + EV_STATE_GAS_SPILLED, (lds 1 (ev + EV_STATE_GAS_SPILLED)) + rem;
+    return 0;
+  }
+  throw EvmErr E_OUT_OF_GAS;
+  return 0;
+}
+
+fun 1 credit_state_gas_refund(1 amount) {
+  var spilled = lds 1 (ev + EV_STATE_GAS_SPILLED);
+  var 1 from_gl = min(amount, spilled);
+  st ev + EV_GAS_LEFT, (lds 1 (ev + EV_GAS_LEFT)) + from_gl;
+  st ev + EV_STATE_GAS_SPILLED, spilled - from_gl;
+  st ev + EV_STATE_GAS_LEFT, (lds 1 (ev + EV_STATE_GAS_LEFT)) + (amount - from_gl);
+  return 0;
+}
+
+/* frame_state_gas_used (signed): reservoir - state_gas_left + spilled */
+fun 1 frame_state_gas_used(1 e) {
+  var msg = lds 1 (e + EV_MSG);
+  return (lds 1 (msg + MSG_RESERVOIR)) - (lds 1 (e + EV_STATE_GAS_LEFT)) + (lds 1 (e + EV_STATE_GAS_SPILLED));
+}
+
+fun 1 refill_frame_state_gas() {
+  var msg = lds 1 (ev + EV_MSG);
+  st ev + EV_GAS_LEFT, (lds 1 (ev + EV_GAS_LEFT)) + (lds 1 (ev + EV_STATE_GAS_SPILLED));
+  st ev + EV_STATE_GAS_LEFT, lds 1 (msg + MSG_RESERVOIR);
+  st ev + EV_STATE_GAS_SPILLED, 0;
+  return 0;
+}
+
+/* ---- stack (Vm.lean stackPop / stackPush) ---------------------------------------- */
+
+fun {1,1,1,1} stack_pop() {
+  var sp = lds 1 (ev + EV_SP);
+  if sp == 0 {
+    throw EvmErr E_STACK_UNDERFLOW;
+  }
+  sp = sp - 1;
+  st ev + EV_SP, sp;
+  return lds {1,1,1,1} ((lds 1 (ev + EV_STACK)) + sp * 32);
+}
+
+fun 1 stack_push({1,1,1,1} v) {
+  var sp = lds 1 (ev + EV_SP);
+  if sp == 1024 {
+    throw EvmErr E_STACK_OVERFLOW;
+  }
+  st (lds 1 (ev + EV_STACK)) + sp * 32, v;
+  st ev + EV_SP, sp + 1;
+  return 0;
+}
+
+fun 1 stack_push_word(1 w) {
+  stack_push(<w, 0, 0, 0>);
+  return 0;
+}
+
+fun 1 stack_push_bool(1 b) {
+  if b != 0 {
+    stack_push(<1, 0, 0, 0>);
+  } else {
+    stack_push(<0, 0, 0, 0>);
+  }
+  return 0;
+}
+
+/* ---- memory (Vm.lean / Gas.lean) ------------------------------------------------ */
+
+fun 1 memory_gas_cost(1 size) {
+  var 1 w = words_of(size);
+  var {1,1} sq = mul64x64(w, w);
+  if sq.1 != 0 {
+    return WORD_MAX;
+  }
+  var 1 a = add_sat(w * G_MEMORY_PER_WORD, sq.0 >>> 9);
+  return a;
+}
+
+/* calculate_gas_extend_memory for one (start, size) extension; returns
+   <cost, expand_by>. Saturates on absurd offsets (cost then exceeds gas). */
+fun {1,1} extend_memory_cost1({1,1,1,1} start, {1,1,1,1} size) {
+  var 1 z = u256_is_zero(size);
+  if z != 0 {
+    return <0, 0>;
+  }
+  var 1 s = sat_word(start);
+  var 1 n = sat_word(size);
+  var 1 endp = add_sat(s, n);
+  if endp == WORD_MAX {
+    return <WORD_MAX, 0>;
+  }
+  var cur = lds 1 (ev + EV_MEM_LEN);
+  var 1 before = ceil32(cur);
+  var 1 after = ceil32(endp);
+  if after <=+ before {
+    return <0, 0>;
+  }
+  var 1 ca = memory_gas_cost(after);
+  var 1 cb = memory_gas_cost(before);
+  if ca == WORD_MAX {
+    return <WORD_MAX, 0>;
+  }
+  return <ca - cb, after - before>;
+}
+
+/* Two extensions (call family): sequential like the reference. */
+fun {1,1} extend_memory_cost2({1,1,1,1} s1, {1,1,1,1} n1, {1,1,1,1} s2, {1,1,1,1} n2) {
+  var {1,1} a = extend_memory_cost1(s1, n1);
+  if a.0 == WORD_MAX {
+    return a;
+  }
+  /* second extension is measured against the size after the first */
+  var saved = lds 1 (ev + EV_MEM_LEN);
+  st ev + EV_MEM_LEN, saved + a.1;
+  var {1,1} b = extend_memory_cost1(s2, n2);
+  st ev + EV_MEM_LEN, saved;
+  if b.0 == WORD_MAX {
+    return b;
+  }
+  return <a.0 + b.0, a.1 + b.1>;
+}
+
+/* Grow frame memory by expand_by zero bytes. */
+fun 1 extend_memory(1 expand_by) {
+  if expand_by == 0 {
+    return 0;
+  }
+  var len = lds 1 (ev + EV_MEM_LEN);
+  var cap = lds 1 (ev + EV_MEM_CAP);
+  var nlen = len + expand_by;
+  if nlen >+ cap {
+    var ncap = cap * 2;
+    if ncap <+ nlen {
+      ncap = nlen + 1024;
+    }
+    var 1 nm = alloc(ncap);
+    memcpy(nm, lds 1 (ev + EV_MEM), len);
+    st ev + EV_MEM, nm;
+    st ev + EV_MEM_CAP, ncap;
+  }
+  memzero((lds 1 (ev + EV_MEM)) + len, expand_by);
+  st ev + EV_MEM_LEN, nlen;
+  return 0;
+}
+
+/* Charge base + memory extension, then extend. */
+fun 1 charge_with_memory(1 base, {1,1,1,1} start, {1,1,1,1} size) {
+  var {1,1} x = extend_memory_cost1(start, size);
+  var 1 total = add_sat(base, x.0);
+  charge_gas(total);
+  extend_memory(x.1);
+  return 0;
+}
+
+/* buffer_read(buffer, start, size): zero padded copy into a fresh buffer.
+   start/size are saturated words (callers already bounded size by gas). */
+fun 1 buffer_read(1 buf, 1 buf_len, 1 start, 1 size, 1 out) {
+  var avail = 0;
+  if start <+ buf_len {
+    avail = buf_len - start;
+    if avail >+ size {
+      avail = size;
+    }
+    memcpy(out, buf + start, avail);
+  }
+  memzero(out + avail, size - avail);
+  return 0;
+}
+
+/* Pointer into frame memory at a (gas-covered) offset. */
+fun 1 mem_ptr(1 off) {
+  return (lds 1 (ev + EV_MEM)) + off;
+}
+
+/* ---- jump destinations (Runtime.lean) ------------------------------------------- */
+
+fun 1 compute_jumpdests(1 code, 1 n) {
+  var 1 bm = alloc(((n + 63) >>> 6) * 8 + 8);
+  memzero(bm, ((n + 63) >>> 6) * 8 + 8);
+  var pc = 0;
+  while pc <+ n {
+    var op = ld8 (code + pc);
+    var adv = 1;
+    if op == 91 {
+      st bm + (pc >>> 6) * 8, (lds 1 (bm + (pc >>> 6) * 8)) | (1 << (pc & 63));
+    } else {
+      if (op >=+ 96) && (op <=+ 127) {
+        adv = op - 96 + 2;
+      } else {
+        if (op == 230) || (op == 231) {
+          adv = 2;
+          if pc + 1 <+ n {
+            var nx = ld8 (code + pc + 1);
+            if (nx >=+ 91) && (nx <=+ 127) {
+              adv = 1;
+            }
+          }
+        }
+        if op == 232 {
+          adv = 2;
+          if pc + 1 <+ n {
+            var nx2 = ld8 (code + pc + 1);
+            if (nx2 >=+ 82) && (nx2 <=+ 127) {
+              adv = 1;
+            }
+          }
+        }
+      }
+    }
+    pc = pc + adv;
+  }
+  return bm;
+}
+
+fun 1 is_valid_jumpdest({1,1,1,1} dest) {
+  if (dest.1 | dest.2 | dest.3) != 0 {
+    return 0;
+  }
+  var d = dest.0;
+  if d >=+ (lds 1 (ev + EV_CODE_N)) {
+    return 0;
+  }
+  var bm = lds 1 (ev + EV_JUMPDESTS);
+  return ((lds 1 (bm + (d >>> 6) * 8)) >>> (d & 63)) & 1;
+}
+
+/* ---- frame construction --------------------------------------------------------- */
+
+fun 1 msg_new() {
+  var 1 m = alloc(MSG_SIZE);
+  memzero(m, MSG_SIZE);
+  return m;
+}
+
+/* A fresh frame for a message (process_message's childEvm). */
+fun 1 frame_new(1 msg) {
+  var 1 e = alloc(EV_SIZE);
+  memzero(e, EV_SIZE);
+  var 1 stk = alloc(1024 * 32);
+  st e + EV_STACK, stk;
+  var 1 mem = alloc(1024);
+  st e + EV_MEM, mem;
+  st e + EV_MEM_CAP, 1024;
+  st e + EV_CODE, lds 1 (msg + MSG_CODE);
+  st e + EV_CODE_N, lds 1 (msg + MSG_CODE_N);
+  st e + EV_GAS_LEFT, lds 1 (msg + MSG_GAS);
+  st e + EV_STATE_GAS_LEFT, lds 1 (msg + MSG_RESERVOIR);
+  var 1 jd = compute_jumpdests(lds 1 (msg + MSG_CODE), lds 1 (msg + MSG_CODE_N));
+  st e + EV_JUMPDESTS, jd;
+  var 1 logs = lst_new(8, 4);
+  st e + EV_LOGS, logs;
+  st e + EV_RUNNING, 1;
+  st e + EV_MSG, msg;
+  var 1 del = htab_new(20, 4);
+  st e + EV_DELETE, del;
+  st e + EV_ACC_ADDRS, lds 1 (msg + MSG_ACC_ADDRS);
+  st e + EV_ACC_KEYS, lds 1 (msg + MSG_ACC_KEYS);
+  var 1 empty = alloc(8);
+  st e + EV_OUTPUT, empty;
+  st e + EV_RETDATA, empty;
+  return e;
+}
+
+fun 1 pc_add(1 n) {
+  st ev + EV_PC, (lds 1 (ev + EV_PC)) + n;
+  return 0;
+}
+
+fun 1 cur_msg() {
+  return lds 1 (ev + EV_MSG);
+}
+
+fun 1 require_not_static() {
+  if (lds 1 ((lds 1 (ev + EV_MSG)) + MSG_IS_STATIC)) != 0 {
+    throw EvmErr E_WRITE_IN_STATIC;
+  }
+  return 0;
+}
+
+/* accessed sets */
+fun 1 is_warm_address(1 addr) {
+  var 1 h = htab_has(lds 1 (ev + EV_ACC_ADDRS), addr);
+  return h;
+}
+
+fun 1 warm_address(1 addr) {
+  htab_set(lds 1 (ev + EV_ACC_ADDRS), addr, 1);
+  return 0;
+}
+
+/* EIP-2929 access cost for an address (warms it). */
+fun 1 access_gas_cost(1 addr) {
+  var 1 w = is_warm_address(addr);
+  if w != 0 {
+    return G_WARM_ACCESS;
+  }
+  warm_address(addr);
+  return G_COLD_ACCOUNT_ACCESS;
+}
+
+/* ---- arithmetic / comparison / bitwise (InstructionsCore.lean) ------------------- */
+
+fun 1 op_add() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  charge_gas(3);
+  var {1,1,1,1} r = u256_add(x, y);
+  stack_push(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_mul() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  charge_gas(5);
+  var {1,1,1,1} r = u256_mul(x, y);
+  stack_push(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_sub() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  charge_gas(3);
+  var {1,1,1,1} r = u256_sub(x, y);
+  stack_push(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_div() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  charge_gas(5);
+  var {1,1,1,1} r = u256_div(x, y);
+  stack_push(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_sdiv() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  charge_gas(5);
+  var {1,1,1,1} r = u256_sdiv(x, y);
+  stack_push(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_mod() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  charge_gas(5);
+  var {1,1,1,1} r = u256_mod(x, y);
+  stack_push(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_smod() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  charge_gas(5);
+  var {1,1,1,1} r = u256_smod(x, y);
+  stack_push(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_addmod() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  var {1,1,1,1} z = stack_pop();
+  charge_gas(8);
+  var {1,1,1,1} r = u256_addmod(x, y, z);
+  stack_push(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_mulmod() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  var {1,1,1,1} z = stack_pop();
+  charge_gas(8);
+  var {1,1,1,1} r = u256_mulmod(x, y, z);
+  stack_push(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_exp() {
+  var {1,1,1,1} base = stack_pop();
+  var {1,1,1,1} exponent = stack_pop();
+  var 1 nb = u256_byte_length(exponent);
+  charge_gas(G_EXP_BASE + G_EXP_PER_BYTE * nb);
+  var {1,1,1,1} r = u256_exp(base, exponent);
+  stack_push(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_signextend() {
+  var {1,1,1,1} b = stack_pop();
+  var {1,1,1,1} x = stack_pop();
+  charge_gas(5);
+  var 1 bw = sat_word(b);
+  var {1,1,1,1} r = u256_signextend(bw, x);
+  stack_push(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_lt() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  charge_gas(3);
+  var 1 r = u256_lt(x, y);
+  stack_push_bool(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_gt() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  charge_gas(3);
+  var 1 r = u256_gt(x, y);
+  stack_push_bool(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_slt() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  charge_gas(3);
+  var 1 r = u256_slt(x, y);
+  stack_push_bool(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_sgt() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  charge_gas(3);
+  var 1 r = u256_sgt(x, y);
+  stack_push_bool(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_eq() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  charge_gas(3);
+  var 1 r = u256_eq(x, y);
+  stack_push_bool(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_iszero() {
+  var {1,1,1,1} x = stack_pop();
+  charge_gas(3);
+  var 1 r = u256_is_zero(x);
+  stack_push_bool(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_and() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  charge_gas(3);
+  stack_push(<x.0 & y.0, x.1 & y.1, x.2 & y.2, x.3 & y.3>);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_or() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  charge_gas(3);
+  stack_push(<x.0 | y.0, x.1 | y.1, x.2 | y.2, x.3 | y.3>);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_xor() {
+  var {1,1,1,1} x = stack_pop();
+  var {1,1,1,1} y = stack_pop();
+  charge_gas(3);
+  stack_push(<x.0 ^ y.0, x.1 ^ y.1, x.2 ^ y.2, x.3 ^ y.3>);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_not() {
+  var {1,1,1,1} x = stack_pop();
+  charge_gas(3);
+  stack_push(<x.0 ^ WORD_MAX, x.1 ^ WORD_MAX, x.2 ^ WORD_MAX, x.3 ^ WORD_MAX>);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_byte() {
+  var {1,1,1,1} i = stack_pop();
+  var {1,1,1,1} x = stack_pop();
+  charge_gas(3);
+  var 1 iw = sat_word(i);
+  var 1 r = u256_byte(iw, x);
+  stack_push_word(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_shl() {
+  var {1,1,1,1} sh = stack_pop();
+  var {1,1,1,1} x = stack_pop();
+  charge_gas(3);
+  var 1 n = sat_word(sh);
+  var {1,1,1,1} r = u256_shl(x, n);
+  stack_push(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_shr() {
+  var {1,1,1,1} sh = stack_pop();
+  var {1,1,1,1} x = stack_pop();
+  charge_gas(3);
+  var 1 n = sat_word(sh);
+  var {1,1,1,1} r = u256_shr(x, n);
+  stack_push(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_sar() {
+  var {1,1,1,1} sh = stack_pop();
+  var {1,1,1,1} x = stack_pop();
+  charge_gas(3);
+  var 1 n = sat_word(sh);
+  var {1,1,1,1} r = u256_sar(x, n);
+  stack_push(r);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_clz() {
+  var {1,1,1,1} x = stack_pop();
+  charge_gas(5);
+  var 1 bl = u256_bit_length(x);
+  stack_push_word(256 - bl);
+  pc_add(1);
+  return 0;
+}
+
+/* ---- keccak ---------------------------------------------------------------------- */
+
+fun 1 op_keccak() {
+  var {1,1,1,1} start = stack_pop();
+  var {1,1,1,1} size = stack_pop();
+  var 1 n = sat_word(size);
+  var 1 w = words_of(n);
+  var {1,1} x = extend_memory_cost1(start, size);
+  var 1 cost = add_sat(G_KECCAK256_BASE + G_KECCAK256_PER_WORD * w, x.0);
+  charge_gas(cost);
+  extend_memory(x.1);
+  var 1 mark = heap_mark();
+  var 1 out = alloc(32);
+  var 1 s = sat_word(start);
+  keccak256(mem_ptr(s), n, out);
+  var {1,1,1,1} v = u256_from_be(out, 32);
+  heap_release(mark);
+  stack_push(v);
+  pc_add(1);
+  return 0;
+}
+
+/* ---- control flow ----------------------------------------------------------------- */
+
+fun 1 op_stop() {
+  st ev + EV_RUNNING, 0;
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_jump() {
+  var {1,1,1,1} dest = stack_pop();
+  charge_gas(8);
+  var 1 ok = is_valid_jumpdest(dest);
+  if ok == 0 {
+    throw EvmErr E_INVALID_JUMPDEST;
+  }
+  st ev + EV_PC, dest.0;
+  return 0;
+}
+
+fun 1 op_jumpi() {
+  var {1,1,1,1} dest = stack_pop();
+  var {1,1,1,1} cond = stack_pop();
+  charge_gas(10);
+  var 1 z = u256_is_zero(cond);
+  if z != 0 {
+    pc_add(1);
+    return 0;
+  }
+  var 1 ok = is_valid_jumpdest(dest);
+  if ok == 0 {
+    throw EvmErr E_INVALID_JUMPDEST;
+  }
+  st ev + EV_PC, dest.0;
+  return 0;
+}
+
+fun 1 op_pc() {
+  charge_gas(2);
+  stack_push_word(lds 1 (ev + EV_PC));
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_gas() {
+  charge_gas(2);
+  stack_push_word(lds 1 (ev + EV_GAS_LEFT));
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_jumpdest() {
+  charge_gas(1);
+  pc_add(1);
+  return 0;
+}
+
+/* ---- memory instructions ----------------------------------------------------------- */
+
+fun 1 op_mstore() {
+  var {1,1,1,1} start = stack_pop();
+  var {1,1,1,1} value = stack_pop();
+  charge_with_memory(3, start, <32, 0, 0, 0>);
+  var 1 s = sat_word(start);
+  u256_to_be32(value, mem_ptr(s));
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_mstore8() {
+  var {1,1,1,1} start = stack_pop();
+  var {1,1,1,1} value = stack_pop();
+  charge_with_memory(3, start, <1, 0, 0, 0>);
+  var 1 s = sat_word(start);
+  st8 mem_ptr(s), value.0 & 255;
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_mload() {
+  var {1,1,1,1} start = stack_pop();
+  charge_with_memory(3, start, <32, 0, 0, 0>);
+  var 1 s = sat_word(start);
+  var {1,1,1,1} v = u256_from_be(mem_ptr(s), 32);
+  stack_push(v);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_msize() {
+  charge_gas(2);
+  stack_push_word(lds 1 (ev + EV_MEM_LEN));
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_mcopy() {
+  var {1,1,1,1} dst = stack_pop();
+  var {1,1,1,1} src = stack_pop();
+  var {1,1,1,1} len = stack_pop();
+  var 1 n = sat_word(len);
+  var 1 w = words_of(n);
+  var {1,1} x = extend_memory_cost2(src, len, dst, len);
+  var 1 cost = add_sat(3 + G_COPY_PER_WORD * w, x.0);
+  charge_gas(cost);
+  extend_memory(x.1);
+  if n != 0 {
+    var 1 d = sat_word(dst);
+    var 1 s = sat_word(src);
+    var 1 mark = heap_mark();
+    var 1 tmp = alloc(n);
+    memcpy(tmp, mem_ptr(s), n);
+    memcpy(mem_ptr(d), tmp, n);
+    heap_release(mark);
+  }
+  pc_add(1);
+  return 0;
+}
+
+/* ---- stack instructions ------------------------------------------------------------- */
+
+fun 1 op_pop() {
+  var {1,1,1,1} x = stack_pop();
+  charge_gas(2);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_push(1 nbytes) {
+  if nbytes == 0 {
+    charge_gas(2);
+  } else {
+    charge_gas(3);
+  }
+  var 1 mark = heap_mark();
+  var 1 tmp = alloc(32);
+  buffer_read(lds 1 (ev + EV_CODE), lds 1 (ev + EV_CODE_N), (lds 1 (ev + EV_PC)) + 1, nbytes, tmp);
+  var {1,1,1,1} v = u256_from_be(tmp, nbytes);
+  heap_release(mark);
+  stack_push(v);
+  pc_add(1 + nbytes);
+  return 0;
+}
+
+/* dup_n(item_number 0-indexed from top) */
+fun 1 op_dup(1 item) {
+  charge_gas(3);
+  var sp = lds 1 (ev + EV_SP);
+  if item >=+ sp {
+    throw EvmErr E_STACK_UNDERFLOW;
+  }
+  var {1,1,1,1} v = lds {1,1,1,1} ((lds 1 (ev + EV_STACK)) + (sp - 1 - item) * 32);
+  stack_push(v);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 stack_swap_positions(1 i, 1 j) {
+  var sp = lds 1 (ev + EV_SP);
+  var stk = lds 1 (ev + EV_STACK);
+  var pa = stk + (sp - 1 - i) * 32;
+  var pb = stk + (sp - 1 - j) * 32;
+  var {1,1,1,1} a = lds {1,1,1,1} pa;
+  var {1,1,1,1} b = lds {1,1,1,1} pb;
+  st pa, b;
+  st pb, a;
+  return 0;
+}
+
+/* swap_n(item_number): top with position item_number from the top */
+fun 1 op_swap(1 item) {
+  charge_gas(3);
+  if item >=+ (lds 1 (ev + EV_SP)) {
+    throw EvmErr E_STACK_UNDERFLOW;
+  }
+  stack_swap_positions(0, item);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 code_imm() {
+  var pc = lds 1 (ev + EV_PC);
+  if pc + 1 <+ (lds 1 (ev + EV_CODE_N)) {
+    return ld8 ((lds 1 (ev + EV_CODE)) + pc + 1);
+  }
+  return 0;
+}
+
+/* decode_single(x) */
+fun 1 decode_single(1 x) {
+  if (x <=+ 90) || (x >=+ 128) {
+    return (x + 145) & 255;
+  }
+  throw EvmErr E_INVALID_PARAMETER;
+  return 0;
+}
+
+fun 1 op_dupn() {
+  charge_gas(3);
+  var 1 imm = code_imm();
+  var 1 n = decode_single(imm);
+  if n >+ (lds 1 (ev + EV_SP)) {
+    throw EvmErr E_STACK_UNDERFLOW;
+  }
+  var sp = lds 1 (ev + EV_SP);
+  var {1,1,1,1} v = lds {1,1,1,1} ((lds 1 (ev + EV_STACK)) + (sp - n) * 32);
+  stack_push(v);
+  pc_add(2);
+  return 0;
+}
+
+fun 1 op_swapn() {
+  charge_gas(3);
+  var 1 imm = code_imm();
+  var 1 n = decode_single(imm);
+  if n + 1 >+ (lds 1 (ev + EV_SP)) {
+    throw EvmErr E_STACK_UNDERFLOW;
+  }
+  stack_swap_positions(0, n);
+  pc_add(2);
+  return 0;
+}
+
+fun 1 op_exchange() {
+  charge_gas(3);
+  var 1 imm = code_imm();
+  if (imm >+ 81) && (imm <+ 128) {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  var k = imm ^ 143;
+  var q = k >>> 4;
+  var r = k & 15;
+  var n = 0;
+  var m = 0;
+  if q <+ r {
+    n = q + 1;
+    m = r + 1;
+  } else {
+    n = r + 1;
+    m = 29 - q;
+  }
+  var 1 mx = max(n, m);
+  if mx + 1 >+ (lds 1 (ev + EV_SP)) {
+    throw EvmErr E_STACK_UNDERFLOW;
+  }
+  stack_swap_positions(n, m);
+  pc_add(2);
+  return 0;
+}
+
+/* ---- logs --------------------------------------------------------------------------- */
+
+fun 1 log_append(1 e, 1 log) {
+  var 1 slot = lst_push(lds 1 (e + EV_LOGS), 8);
+  st slot, log;
+  return 0;
+}
+
+fun 1 op_log(1 ntopics) {
+  var {1,1,1,1} start = stack_pop();
+  var {1,1,1,1} size = stack_pop();
+  var 1 topics = alloc(ntopics * 32 + 8);
+  var i = 0;
+  while i < ntopics {
+    var {1,1,1,1} t = stack_pop();
+    u256_to_be32(t, topics + i * 32);
+    i = i + 1;
+  }
+  var 1 n = sat_word(size);
+  var {1,1} x = extend_memory_cost1(start, size);
+  var {1,1} dc = mul64x64(G_LOG_DATA_PER_BYTE, n);
+  var 1 cost = add_sat(G_LOG_BASE + G_LOG_TOPIC * ntopics, x.0);
+  if dc.1 != 0 {
+    cost = WORD_MAX;
+  } else {
+    cost = add_sat(cost, dc.0);
+  }
+  charge_gas(cost);
+  extend_memory(x.1);
+  require_not_static();
+  var 1 log = alloc(LOG_SIZE);
+  st log + LOG_ADDRESS, lds 1 ((lds 1 (ev + EV_MSG)) + MSG_CURRENT_TARGET);
+  st log + LOG_TOPICS, topics;
+  st log + LOG_TOPICS_N, ntopics;
+  var 1 data = alloc(n + 8);
+  var 1 s = sat_word(start);
+  memcpy(data, mem_ptr(s), n);
+  st log + LOG_DATA, data;
+  st log + LOG_DATA_N, n;
+  log_append(ev, log);
+  pc_add(1);
+  return 0;
+}
+
+/* ---- storage ----------------------------------------------------------------------- */
+
+fun 1 is_warm_storage_key(1 addr, 1 key) {
+  var 1 k = sk_make(addr, key);
+  var 1 h = htab_has(lds 1 (ev + EV_ACC_KEYS), k);
+  return h;
+}
+
+fun 1 warm_storage_key(1 addr, 1 key) {
+  var 1 k = sk_make(addr, key);
+  htab_set(lds 1 (ev + EV_ACC_KEYS), k, 1);
+  return 0;
+}
+
+fun 1 op_sload() {
+  var {1,1,1,1} kv = stack_pop();
+  var 1 key = alloc(32);
+  u256_to_be32(kv, key);
+  var target = lds 1 ((lds 1 (ev + EV_MSG)) + MSG_CURRENT_TARGET);
+  var 1 warm = is_warm_storage_key(target, key);
+  if warm != 0 {
+    charge_gas(G_WARM_ACCESS);
+  } else {
+    warm_storage_key(target, key);
+    charge_gas(G_COLD_STORAGE_ACCESS);
+  }
+  var {1,1,1,1} v = get_storage(target, key);
+  stack_push(v);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_sstore() {
+  require_not_static();
+  var {1,1,1,1} kv = stack_pop();
+  var {1,1,1,1} new_value = stack_pop();
+  var 1 key = alloc(32);
+  u256_to_be32(kv, key);
+  var target = lds 1 ((lds 1 (ev + EV_MSG)) + MSG_CURRENT_TARGET);
+  var 1 warm = is_warm_storage_key(target, key);
+  var access_cost = G_WARM_ACCESS;
+  if warm == 0 {
+    access_cost = G_COLD_STORAGE_ACCESS;
+  }
+  var 1 mx = max(access_cost, G_CALL_STIPEND + 1);
+  check_gas(mx);
+  if warm == 0 {
+    warm_storage_key(target, key);
+  }
+  var {1,1,1,1} original = get_storage_original(target, key);
+  var {1,1,1,1} current = get_storage(target, key);
+  var 1 oc = u256_eq(original, current);
+  var 1 cn = u256_eq(current, new_value);
+  var 1 on = u256_eq(original, new_value);
+  var 1 oz = u256_is_zero(original);
+  var 1 cz = u256_is_zero(current);
+  var 1 nz = u256_is_zero(new_value);
+  var gas_cost = access_cost;
+  if (oc != 0) && (cn == 0) {
+    gas_cost = gas_cost + G_STORAGE_WRITE;
+  }
+  if cn == 0 {
+    if (oz == 0) && (cz == 0) && (nz != 0) {
+      st ev + EV_REFUND, (lds 1 (ev + EV_REFUND)) + G_REFUND_STORAGE_CLEAR;
+    }
+    if (oz == 0) && (cz != 0) {
+      st ev + EV_REFUND, (lds 1 (ev + EV_REFUND)) - G_REFUND_STORAGE_CLEAR;
+    }
+    if on != 0 {
+      st ev + EV_REFUND, (lds 1 (ev + EV_REFUND)) + G_STORAGE_WRITE;
+    }
+  }
+  var state_gas = 0;
+  if (oc != 0) && (cn == 0) && (oz != 0) {
+    state_gas = SG_STORAGE_SET;
+  }
+  if (cn == 0) && (on != 0) && (oz != 0) {
+    credit_state_gas_refund(SG_STORAGE_SET);
+  }
+  charge_gas(gas_cost);
+  charge_state_gas(state_gas);
+  set_storage(target, key, new_value);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_tload() {
+  var {1,1,1,1} kv = stack_pop();
+  charge_gas(100);
+  var 1 key = alloc(32);
+  u256_to_be32(kv, key);
+  var target = lds 1 ((lds 1 (ev + EV_MSG)) + MSG_CURRENT_TARGET);
+  var {1,1,1,1} v = get_transient_storage(target, key);
+  stack_push(v);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_tstore() {
+  require_not_static();
+  var {1,1,1,1} kv = stack_pop();
+  var {1,1,1,1} v = stack_pop();
+  charge_gas(100);
+  var 1 key = alloc(32);
+  u256_to_be32(kv, key);
+  var target = lds 1 ((lds 1 (ev + EV_MSG)) + MSG_CURRENT_TARGET);
+  set_transient_storage(target, key, v);
+  pc_add(1);
+  return 0;
+}
+
+/* ---- environment (InstructionsEnv.lean) ---------------------------------------------- */
+
+fun 1 op_address() {
+  charge_gas(2);
+  var {1,1,1,1} v = address_to_u256(lds 1 ((lds 1 (ev + EV_MSG)) + MSG_CURRENT_TARGET));
+  stack_push(v);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_balance() {
+  var {1,1,1,1} av = stack_pop();
+  var 1 addr = to_address_masked(av);
+  var 1 c = access_gas_cost(addr);
+  charge_gas(c);
+  var 1 a = get_account(addr);
+  stack_push(lds {1,1,1,1} (a + ACCT_BALANCE));
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_origin() {
+  charge_gas(2);
+  var te = lds 1 ((lds 1 (ev + EV_MSG)) + MSG_TE);
+  var {1,1,1,1} v = address_to_u256(lds 1 (te + TE_ORIGIN));
+  stack_push(v);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_caller() {
+  charge_gas(2);
+  var {1,1,1,1} v = address_to_u256(lds 1 ((lds 1 (ev + EV_MSG)) + MSG_CALLER));
+  stack_push(v);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_callvalue() {
+  charge_gas(2);
+  stack_push(lds {1,1,1,1} ((lds 1 (ev + EV_MSG)) + MSG_VALUE));
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_calldataload() {
+  var {1,1,1,1} start = stack_pop();
+  charge_gas(3);
+  var msg = lds 1 (ev + EV_MSG);
+  var 1 s = sat_word(start);
+  var 1 mark = heap_mark();
+  var 1 tmp = alloc(32);
+  buffer_read(lds 1 (msg + MSG_DATA), lds 1 (msg + MSG_DATA_N), s, 32, tmp);
+  var {1,1,1,1} v = u256_from_be(tmp, 32);
+  heap_release(mark);
+  stack_push(v);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_calldatasize() {
+  charge_gas(2);
+  stack_push_word(lds 1 ((lds 1 (ev + EV_MSG)) + MSG_DATA_N));
+  pc_add(1);
+  return 0;
+}
+
+/* calldatacopy / codecopy shared shape: copy from (buf, buf_len). */
+fun 1 copy_from_buffer(1 base, 1 buf, 1 buf_len) {
+  var {1,1,1,1} mstart = stack_pop();
+  var {1,1,1,1} dstart = stack_pop();
+  var {1,1,1,1} size = stack_pop();
+  var 1 n = sat_word(size);
+  var 1 w = words_of(n);
+  var {1,1} x = extend_memory_cost1(mstart, size);
+  var 1 cost = add_sat(base + G_COPY_PER_WORD * w, x.0);
+  charge_gas(cost);
+  extend_memory(x.1);
+  if n != 0 {
+    var 1 ms = sat_word(mstart);
+    var 1 ds = sat_word(dstart);
+    buffer_read(buf, buf_len, ds, n, mem_ptr(ms));
+  }
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_calldatacopy() {
+  var msg = lds 1 (ev + EV_MSG);
+  copy_from_buffer(3, lds 1 (msg + MSG_DATA), lds 1 (msg + MSG_DATA_N));
+  return 0;
+}
+
+fun 1 op_codesize() {
+  charge_gas(2);
+  stack_push_word(lds 1 (ev + EV_CODE_N));
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_codecopy() {
+  copy_from_buffer(3, lds 1 (ev + EV_CODE), lds 1 (ev + EV_CODE_N));
+  return 0;
+}
+
+fun 1 op_gasprice() {
+  charge_gas(2);
+  var te = lds 1 ((lds 1 (ev + EV_MSG)) + MSG_TE);
+  stack_push(lds {1,1,1,1} (te + TE_GAS_PRICE));
+  pc_add(1);
+  return 0;
+}
+
+/* extCodeOf(address): <ptr, len> through the tracker */
+fun {1,1} ext_code_of(1 addr) {
+  var 1 a = get_account(addr);
+  var {1,1} c = get_code(lds 1 (a + ACCT_CODE_HASH), addr);
+  return c;
+}
+
+fun 1 op_extcodesize() {
+  var {1,1,1,1} av = stack_pop();
+  var 1 addr = to_address_masked(av);
+  var 1 c = access_gas_cost(addr);
+  charge_gas(c + G_WARM_ACCESS);
+  var {1,1} code = ext_code_of(addr);
+  stack_push_word(code.1);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_extcodecopy() {
+  var {1,1,1,1} av = stack_pop();
+  var 1 addr = to_address_masked(av);
+  var {1,1,1,1} mstart = stack_pop();
+  var {1,1,1,1} cstart = stack_pop();
+  var {1,1,1,1} size = stack_pop();
+  var 1 n = sat_word(size);
+  var 1 w = words_of(n);
+  var {1,1} x = extend_memory_cost1(mstart, size);
+  var 1 acc = access_gas_cost(addr);
+  var 1 cost = add_sat(acc + G_WARM_ACCESS + G_COPY_PER_WORD * w, x.0);
+  charge_gas(cost);
+  extend_memory(x.1);
+  var {1,1} code = ext_code_of(addr);
+  if n != 0 {
+    var 1 ms = sat_word(mstart);
+    var 1 cs = sat_word(cstart);
+    buffer_read(code.0, code.1, cs, n, mem_ptr(ms));
+  }
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_returndatasize() {
+  charge_gas(2);
+  stack_push_word(lds 1 (ev + EV_RETDATA_N));
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_returndatacopy() {
+  var {1,1,1,1} mstart = stack_pop();
+  var {1,1,1,1} rstart = stack_pop();
+  var {1,1,1,1} size = stack_pop();
+  var 1 n = sat_word(size);
+  var 1 w = words_of(n);
+  var {1,1} x = extend_memory_cost1(mstart, size);
+  var 1 cost = add_sat(3 + G_COPY_PER_WORD * w, x.0);
+  charge_gas(cost);
+  var 1 rs = sat_word(rstart);
+  var 1 endp = add_sat(rs, n);
+  if endp >+ (lds 1 (ev + EV_RETDATA_N)) {
+    throw EvmErr E_OUT_OF_BOUNDS_READ;
+  }
+  extend_memory(x.1);
+  if n != 0 {
+    var 1 ms = sat_word(mstart);
+    memcpy(mem_ptr(ms), (lds 1 (ev + EV_RETDATA)) + rs, n);
+  }
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_extcodehash() {
+  var {1,1,1,1} av = stack_pop();
+  var 1 addr = to_address_masked(av);
+  var 1 c = access_gas_cost(addr);
+  charge_gas(c);
+  var 1 a = get_account(addr);
+  var 1 e = acct_is_empty(a);
+  if e != 0 {
+    stack_push(<0, 0, 0, 0>);
+  } else {
+    var {1,1,1,1} v = u256_from_be(lds 1 (a + ACCT_CODE_HASH), 32);
+    stack_push(v);
+  }
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_selfbalance() {
+  charge_gas(G_FAST_STEP);
+  var 1 a = get_account(lds 1 ((lds 1 (ev + EV_MSG)) + MSG_CURRENT_TARGET));
+  stack_push(lds {1,1,1,1} (a + ACCT_BALANCE));
+  pc_add(1);
+  return 0;
+}
+
+fun 1 block_env() {
+  return lds 1 ((lds 1 (ev + EV_MSG)) + MSG_BE);
+}
+
+fun 1 op_basefee() {
+  charge_gas(2);
+  var 1 be = block_env();
+  stack_push(lds {1,1,1,1} (be + BE_BASE_FEE));
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_blobhash() {
+  var {1,1,1,1} iv = stack_pop();
+  charge_gas(3);
+  var te = lds 1 ((lds 1 (ev + EV_MSG)) + MSG_TE);
+  var n = lds 1 (te + TE_BLOB_HASHES_N);
+  var 1 i = sat_word(iv);
+  if i <+ n {
+    var {1,1,1,1} v = u256_from_be((lds 1 (te + TE_BLOB_HASHES)) + i * 32, 32);
+    stack_push(v);
+  } else {
+    stack_push(<0, 0, 0, 0>);
+  }
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_blobbasefee() {
+  charge_gas(2);
+  var 1 be = block_env();
+  var {1,1,1,1} price = calculate_blob_gas_price(lds 1 (be + BE_EXCESS_BLOB_GAS));
+  stack_push(price);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_blockhash() {
+  var {1,1,1,1} bn = stack_pop();
+  charge_gas(G_BLOCKHASH);
+  var 1 be = block_env();
+  var current = lds 1 (be + BE_NUMBER);
+  var 1 b = sat_word(bn);
+  if (current <=+ b) || (current >+ b + 256) || (b == WORD_MAX) {
+    stack_push(<0, 0, 0, 0>);
+    pc_add(1);
+    return 0;
+  }
+  var offset = current - b;
+  var n = lds 1 (be + BE_BLOCK_HASHES_N);
+  if offset >+ n {
+    throw BlockErr 50;   /* BLOCKHASH beyond witness headers -> rejection */
+  }
+  var {1,1,1,1} h = u256_from_be((lds 1 (be + BE_BLOCK_HASHES)) + (n - offset) * 32, 32);
+  track_ancestor_access(offset);
+  stack_push(h);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_coinbase() {
+  charge_gas(2);
+  var 1 be = block_env();
+  var {1,1,1,1} v = address_to_u256(lds 1 (be + BE_COINBASE));
+  stack_push(v);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_timestamp() {
+  charge_gas(2);
+  var 1 be = block_env();
+  stack_push_word(lds 1 (be + BE_TIME));
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_number() {
+  charge_gas(2);
+  var 1 be = block_env();
+  stack_push_word(lds 1 (be + BE_NUMBER));
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_gaslimit() {
+  charge_gas(2);
+  var 1 be = block_env();
+  stack_push_word(lds 1 (be + BE_GAS_LIMIT));
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_chainid() {
+  charge_gas(2);
+  var 1 be = block_env();
+  stack_push_word(lds 1 (be + BE_CHAIN_ID));
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_prevrandao() {
+  charge_gas(2);
+  var 1 be = block_env();
+  var {1,1,1,1} v = u256_from_be(lds 1 (be + BE_PREV_RANDAO), 32);
+  stack_push(v);
+  pc_add(1);
+  return 0;
+}
+
+fun 1 op_slotnum() {
+  charge_gas(2);
+  var 1 be = block_env();
+  stack_push_word(lds 1 (be + BE_SLOT));
+  pc_add(1);
+  return 0;
+}

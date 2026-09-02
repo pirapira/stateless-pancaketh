@@ -1,0 +1,970 @@
+/* tx.pnk -- transactions: port of
+   evm-asm/EvmAsm/Stateless/SpecRef/Transactions.lean (execution-specs
+   amsterdam transactions.py): decode_transaction (decodeItemScalar /
+   decodeItemBytes / decodeItemFixedBytes / decodeItemTo / decodeItemAccess /
+   decodeItemAuthorization / decodeLegacy .. decodeSetCodeTx), the uniform
+   Transaction accessors, encode_transaction / get_transaction_hash
+   (txToRlpItem), the five signing_hash_*, _signature_recovery_parameters,
+   chain_id, recover_transaction_public_key, _sender_address_from_public_key,
+   recover_sender, recover_sender_from_public_key, count_tokens_in_data,
+   calculate_intrinsic_cost, validate_transaction; gas constants from
+   Gas.lean (GasCosts).  secp256k1 recovery is lib/secp256k1.pnk
+   (secp256k1_recover), not defined here.
+   Requires: lib/mem, lib/arith, lib/u256, lib/rlp, lib/keccak.
+
+   ---- Transaction record (one flat layout for all five types) ----------
+   Byte offsets; U256 fields are 4 LE words (lds {1,1,1,1} / st).
+     TX_TYPE               word   0 legacy, 1..4 typed (EIP-2930/1559/4844/7702)
+     TX_CHAIN_ID           word   chainId (typed only; legacy: 0, see tx_chain_id)
+     TX_NONCE              U256   nonce (setCode: U64 in the reference)
+     TX_GAS_PRICE          U256   gasPrice (legacy, type 1) else 0
+     TX_MAX_PRIORITY_FEE   U256   maxPriorityFeePerGas (types 2..4) else 0
+     TX_MAX_FEE            U256   maxFeePerGas (types 2..4) else 0
+     TX_GAS                word   gas
+     TX_TO                 ptr    20-byte address, 0 = contract creation (Bytes0)
+     TX_VALUE              U256
+     TX_DATA / TX_DATA_N   ptr+len  calldata / init code (into the envelope)
+     TX_ACCESS_LIST / _N   ptr+count  ACC_SIZE-byte access records (typed; legacy 0)
+     TX_MAX_FEE_PER_BLOB_GAS U256 (type 3)
+     TX_BLOB_HASHES / _N   ptr+count  packed 32-byte versioned hashes (type 3)
+     TX_AUTHORIZATIONS / _N ptr+count AUTH_SIZE-byte authorization records (type 4)
+     TX_V                  U256   legacy v / typed yParity (TX_Y_PARITY alias)
+     TX_R, TX_S            U256
+     TX_RAW / TX_RAW_N     ptr+len  the envelope bytes decode_transaction was given
+   Access record: ACC_ADDR (ptr 20 bytes), ACC_SLOTS (ptr to n*32 packed
+   keys), ACC_SLOTS_N.  Authorization record: AUTH_CHAIN_ID (U256),
+   AUTH_ADDR (ptr), AUTH_NONCE (word), AUTH_Y_PARITY (word), AUTH_R, AUTH_S
+   (U256).
+
+   Guest envelope (the reference Uint is unbounded): gasPrice /
+   maxPriorityFeePerGas / maxFeePerGas wider than 32 bytes reject with
+   TxErr 13, gas wider than 8 bytes with TxErr 14, a legacy chain id
+   (v-35)/2 wider than 64 bits with TxErr 45.  Every other TxErr code is a
+   reference rejection (txDecodeError / invalidSignature /
+   invalidTransaction); RlpErr raised by the RLP layer inside
+   decode_transaction is re-thrown as TxErr 100+code. */
+
+exception TxErr : 1;
+
+#define TX_TYPE                 0
+#define TX_CHAIN_ID             8
+#define TX_NONCE                16
+#define TX_GAS_PRICE            48
+#define TX_MAX_PRIORITY_FEE     80
+#define TX_MAX_FEE              112
+#define TX_GAS                  144
+#define TX_TO                   152
+#define TX_VALUE                160
+#define TX_DATA                 192
+#define TX_DATA_N               200
+#define TX_ACCESS_LIST          208
+#define TX_ACCESS_LIST_N        216
+#define TX_MAX_FEE_PER_BLOB_GAS 224
+#define TX_BLOB_HASHES          256
+#define TX_BLOB_HASHES_N        264
+#define TX_AUTHORIZATIONS       272
+#define TX_AUTHORIZATIONS_N     280
+#define TX_V                    288
+#define TX_Y_PARITY             288
+#define TX_R                    320
+#define TX_S                    352
+#define TX_RAW                  384
+#define TX_RAW_N                392
+#define TX_SIZE                 400
+
+#define ACC_ADDR     0
+#define ACC_SLOTS    8
+#define ACC_SLOTS_N  16
+#define ACC_SIZE     24
+
+#define AUTH_CHAIN_ID 0
+#define AUTH_ADDR     32
+#define AUTH_NONCE    40
+#define AUTH_Y_PARITY 48
+#define AUTH_R        56
+#define AUTH_S        88
+#define AUTH_SIZE     120
+
+/* Gas.lean GasCosts + Transactions.lean constants */
+#define TX_BASE 12000
+#define TX_CREATE 32000
+#define TX_VALUE_COST 4244
+#define TRANSFER_LOG_COST 1756
+#define TX_DATA_TOKEN_STANDARD 4
+#define TX_DATA_TOKEN_FLOOR 16
+#define COLD_ACCOUNT_ACCESS 3000
+#define COLD_STORAGE_ACCESS 3000
+#define ACCOUNT_WRITE 8000
+#define CREATE_ACCESS 11000
+#define CODE_INIT_PER_WORD 2
+#define TX_ACCESS_LIST_ADDRESS COLD_ACCOUNT_ACCESS
+#define TX_ACCESS_LIST_STORAGE_KEY COLD_STORAGE_ACCESS
+#define REGULAR_PER_AUTH_BASE_COST 7816
+#define ACCESS_LIST_ADDRESS_FLOOR_TOKENS 80
+#define ACCESS_LIST_STORAGE_KEY_FLOOR_TOKENS 128
+#define TX_MAX_GAS_LIMIT 16777216
+#define MAX_CODE_SIZE 65536
+#define MAX_INIT_CODE_SIZE 131072
+
+/* SECP256K1N and SECP256K1N / 2 as 4 LE limbs (signed decimals). */
+#define SECP256K1N <-4624529908474429119, -4994812053365940165, -2, -1>
+#define SECP256K1N_HALF <-2312264954237214560, 6725966010171805725, -1, 9223372036854775807>
+
+/* ---- strict rlp.decode_to field decoders -------------------------------- */
+
+/* decodeItemScalar: byte-string item, no leading zero, at most maxb bytes
+   (maxb == 0: unbounded Uint). Returns the payload <ptr, len>. */
+fun {1,1} tx_scalar_item(1 arr, 1 i, 1 maxb) {
+  var {1,1,1,1} it = rlp_item(SLICE_PTR(arr, i), SLICE_LEN(arr, i));
+  if it.0 != 0 {
+    throw TxErr 10;   /* invalid uint (a list) */
+  }
+  if it.2 >+ 0 {
+    if (ld8 (it.1)) == 0 {
+      throw TxErr 11;   /* non-canonical integer */
+    }
+  }
+  if maxb != 0 {
+    if it.2 >+ maxb {
+      throw TxErr 12;   /* integer out of range */
+    }
+  }
+  return <it.1, it.2>;
+}
+
+/* Scalar as U256; an unbounded Uint wider than 32 bytes is the guest
+   envelope rejection 13. */
+fun U256 tx_scalar_u256(1 arr, 1 i, 1 maxb) {
+  var {1,1} f = tx_scalar_item(arr, i, maxb);
+  if f.1 >+ 32 {
+    throw TxErr 13;
+  }
+  return u256_from_be(f.0, f.1);
+}
+
+/* Scalar as a word; wider than 8 bytes throws envcode (12 when the type
+   itself is <= 8 bytes wide, 14 for the unbounded gas). */
+fun 1 tx_scalar_word(1 arr, 1 i, 1 maxb, 1 envcode) {
+  var {1,1} f = tx_scalar_item(arr, i, maxb);
+  if f.1 >+ 8 {
+    throw TxErr envcode;
+  }
+  var v = 0;
+  var j = 0;
+  while j <+ f.1 {
+    v = (v << 8) | (ld8 (f.0 + j));
+    j = j + 1;
+  }
+  return v;
+}
+
+/* decodeItemBytes: <ptr, len>. */
+fun {1,1} tx_bytes_item(1 arr, 1 i) {
+  var {1,1,1,1} it = rlp_item(SLICE_PTR(arr, i), SLICE_LEN(arr, i));
+  if it.0 != 0 {
+    throw TxErr 15;   /* invalid bytes */
+  }
+  return <it.1, it.2>;
+}
+
+/* decodeItemFixedBytes width: returns the payload pointer. */
+fun 1 tx_fixed_bytes(1 arr, 1 i, 1 width) {
+  var {1,1,1,1} it = rlp_item(SLICE_PTR(arr, i), SLICE_LEN(arr, i));
+  if it.0 != 0 {
+    throw TxErr 15;
+  }
+  if it.2 != width {
+    throw TxErr 16;   /* invalid fixed bytes */
+  }
+  return it.1;
+}
+
+/* decodeItemTo: empty (creation, 0) xor 20 bytes. */
+fun 1 tx_to_item(1 arr, 1 i) {
+  var {1,1,1,1} it = rlp_item(SLICE_PTR(arr, i), SLICE_LEN(arr, i));
+  if it.0 != 0 {
+    throw TxErr 17;   /* invalid to */
+  }
+  if it.2 == 0 {
+    return 0;
+  }
+  if it.2 != 20 {
+    throw TxErr 17;
+  }
+  return it.1;
+}
+
+/* A list-valued field: <payload ptr, payload len>. */
+fun {1,1} tx_list_item(1 arr, 1 i) {
+  var {1,1,1,1} it = rlp_item(SLICE_PTR(arr, i), SLICE_LEN(arr, i));
+  if it.0 != 1 {
+    throw TxErr 18;   /* expected a list */
+  }
+  return <it.1, it.2>;
+}
+
+/* accessList: al.mapM decodeItemAccess over the list payload (p, len).
+   Returns <records, count>; slot keys are copied into a packed buffer. */
+fun {1,1} decode_access_list(1 p, 1 len) {
+  var {1,1} lst = rlp_list_to_slices(p, len);
+  var 1 recs = alloc(lst.1 * ACC_SIZE);
+  var i = 0;
+  while i <+ lst.1 {
+    var {1,1,1,1} it = rlp_item(SLICE_PTR(lst.0, i), SLICE_LEN(lst.0, i));
+    if it.0 != 1 {
+      throw TxErr 19;   /* invalid access-list entry */
+    }
+    var {1,1} ent = rlp_list_to_slices(it.1, it.2);
+    if ent.1 != 2 {
+      throw TxErr 19;
+    }
+    var 1 addr = tx_fixed_bytes(ent.0, 0, 20);
+    var {1,1} sl = tx_list_item(ent.0, 1);
+    var {1,1} slots = rlp_list_to_slices(sl.0, sl.1);
+    var 1 keys = alloc(slots.1 * 32);
+    var j = 0;
+    while j <+ slots.1 {
+      var 1 k = tx_fixed_bytes(slots.0, j, 32);
+      memcpy(keys + j * 32, k, 32);
+      j = j + 1;
+    }
+    var rec = recs + i * ACC_SIZE;
+    st rec + ACC_ADDR, addr;
+    st rec + ACC_SLOTS, keys;
+    st rec + ACC_SLOTS_N, slots.1;
+    i = i + 1;
+  }
+  return <recs, lst.1>;
+}
+
+/* blobVersionedHashes: bvh.mapM (decodeItemFixedBytes 32) -> <packed n*32, n>. */
+fun {1,1} decode_blob_hashes(1 p, 1 len) {
+  var {1,1} lst = rlp_list_to_slices(p, len);
+  var 1 buf = alloc(lst.1 * 32);
+  var i = 0;
+  while i <+ lst.1 {
+    var 1 h = tx_fixed_bytes(lst.0, i, 32);
+    memcpy(buf + i * 32, h, 32);
+    i = i + 1;
+  }
+  return <buf, lst.1>;
+}
+
+/* authorizations: auths.mapM decodeItemAuthorization -> <records, n>.
+   [chain_id U256, address, nonce U64, y_parity U8, r U256, s U256]. */
+fun {1,1} decode_authorizations(1 p, 1 len) {
+  var {1,1} lst = rlp_list_to_slices(p, len);
+  var 1 recs = alloc(lst.1 * AUTH_SIZE);
+  var i = 0;
+  while i <+ lst.1 {
+    var {1,1,1,1} it = rlp_item(SLICE_PTR(lst.0, i), SLICE_LEN(lst.0, i));
+    if it.0 != 1 {
+      throw TxErr 20;   /* invalid authorization */
+    }
+    var {1,1} ent = rlp_list_to_slices(it.1, it.2);
+    if ent.1 != 6 {
+      throw TxErr 20;
+    }
+    var a = recs + i * AUTH_SIZE;
+    var U256 cid = tx_scalar_u256(ent.0, 0, 32);
+    st a + AUTH_CHAIN_ID, cid;
+    var 1 addr = tx_fixed_bytes(ent.0, 1, 20);
+    st a + AUTH_ADDR, addr;
+    var 1 w = tx_scalar_word(ent.0, 2, 8, 12);
+    st a + AUTH_NONCE, w;
+    w = tx_scalar_word(ent.0, 3, 1, 12);
+    st a + AUTH_Y_PARITY, w;
+    var U256 r = tx_scalar_u256(ent.0, 4, 32);
+    st a + AUTH_R, r;
+    var U256 s = tx_scalar_u256(ent.0, 5, 32);
+    st a + AUTH_S, s;
+    i = i + 1;
+  }
+  return <recs, lst.1>;
+}
+
+/* ---- decode_transaction --------------------------------------------------- */
+
+/* The body of decode_transaction; RLP failures surface as RlpErr here. */
+fun 1 decode_transaction_rlp(1 p, 1 len) {
+  if len == 0 {
+    throw TxErr 1;   /* empty transaction (tx[0] IndexError) */
+  }
+  var b0 = ld8 p;
+  var 1 tx = alloc(TX_SIZE);
+  memzero(tx, TX_SIZE);
+  st tx + TX_RAW, p;
+  st tx + TX_RAW_N, len;
+  var {1,1,1,1} top = <0, 0, 0, 0>;
+  var t = 0;
+  var nfields = 9;
+  if (b0 >=+ 1) && (b0 <=+ 4) {
+    top = rlp_decode_fully(p + 1, len - 1);
+    t = b0;
+    if t == 1 { nfields = 11; }
+    if t == 2 { nfields = 12; }
+    if t == 3 { nfields = 14; }
+    if t == 4 { nfields = 13; }
+  } else {
+    if (b0 >=+ 192) && (b0 <=+ 254) {
+      top = rlp_decode_fully(p, len);
+    } else {
+      throw TxErr 2;   /* unknown transaction type / 0xFF assert */
+    }
+  }
+  st tx + TX_TYPE, t;
+  if top.0 != 1 {
+    throw TxErr 3;   /* dataclass needs a list */
+  }
+  var {1,1} lst = rlp_list_to_slices(top.1, top.2);
+  var arr = lst.0;
+  if lst.1 != nfields {
+    throw TxErr 4;   /* "<T> needs N fields" */
+  }
+  var k = 0;
+  var 1 w = 0;
+  if t != 0 {
+    w = tx_scalar_word(arr, 0, 8, 12);        /* chainId : U64 */
+    st tx + TX_CHAIN_ID, w;
+    k = 1;
+  }
+  var U256 v = <0, 0, 0, 0>;
+  if t == 4 {
+    w = tx_scalar_word(arr, k, 8, 12);        /* setCode nonce : U64 */
+    v = <w, 0, 0, 0>;
+  } else {
+    v = tx_scalar_u256(arr, k, 32);           /* nonce : U256 */
+  }
+  st tx + TX_NONCE, v;
+  k = k + 1;
+  if t <=+ 1 {
+    v = tx_scalar_u256(arr, k, 0);            /* gasPrice : Uint */
+    st tx + TX_GAS_PRICE, v;
+    k = k + 1;
+  } else {
+    v = tx_scalar_u256(arr, k, 0);            /* maxPriorityFeePerGas : Uint */
+    st tx + TX_MAX_PRIORITY_FEE, v;
+    v = tx_scalar_u256(arr, k + 1, 0);        /* maxFeePerGas : Uint */
+    st tx + TX_MAX_FEE, v;
+    k = k + 2;
+  }
+  w = tx_scalar_word(arr, k, 0, 14);          /* gas : Uint (envelope 8 bytes) */
+  st tx + TX_GAS, w;
+  k = k + 1;
+  if t >=+ 3 {
+    w = tx_fixed_bytes(arr, k, 20);           /* to : Address */
+  } else {
+    w = tx_to_item(arr, k);                   /* to : Bytes0 | Address */
+  }
+  st tx + TX_TO, w;
+  k = k + 1;
+  v = tx_scalar_u256(arr, k, 32);             /* value : U256 */
+  st tx + TX_VALUE, v;
+  k = k + 1;
+  var {1,1} data = tx_bytes_item(arr, k);     /* data : Bytes */
+  st tx + TX_DATA, data.0;
+  st tx + TX_DATA_N, data.1;
+  k = k + 1;
+  if t != 0 {
+    var {1,1} al = tx_list_item(arr, k);
+    var {1,1} acc = decode_access_list(al.0, al.1);
+    st tx + TX_ACCESS_LIST, acc.0;
+    st tx + TX_ACCESS_LIST_N, acc.1;
+    k = k + 1;
+  }
+  if t == 3 {
+    v = tx_scalar_u256(arr, k, 32);           /* maxFeePerBlobGas : U256 */
+    st tx + TX_MAX_FEE_PER_BLOB_GAS, v;
+    var {1,1} bl = tx_list_item(arr, k + 1);
+    var {1,1} bh = decode_blob_hashes(bl.0, bl.1);
+    st tx + TX_BLOB_HASHES, bh.0;
+    st tx + TX_BLOB_HASHES_N, bh.1;
+    k = k + 2;
+  }
+  if t == 4 {
+    var {1,1} aul = tx_list_item(arr, k);
+    var {1,1} au = decode_authorizations(aul.0, aul.1);
+    st tx + TX_AUTHORIZATIONS, au.0;
+    st tx + TX_AUTHORIZATIONS_N, au.1;
+    k = k + 1;
+  }
+  v = tx_scalar_u256(arr, k, 32);             /* v / yParity : U256 */
+  st tx + TX_V, v;
+  v = tx_scalar_u256(arr, k + 1, 32);         /* r */
+  st tx + TX_R, v;
+  v = tx_scalar_u256(arr, k + 2, 32);         /* s */
+  st tx + TX_S, v;
+  return tx;
+}
+
+/* decode_transaction(tx : Bytes): the envelope at (p, len) -> tx record.
+   Every rejection (including RLP errors, re-thrown as 100 + RlpErr code)
+   is a TxErr. */
+fun 1 decode_transaction(1 p, 1 len) {
+  var 1 tx = 0;
+  var rc = 0;
+  try tx = decode_transaction_rlp(p, len)
+  catch RlpErr => rc {
+    throw TxErr (100 + rc);
+  }
+  return tx;
+}
+
+/* ---- uniform accessors (Transaction.gas / nonce / to / value / data / r / s) */
+
+fun 1 tx_gas(1 tx) {
+  return lds 1 (tx + TX_GAS);
+}
+
+fun U256 tx_nonce(1 tx) {
+  return lds U256 (tx + TX_NONCE);
+}
+
+/* 0 = creation (to = none). */
+fun 1 tx_to(1 tx) {
+  return lds 1 (tx + TX_TO);
+}
+
+fun U256 tx_value(1 tx) {
+  return lds U256 (tx + TX_VALUE);
+}
+
+fun {1,1} tx_data(1 tx) {
+  return <lds 1 (tx + TX_DATA), lds 1 (tx + TX_DATA_N)>;
+}
+
+fun U256 tx_r(1 tx) {
+  return lds U256 (tx + TX_R);
+}
+
+fun U256 tx_s(1 tx) {
+  return lds U256 (tx + TX_S);
+}
+
+/* has_access_list / accessList?: 1 for every typed transaction. */
+fun 1 tx_has_access_list(1 tx) {
+  if (lds 1 (tx + TX_TYPE)) != 0 { return 1; }
+  return 0;
+}
+
+fun 1 tx_blob_count(1 tx) {
+  return lds 1 (tx + TX_BLOB_HASHES_N);
+}
+
+/* calculate_total_blob_gas(tx) = GAS_PER_BLOB * len(blob_versioned_hashes). */
+fun 1 calculate_total_blob_gas(1 tx) {
+  return 131072 * (lds 1 (tx + TX_BLOB_HASHES_N));
+}
+
+/* ---- encoding (txToRlpItem / encode_transaction / signing_hash_*) -------- */
+
+/* scalarT for a U256: minimal big-endian string item; bytes written. */
+fun 1 tx_put_u256(1 dst, U256 v) {
+  var 1 mark = heap_mark();
+  var 1 tmp = alloc(32);
+  var 1 n = u256_to_be_min(v, tmp);
+  var 1 w = rlp_encode_bytes(dst, tmp, n);
+  heap_release(mark);
+  return w;
+}
+
+fun 1 tx_u256_encoded_len(U256 v) {
+  var 1 n = u256_byte_length(v);
+  if n == 0 { return 1; }
+  if n == 1 {
+    if v.0 <+ 128 { return 1; }
+  }
+  return 1 + n;
+}
+
+/* toItem: none -> empty string (0x80); some a -> the 20 bytes. */
+fun 1 tx_put_to(1 dst, 1 to) {
+  if to == 0 {
+    st8 dst, 128;
+    return 1;
+  }
+  return rlp_encode_bytes(dst, to, 20);
+}
+
+/* accessItem payload lengths: each slot item is 33 bytes. */
+fun 1 access_list_payload_len(1 recs, 1 n) {
+  var total = 0;
+  var i = 0;
+  while i <+ n {
+    var inner = 33 * (lds 1 (recs + i * ACC_SIZE + ACC_SLOTS_N));
+    var 1 ih = rlp_list_header_len(inner);
+    var entry = 21 + ih + inner;
+    var 1 eh = rlp_list_header_len(entry);
+    total = total + eh + entry;
+    i = i + 1;
+  }
+  return total;
+}
+
+/* .list (accessList.map accessItem) at dst; bytes written. */
+fun 1 tx_put_access_list(1 dst, 1 recs, 1 n) {
+  var 1 pl = access_list_payload_len(recs, n);
+  var 1 w = rlp_encode_list_header(dst, pl);
+  var p = dst + w;
+  var i = 0;
+  while i <+ n {
+    var rec = recs + i * ACC_SIZE;
+    var ns = lds 1 (rec + ACC_SLOTS_N);
+    var inner = 33 * ns;
+    var 1 ih = rlp_list_header_len(inner);
+    w = rlp_encode_list_header(p, 21 + ih + inner);
+    p = p + w;
+    w = rlp_encode_bytes(p, lds 1 (rec + ACC_ADDR), 20);
+    p = p + w;
+    w = rlp_encode_list_header(p, inner);
+    p = p + w;
+    var keys = lds 1 (rec + ACC_SLOTS);
+    var j = 0;
+    while j <+ ns {
+      w = rlp_encode_bytes(p, keys + j * 32, 32);
+      p = p + w;
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  return p - dst;
+}
+
+/* .list (blobVersionedHashes.map .bytes) at dst; bytes written. */
+fun 1 tx_put_blob_hashes(1 dst, 1 buf, 1 n) {
+  var 1 w = rlp_encode_list_header(dst, 33 * n);
+  var p = dst + w;
+  var i = 0;
+  while i <+ n {
+    w = rlp_encode_bytes(p, buf + i * 32, 32);
+    p = p + w;
+    i = i + 1;
+  }
+  return p - dst;
+}
+
+/* authItem payload length. */
+fun 1 auth_payload_len(1 a) {
+  var 1 lc = tx_u256_encoded_len(lds U256 (a + AUTH_CHAIN_ID));
+  var 1 ln = rlp_word_encoded_len(lds 1 (a + AUTH_NONCE));
+  var 1 ly = rlp_word_encoded_len(lds 1 (a + AUTH_Y_PARITY));
+  var 1 lr = tx_u256_encoded_len(lds U256 (a + AUTH_R));
+  var 1 ls = tx_u256_encoded_len(lds U256 (a + AUTH_S));
+  return lc + 21 + ln + ly + lr + ls;
+}
+
+fun 1 auth_list_payload_len(1 recs, 1 n) {
+  var total = 0;
+  var i = 0;
+  while i <+ n {
+    var 1 pl = auth_payload_len(recs + i * AUTH_SIZE);
+    var 1 h = rlp_list_header_len(pl);
+    total = total + h + pl;
+    i = i + 1;
+  }
+  return total;
+}
+
+/* .list (authorizations.map authItem) at dst; bytes written. */
+fun 1 tx_put_authorizations(1 dst, 1 recs, 1 n) {
+  var 1 total = auth_list_payload_len(recs, n);
+  var 1 w = rlp_encode_list_header(dst, total);
+  var p = dst + w;
+  var i = 0;
+  while i <+ n {
+    var a = recs + i * AUTH_SIZE;
+    var 1 pl = auth_payload_len(a);
+    w = rlp_encode_list_header(p, pl);
+    p = p + w;
+    w = tx_put_u256(p, lds U256 (a + AUTH_CHAIN_ID));
+    p = p + w;
+    w = rlp_encode_bytes(p, lds 1 (a + AUTH_ADDR), 20);
+    p = p + w;
+    w = rlp_encode_word(p, lds 1 (a + AUTH_NONCE));
+    p = p + w;
+    w = rlp_encode_word(p, lds 1 (a + AUTH_Y_PARITY));
+    p = p + w;
+    w = tx_put_u256(p, lds U256 (a + AUTH_R));
+    p = p + w;
+    w = tx_put_u256(p, lds U256 (a + AUTH_S));
+    p = p + w;
+    i = i + 1;
+  }
+  return p - dst;
+}
+
+/* Upper bound on any encoding of tx (envelope or signing body). */
+fun 1 tx_encode_bound(1 tx) {
+  var 1 al = access_list_payload_len(lds 1 (tx + TX_ACCESS_LIST), lds 1 (tx + TX_ACCESS_LIST_N));
+  var 1 au = auth_list_payload_len(lds 1 (tx + TX_AUTHORIZATIONS), lds 1 (tx + TX_AUTHORIZATIONS_N));
+  var bh = 33 * (lds 1 (tx + TX_BLOB_HASHES_N));
+  return 64 + 17 * 33 + 30 + (lds 1 (tx + TX_DATA_N)) + al + au + bh;
+}
+
+/* Shared writer for txToRlpItem and the signing_hash_* items.
+   mode 0: the full item (fields + v/yParity, r, s) with the type byte
+           prefix for typed transactions  (encode_transaction);
+   mode 1: the unsigned fields only, type-byte prefixed when typed
+           (signing_hash_pre155 / _2930 / _1559 / _4844 / _7702);
+   mode 2: unsigned legacy fields + [chain_id, 0, 0]  (signing_hash_155).
+   Returns <ptr, len> in a fresh heap buffer. */
+fun {1,1} tx_encode_generic(1 tx, 1 mode, 1 chain_id) {
+  var 1 bound = tx_encode_bound(tx);
+  var 1 buf = alloc(bound);
+  var body = buf + 10;          /* room for the type byte + list header */
+  var p = body;
+  var t = lds 1 (tx + TX_TYPE);
+  var 1 w = 0;
+  if t != 0 {
+    w = rlp_encode_word(p, lds 1 (tx + TX_CHAIN_ID));
+    p = p + w;
+  }
+  w = tx_put_u256(p, lds U256 (tx + TX_NONCE));
+  p = p + w;
+  if t <=+ 1 {
+    w = tx_put_u256(p, lds U256 (tx + TX_GAS_PRICE));
+    p = p + w;
+  } else {
+    w = tx_put_u256(p, lds U256 (tx + TX_MAX_PRIORITY_FEE));
+    p = p + w;
+    w = tx_put_u256(p, lds U256 (tx + TX_MAX_FEE));
+    p = p + w;
+  }
+  w = rlp_encode_word(p, lds 1 (tx + TX_GAS));
+  p = p + w;
+  w = tx_put_to(p, lds 1 (tx + TX_TO));
+  p = p + w;
+  w = tx_put_u256(p, lds U256 (tx + TX_VALUE));
+  p = p + w;
+  w = rlp_encode_bytes(p, lds 1 (tx + TX_DATA), lds 1 (tx + TX_DATA_N));
+  p = p + w;
+  if t != 0 {
+    w = tx_put_access_list(p, lds 1 (tx + TX_ACCESS_LIST), lds 1 (tx + TX_ACCESS_LIST_N));
+    p = p + w;
+  }
+  if t == 3 {
+    w = tx_put_u256(p, lds U256 (tx + TX_MAX_FEE_PER_BLOB_GAS));
+    p = p + w;
+    w = tx_put_blob_hashes(p, lds 1 (tx + TX_BLOB_HASHES), lds 1 (tx + TX_BLOB_HASHES_N));
+    p = p + w;
+  }
+  if t == 4 {
+    w = tx_put_authorizations(p, lds 1 (tx + TX_AUTHORIZATIONS), lds 1 (tx + TX_AUTHORIZATIONS_N));
+    p = p + w;
+  }
+  if mode == 0 {
+    w = tx_put_u256(p, lds U256 (tx + TX_V));
+    p = p + w;
+    w = tx_put_u256(p, lds U256 (tx + TX_R));
+    p = p + w;
+    w = tx_put_u256(p, lds U256 (tx + TX_S));
+    p = p + w;
+  }
+  if mode == 2 {
+    w = rlp_encode_word(p, chain_id);
+    p = p + w;
+    st8 p, 128;
+    st8 p + 1, 128;
+    p = p + 2;
+  }
+  var payload_len = p - body;
+  var 1 hl = rlp_list_header_len(payload_len);
+  var start = body - hl;
+  rlp_encode_list_header(start, payload_len);
+  if t != 0 {
+    start = start - 1;
+    st8 start, t;
+  }
+  return <start, p - start>;
+}
+
+/* encode_transaction(tx): the raw envelope (legacy: its RLP; typed: type
+   byte ++ RLP). Fresh buffer, <ptr, len>. */
+fun {1,1} encode_transaction(1 tx) {
+  return tx_encode_generic(tx, 0, 0);
+}
+
+/* get_transaction_hash(encoded_tx) = keccak256 of the envelope bytes. */
+fun 1 get_transaction_hash(1 tx, 1 out) {
+  keccak256(lds 1 (tx + TX_RAW), lds 1 (tx + TX_RAW_N), out);
+  return 0;
+}
+
+fun 1 tx_signing_hash_mode(1 tx, 1 mode, 1 chain_id, 1 out) {
+  var 1 mark = heap_mark();
+  var {1,1} e = tx_encode_generic(tx, mode, chain_id);
+  keccak256(e.0, e.1, out);
+  heap_release(mark);
+  return 0;
+}
+
+fun 1 signing_hash_pre155(1 tx, 1 out) {
+  return tx_signing_hash_mode(tx, 1, 0, out);
+}
+
+fun 1 signing_hash_155(1 tx, 1 chain_id, 1 out) {
+  return tx_signing_hash_mode(tx, 2, chain_id, out);
+}
+
+fun 1 signing_hash_2930(1 tx, 1 out) {
+  return tx_signing_hash_mode(tx, 1, 0, out);
+}
+
+fun 1 signing_hash_1559(1 tx, 1 out) {
+  return tx_signing_hash_mode(tx, 1, 0, out);
+}
+
+fun 1 signing_hash_4844(1 tx, 1 out) {
+  return tx_signing_hash_mode(tx, 1, 0, out);
+}
+
+fun 1 signing_hash_7702(1 tx, 1 out) {
+  return tx_signing_hash_mode(tx, 1, 0, out);
+}
+
+/* ---- sender recovery ------------------------------------------------------ */
+
+/* chain_id(tx) -> <some, value>: legacy v in {27, 28} -> <0, 0>; legacy
+   v < 35 -> TxErr 44 (bad v); else (v - 35) >> 1 (TxErr 45 if it does not
+   fit 64 bits: guest envelope); typed -> the chainId field. */
+fun {1,1} tx_chain_id(1 tx) {
+  if (lds 1 (tx + TX_TYPE)) != 0 {
+    return <1, lds 1 (tx + TX_CHAIN_ID)>;
+  }
+  var U256 v = lds U256 (tx + TX_V);
+  var 1 fits = u256_fits_word(v);
+  if fits != 0 {
+    if (v.0 == 27) || (v.0 == 28) {
+      return <0, 0>;
+    }
+    if v.0 <+ 35 {
+      throw TxErr 44;
+    }
+  }
+  var U256 vm = u256_sub(v, <35, 0, 0, 0>);
+  var U256 sh = u256_shr(vm, 1);
+  fits = u256_fits_word(sh);
+  if fits == 0 {
+    throw TxErr 45;
+  }
+  return <1, sh.0>;
+}
+
+/* _signature_recovery_parameters(chain_id, tx): validates r, s and
+   v / yParity, writes the signing hash to out_hash (32 bytes) and returns
+   the recovery id (0/1). TxErr 40 bad r, 41 bad s, 42 bad v, 43 bad y_parity. */
+fun 1 signature_recovery_parameters(1 tx, 1 chain_id, 1 out_hash) {
+  var U256 r = lds U256 (tx + TX_R);
+  var U256 s = lds U256 (tx + TX_S);
+  var 1 z = u256_is_zero(r);
+  if z != 0 {
+    throw TxErr 40;
+  }
+  var 1 lt = u256_lt(r, SECP256K1N);
+  if lt == 0 {
+    throw TxErr 40;
+  }
+  z = u256_is_zero(s);
+  if z != 0 {
+    throw TxErr 41;
+  }
+  var 1 gt = u256_gt(s, SECP256K1N_HALF);
+  if gt != 0 {
+    throw TxErr 41;
+  }
+  var t = lds 1 (tx + TX_TYPE);
+  var U256 v = lds U256 (tx + TX_V);
+  var 1 fits = u256_fits_word(v);
+  if t == 0 {
+    if fits != 0 {
+      if (v.0 == 27) || (v.0 == 28) {
+        signing_hash_pre155(tx, out_hash);
+        return v.0 - 27;
+      }
+    }
+    var U256 c = <chain_id, 0, 0, 0>;
+    var U256 x2 = u256_add(c, c);
+    var U256 v35 = u256_add(x2, <35, 0, 0, 0>);
+    var U256 v36 = u256_add(x2, <36, 0, 0, 0>);
+    var 1 eq35 = u256_eq(v, v35);
+    var 1 eq36 = u256_eq(v, v36);
+    if (eq35 == 0) && (eq36 == 0) {
+      throw TxErr 42;
+    }
+    signing_hash_155(tx, chain_id, out_hash);
+    return eq36;
+  }
+  if fits == 0 {
+    throw TxErr 43;
+  }
+  if v.0 >+ 1 {
+    throw TxErr 43;
+  }
+  if t == 1 { signing_hash_2930(tx, out_hash); }
+  if t == 2 { signing_hash_1559(tx, out_hash); }
+  if t == 3 { signing_hash_4844(tx, out_hash); }
+  if t == 4 { signing_hash_7702(tx, out_hash); }
+  return v.0;
+}
+
+/* recover_transaction_public_key(chain_id, tx): the 64-byte x ++ y of
+   the uncompressed key at out64 (the 0x04 SEC1 prefix is implied).
+   TxErr 46 when recovery fails. */
+fun 1 recover_transaction_public_key(1 tx, 1 chain_id, 1 out64) {
+  var 1 mark = heap_mark();
+  var 1 h = alloc(32);
+  var 1 recid = signature_recovery_parameters(tx, chain_id, h);
+  var 1 ok = secp256k1_recover(h, lds U256 (tx + TX_R), lds U256 (tx + TX_S), recid, out64);
+  heap_release(mark);
+  if ok == 0 {
+    throw TxErr 46;
+  }
+  return 0;
+}
+
+/* _sender_address_from_public_key(public_key): keccak256(key[1:])[12:]
+   of the 65-byte 0x04 ++ x ++ y key, written to out20. */
+fun 1 sender_address_from_public_key(1 pubkey65, 1 out20) {
+  var 1 mark = heap_mark();
+  var 1 h = alloc(32);
+  keccak256(pubkey65 + 1, 64, h);
+  memcpy(out20, h + 12, 20);
+  heap_release(mark);
+  return 0;
+}
+
+/* recover_sender(tx): full recovery with the chain id the transaction
+   commits to (0 for pre-155 legacy); address at out20. */
+fun 1 recover_sender(1 tx, 1 out20) {
+  var {1,1} cid = tx_chain_id(tx);
+  var 1 mark = heap_mark();
+  var 1 pk = alloc(72);
+  st8 pk, 4;
+  recover_transaction_public_key(tx, cid.1, pk + 1);
+  sender_address_from_public_key(pk, out20);
+  heap_release(mark);
+  return 0;
+}
+
+/* recover_sender_from_public_key(chain_id, tx, public_key): recover and
+   compare with the supplied 65-byte 0x04 ++ x ++ y key (TxErr 47 on
+   mismatch); the address goes to out20. */
+fun 1 recover_sender_from_public_key(1 tx, 1 chain_id, 1 pubkey65, 1 out20) {
+  var 1 mark = heap_mark();
+  var 1 pk = alloc(64);
+  recover_transaction_public_key(tx, chain_id, pk);
+  var 1 eq = memeq(pubkey65 + 1, pk, 64);
+  heap_release(mark);
+  if (ld8 pubkey65) != 4 {
+    throw TxErr 47;
+  }
+  if eq == 0 {
+    throw TxErr 47;
+  }
+  sender_address_from_public_key(pubkey65, out20);
+  return 0;
+}
+
+/* ---- intrinsic gas -------------------------------------------------------- */
+
+/* count_tokens_in_data(data): zero bytes 1 token, non-zero bytes 4. */
+fun 1 count_tokens_in_data(1 p, 1 n) {
+  var zeros = 0;
+  var i = 0;
+  while i <+ n {
+    if (ld8 (p + i)) == 0 {
+      zeros = zeros + 1;
+    }
+    i = i + 1;
+  }
+  return zeros + (n - zeros) * 4;
+}
+
+/* calculate_intrinsic_cost(tx, sender) -> <regular, state, calldataFloor>
+   (v0.6.0 / EIP-2780 decomposition). sender: 20-byte address pointer. */
+fun {1,1,1} calculate_intrinsic_cost(1 tx, 1 sender) {
+  var data = lds 1 (tx + TX_DATA);
+  var data_n = lds 1 (tx + TX_DATA_N);
+  var 1 tokens_in_calldata = count_tokens_in_data(data, data_n);
+  var data_cost = tokens_in_calldata * TX_DATA_TOKEN_STANDARD;
+  var to = lds 1 (tx + TX_TO);
+  var 1 value_zero = u256_is_zero(lds U256 (tx + TX_VALUE));
+  var recipient_regular_gas = 0;
+  var init_code_gas = 0;
+  if to == 0 {
+    recipient_regular_gas = CREATE_ACCESS;
+    if value_zero == 0 {
+      recipient_regular_gas = recipient_regular_gas + TRANSFER_LOG_COST;
+    }
+    /* init_code_cost = CODE_INIT_PER_WORD * ceil32(len) / 32 */
+    init_code_gas = CODE_INIT_PER_WORD * ((data_n + 31) >>> 5);
+  } else {
+    var 1 is_self_transfer = memeq(to, sender, 20);
+    if is_self_transfer == 0 {
+      recipient_regular_gas = COLD_ACCOUNT_ACCESS;
+      if value_zero == 0 {
+        recipient_regular_gas = recipient_regular_gas + TRANSFER_LOG_COST + TX_VALUE_COST;
+      }
+    }
+  }
+  var access_list_cost = 0;
+  var tokens_in_access_list = 0;
+  if (lds 1 (tx + TX_TYPE)) != 0 {
+    var recs = lds 1 (tx + TX_ACCESS_LIST);
+    var n = lds 1 (tx + TX_ACCESS_LIST_N);
+    var i = 0;
+    while i <+ n {
+      var ns = lds 1 (recs + i * ACC_SIZE + ACC_SLOTS_N);
+      access_list_cost = access_list_cost + TX_ACCESS_LIST_ADDRESS + ns * TX_ACCESS_LIST_STORAGE_KEY;
+      tokens_in_access_list = tokens_in_access_list + ACCESS_LIST_ADDRESS_FLOOR_TOKENS
+          + ns * ACCESS_LIST_STORAGE_KEY_FLOOR_TOKENS;
+      i = i + 1;
+    }
+  }
+  access_list_cost = access_list_cost + tokens_in_access_list * TX_DATA_TOKEN_FLOOR;
+  var auth_regular_gas = 0;
+  if (lds 1 (tx + TX_TYPE)) == 4 {
+    auth_regular_gas = REGULAR_PER_AUTH_BASE_COST * (lds 1 (tx + TX_AUTHORIZATIONS_N));
+  }
+  var floor_tokens_in_calldata = data_n * TX_DATA_TOKEN_STANDARD;
+  var total_floor_tokens = floor_tokens_in_calldata + tokens_in_access_list;
+  var base_regular_gas = TX_BASE + recipient_regular_gas;
+  var regular = base_regular_gas + init_code_gas + data_cost + access_list_cost + auth_regular_gas;
+  var floor = total_floor_tokens * TX_DATA_TOKEN_FLOOR + base_regular_gas;
+  return <regular, 0, floor>;
+}
+
+/* validate_transaction(tx, sender): the intrinsic cost, or TxErr
+   60 insufficient intrinsic gas, 61 insufficient calldata floor,
+   62 code size too large, 63 regular > TX_MAX_GAS_LIMIT,
+   64 floor > TX_MAX_GAS_LIMIT, 65 nonce too high (>= 2^64 - 1). */
+fun {1,1,1} validate_transaction(1 tx, 1 sender) {
+  var {1,1,1} ic = calculate_intrinsic_cost(tx, sender);
+  var gas = lds 1 (tx + TX_GAS);
+  if (ic.0 + ic.1) >+ gas {
+    throw TxErr 60;
+  }
+  if ic.2 >+ gas {
+    throw TxErr 61;
+  }
+  if (lds 1 (tx + TX_TO)) == 0 {
+    if (lds 1 (tx + TX_DATA_N)) >+ MAX_INIT_CODE_SIZE {
+      throw TxErr 62;
+    }
+  }
+  if ic.0 >+ TX_MAX_GAS_LIMIT {
+    throw TxErr 63;
+  }
+  if ic.2 >+ TX_MAX_GAS_LIMIT {
+    throw TxErr 64;
+  }
+  var U256 nonce = lds U256 (tx + TX_NONCE);
+  var 1 fits = u256_fits_word(nonce);
+  if fits == 0 {
+    throw TxErr 65;
+  }
+  if nonce.0 == ALLONES {
+    throw TxErr 65;
+  }
+  return ic;
+}

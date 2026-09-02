@@ -1,0 +1,94 @@
+/* precompiles.pnk -- PRE_COMPILED_CONTRACTS dispatch (PrecompilesTable.lean).
+   precompile_index(addr): 0 if not a precompile, else 1..18 (1..17 for
+   0x01..0x11, 18 for 0x100 P256VERIFY). run_precompile(idx) executes on the
+   current frame `ev` (charges gas, sets EV_OUTPUT). Implemented so far:
+   identity, sha256, ecrecover (via lib/secp256k1). Others raise BlockErr 99
+   (the guest cannot decide the block -> rejection, reported as a succ miss). */
+
+fun 1 precompile_index(1 addr) {
+  var 1 z = is_zero_bytes(addr, 18);
+  if z == 0 {
+    return 0;
+  }
+  var hi = ld8 (addr + 18);
+  var lo = ld8 (addr + 19);
+  if hi == 1 {
+    if lo == 0 {
+      return 18;
+    }
+    return 0;
+  }
+  if hi != 0 {
+    return 0;
+  }
+  if (lo >=+ 1) && (lo <=+ 17) {
+    return lo;
+  }
+  return 0;
+}
+
+fun 1 pre_identity() {
+  var msg = lds 1 (ev + EV_MSG);
+  var n = lds 1 (msg + MSG_DATA_N);
+  var 1 w = words_of(n);
+  charge_gas(15 + 3 * w);
+  st ev + EV_OUTPUT, lds 1 (msg + MSG_DATA);
+  st ev + EV_OUTPUT_N, n;
+  return 0;
+}
+
+fun 1 pre_sha256() {
+  var msg = lds 1 (ev + EV_MSG);
+  var n = lds 1 (msg + MSG_DATA_N);
+  var 1 w = words_of(n);
+  charge_gas(60 + 12 * w);
+  var 1 out = alloc(32);
+  sha256(lds 1 (msg + MSG_DATA), n, out);
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, 32;
+  return 0;
+}
+
+fun 1 pre_ecrecover() {
+  var msg = lds 1 (ev + EV_MSG);
+  charge_gas(3000);
+  var 1 mark = heap_mark();
+  var 1 buf = alloc(128);
+  buffer_read(lds 1 (msg + MSG_DATA), lds 1 (msg + MSG_DATA_N), 0, 128, buf);
+  var {1,1,1,1} v = u256_from_be(buf + 32, 32);
+  var {1,1,1,1} r = u256_from_be(buf + 64, 32);
+  var {1,1,1,1} s = u256_from_be(buf + 96, 32);
+  var 1 vfit = u256_fits_word(v);
+  var 1 out = alloc(32);
+  var 1 empty = alloc(8);
+  if vfit == 0 {
+    heap_release(mark);
+    st ev + EV_OUTPUT, empty;
+    st ev + EV_OUTPUT_N, 0;
+    return 0;
+  }
+  var 1 ok = secp256k1_ecrecover(buf, v.0, r, s, out + 12);
+  if ok == 0 {
+    heap_release(mark);
+    st ev + EV_OUTPUT, empty;
+    st ev + EV_OUTPUT_N, 0;
+    return 0;
+  }
+  memzero(out, 12);
+  var 1 res = alloc(32);
+  memcpy(res, out, 32);
+  heap_release(mark);
+  var 1 res2 = alloc(32);
+  memcpy(res2, res, 32);
+  st ev + EV_OUTPUT, res2;
+  st ev + EV_OUTPUT_N, 32;
+  return 0;
+}
+
+fun 1 run_precompile(1 idx) {
+  if idx == 1 { pre_ecrecover(); return 0; }
+  if idx == 2 { pre_sha256(); return 0; }
+  if idx == 4 { pre_identity(); return 0; }
+  throw BlockErr 99;   /* precompile not implemented in this guest */
+  return 0;
+}
