@@ -971,8 +971,8 @@ fun 1 encode_account(1 nonce, {1,1,1,1} balance, 1 storage_root, 1 code_hash, 1 
   }
   var 1 wb = rlp_encode_bytes(out + off, mpt_hash_scratch + z, 32 - z);
   off = off + wb;
-  var 1 ws = rlp_encode_bytes(out + off, storage_root, 32);
-  off = off + ws;
+  var 1 wsl = rlp_encode_bytes(out + off, storage_root, 32);
+  off = off + wsl;
   var 1 wc = rlp_encode_bytes(out + off, code_hash, 32);
   off = off + wc;
   st8 out, 248;

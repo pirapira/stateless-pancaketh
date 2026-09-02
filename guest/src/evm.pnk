@@ -1450,8 +1450,8 @@ fun 1 block_env() {
 
 fun 1 op_basefee() {
   charge_gas(2);
-  var 1 be = block_env();
-  stack_push(lds {1,1,1,1} (be + BE_BASE_FEE));
+  var 1 benv = block_env();
+  stack_push(lds {1,1,1,1} (benv + BE_BASE_FEE));
   pc_add(1);
   return 0;
 }
@@ -1474,8 +1474,8 @@ fun 1 op_blobhash() {
 
 fun 1 op_blobbasefee() {
   charge_gas(2);
-  var 1 be = block_env();
-  var {1,1,1,1} price = calculate_blob_gas_price(lds 1 (be + BE_EXCESS_BLOB_GAS));
+  var 1 benv = block_env();
+  var {1,1,1,1} price = calculate_blob_gas_price(lds 1 (benv + BE_EXCESS_BLOB_GAS));
   stack_push(price);
   pc_add(1);
   return 0;
@@ -1484,8 +1484,8 @@ fun 1 op_blobbasefee() {
 fun 1 op_blockhash() {
   var {1,1,1,1} bn = stack_pop();
   charge_gas(G_BLOCKHASH);
-  var 1 be = block_env();
-  var current = lds 1 (be + BE_NUMBER);
+  var 1 benv = block_env();
+  var current = lds 1 (benv + BE_NUMBER);
   var 1 b = sat_word(bn);
   if (current <=+ b) || (current >+ b + 256) || (b == WORD_MAX) {
     stack_push(<0, 0, 0, 0>);
@@ -1493,11 +1493,11 @@ fun 1 op_blockhash() {
     return 0;
   }
   var offset = current - b;
-  var n = lds 1 (be + BE_BLOCK_HASHES_N);
+  var n = lds 1 (benv + BE_BLOCK_HASHES_N);
   if offset >+ n {
     throw BlockErr 50;   /* BLOCKHASH beyond witness headers -> rejection */
   }
-  var {1,1,1,1} h = u256_from_be((lds 1 (be + BE_BLOCK_HASHES)) + (n - offset) * 32, 32);
+  var {1,1,1,1} h = u256_from_be((lds 1 (benv + BE_BLOCK_HASHES)) + (n - offset) * 32, 32);
   track_ancestor_access(offset);
   stack_push(h);
   pc_add(1);
@@ -1506,8 +1506,8 @@ fun 1 op_blockhash() {
 
 fun 1 op_coinbase() {
   charge_gas(2);
-  var 1 be = block_env();
-  var {1,1,1,1} v = address_to_u256(lds 1 (be + BE_COINBASE));
+  var 1 benv = block_env();
+  var {1,1,1,1} v = address_to_u256(lds 1 (benv + BE_COINBASE));
   stack_push(v);
   pc_add(1);
   return 0;
@@ -1515,40 +1515,40 @@ fun 1 op_coinbase() {
 
 fun 1 op_timestamp() {
   charge_gas(2);
-  var 1 be = block_env();
-  stack_push_word(lds 1 (be + BE_TIME));
+  var 1 benv = block_env();
+  stack_push_word(lds 1 (benv + BE_TIME));
   pc_add(1);
   return 0;
 }
 
 fun 1 op_number() {
   charge_gas(2);
-  var 1 be = block_env();
-  stack_push_word(lds 1 (be + BE_NUMBER));
+  var 1 benv = block_env();
+  stack_push_word(lds 1 (benv + BE_NUMBER));
   pc_add(1);
   return 0;
 }
 
 fun 1 op_gaslimit() {
   charge_gas(2);
-  var 1 be = block_env();
-  stack_push_word(lds 1 (be + BE_GAS_LIMIT));
+  var 1 benv = block_env();
+  stack_push_word(lds 1 (benv + BE_GAS_LIMIT));
   pc_add(1);
   return 0;
 }
 
 fun 1 op_chainid() {
   charge_gas(2);
-  var 1 be = block_env();
-  stack_push_word(lds 1 (be + BE_CHAIN_ID));
+  var 1 benv = block_env();
+  stack_push_word(lds 1 (benv + BE_CHAIN_ID));
   pc_add(1);
   return 0;
 }
 
 fun 1 op_prevrandao() {
   charge_gas(2);
-  var 1 be = block_env();
-  var {1,1,1,1} v = u256_from_be(lds 1 (be + BE_PREV_RANDAO), 32);
+  var 1 benv = block_env();
+  var {1,1,1,1} v = u256_from_be(lds 1 (benv + BE_PREV_RANDAO), 32);
   stack_push(v);
   pc_add(1);
   return 0;
@@ -1556,8 +1556,8 @@ fun 1 op_prevrandao() {
 
 fun 1 op_slotnum() {
   charge_gas(2);
-  var 1 be = block_env();
-  stack_push_word(lds 1 (be + BE_SLOT));
+  var 1 benv = block_env();
+  stack_push_word(lds 1 (benv + BE_SLOT));
   pc_add(1);
   return 0;
 }
