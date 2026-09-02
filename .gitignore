@@ -1,0 +1,4 @@
+work/
+guest/build/
+__pycache__/
+*.pyc

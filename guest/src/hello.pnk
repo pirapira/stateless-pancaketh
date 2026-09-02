@@ -1,0 +1,15 @@
+// Smoke test: echo input length into the output region and halt.
+fun 1 main() {
+  var len = 0;
+  !ldw len, 1073741832;          // 0x40000008: LE u64 length of input blob
+  var out = 2684420096;          // 0xa0010000
+  var i = 0;
+  while i < 69 {
+    !st8 out + i, 0;
+    i = i + 1;
+  }
+  !st8 out + 32, 1;
+  !stw out + 40, len;
+  @halt(@base, 0, @base, 0);
+  return 0;
+}
