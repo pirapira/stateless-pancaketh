@@ -1,0 +1,26 @@
+#include "config.h"
+#include "lib/mem.pnk"
+var 1 g1 = 1234;
+var 1 g2 = 5678;
+fun 1 main() {
+  mem_init();
+  var 1 a = alloc(64);
+  !stw OUTPUT_ADDR, @base;
+  !stw OUTPUT_ADDR + 8, a;
+  !stw OUTPUT_ADDR + 16, heap_ptr;
+  /* scribble a large region below and above base to see if globals change */
+  var i = 0;
+  while i < 4096 {
+    st @base + i * 8, 0 - 1;
+    i = i + 1;
+  }
+  !stw OUTPUT_ADDR + 24, g1;
+  !stw OUTPUT_ADDR + 32, g2;
+  !stw OUTPUT_ADDR + 40, heap_ptr;
+  var 1 b = alloc(1000000);
+  var 1 c = alloc(1000000);
+  !stw OUTPUT_ADDR + 48, c;
+  !stw OUTPUT_ADDR + 56, g1;
+  @halt(@base, 0, @base, 0);
+  return 0;
+}

@@ -9,6 +9,7 @@
    (precompile_index / run_precompile). */
 
 #include "secp_consts.h"
+#define DBG(k) !st8 OUTPUT_ADDR + 100, k
 
 /* MessageCallOutput */
 #define MCO_GAS_LEFT 0
@@ -319,6 +320,10 @@ fun 1 set_delegation() {
 /* prepare_dispatch() at depth 0 */
 fun 1 prepare_dispatch() {
   var msg = lds 1 (ev + EV_MSG);
+  !stw OUTPUT_ADDR + 192, msg;
+  !stw OUTPUT_ADDR + 200, lds 1 (msg + MSG_TARGET);
+  !stw OUTPUT_ADDR + 208, lds 1 (msg + MSG_CURRENT_TARGET);
+  !stw OUTPUT_ADDR + 216, ev;
   if (lds 1 (msg + MSG_TARGET)) == 0 {
     var 1 pre = get_pre_state_account(lds 1 (msg + MSG_CURRENT_TARGET));
     var 1 e = acct_is_empty(pre);
@@ -488,6 +493,7 @@ fun 1 execute_loop() {
 
 /* The body process_message runs inside its try. */
 fun 1 execute_body() {
+  DBG(68);
   var msg = lds 1 (ev + EV_MSG);
   if (lds 1 (msg + MSG_TRANSFER_VALUE)) != 0 {
     var {1,1,1,1} v = lds {1,1,1,1} (msg + MSG_VALUE);
@@ -510,7 +516,9 @@ fun 1 execute_body() {
       return 0;
     }
   }
+  DBG(69);
   execute_loop();
+  DBG(70);
   return 0;
 }
 
@@ -523,6 +531,7 @@ fun 1 frame_halt(1 err) {
 }
 
 fun 1 depth0_prepare() {
+  DBG(65);
   var msg = lds 1 (ev + EV_MSG);
   var te = lds 1 (msg + MSG_TE);
   if (lds 1 (te + TE_AUTHS_N)) != 0 {
@@ -532,7 +541,9 @@ fun 1 depth0_prepare() {
     st msg + MSG_RESERVOIR, lds 1 (ev + EV_STATE_GAS_LEFT);
     st ev + EV_STATE_GAS_SPILLED, 0;
   }
+  DBG(66);
   prepare_dispatch();
+  DBG(67);
   return 0;
 }
 
@@ -541,9 +552,11 @@ fun 1 process_message(1 msg) {
   if (lds 1 (msg + MSG_DEPTH)) >+ STACK_DEPTH_LIMIT {
     throw EvmErr E_STACK_DEPTH_LIMIT;
   }
+  DBG(61);
   var parent = ev;
   var 1 child = frame_new(msg);
   ev = child;
+  DBG(62);
   var err = 0;
   if (lds 1 (msg + MSG_DEPTH)) == 0 {
     var 1 prep_snapshot = state_snapshot();
@@ -564,6 +577,7 @@ fun 1 process_message(1 msg) {
       return child;
     }
   }
+  DBG(63);
   var 1 snapshot = state_snapshot();
   try execute_body()
   catch EvmErr => err {
@@ -577,6 +591,7 @@ fun 1 process_message(1 msg) {
       st ev + EV_ERROR, err;
     }
   }
+  DBG(64);
   if (lds 1 (child + EV_ERROR)) != 0 {
     state_restore(snapshot);
   }
@@ -1142,6 +1157,7 @@ fun 1 op_staticcall() {
 /* ---- process_message_call ---------------------------------------------------------- */
 
 fun 1 process_message_call(1 msg) {
+  DBG(60);
   var 1 out = alloc(MCO_SIZE);
   memzero(out, MCO_SIZE);
   var frame = 0;

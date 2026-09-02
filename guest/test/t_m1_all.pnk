@@ -1,25 +1,25 @@
 /* main.pnk -- the stateless guest entry (Guest.lean run_stateless_guest). */
-#include "config.h"
-#include "types.h"
-#include "lib/mem.pnk"
-#include "lib/arith.pnk"
-#include "lib/u256.pnk"
-#include "lib/sha256.pnk"
-#include "lib/keccak.pnk"
-#include "lib/rlp.pnk"
-#include "lib/htab.pnk"
-#include "lib/secp256k1.pnk"
-#include "ssz.pnk"
-#include "header.pnk"
-#include "mpt.pnk"
-#include "tx.pnk"
-#include "state.pnk"
-#include "bal.pnk"
-#include "evm.pnk"
-#include "evm_calls.pnk"
-#include "precompiles.pnk"
-#include "block.pnk"
-#include "fork.pnk"
+#include "../src/config.h"
+#include "../src/types.h"
+#include "../src/lib/mem.pnk"
+#include "../src/lib/arith.pnk"
+#include "../src/lib/u256.pnk"
+#include "../src/lib/sha256.pnk"
+#include "../src/lib/keccak.pnk"
+#include "../src/lib/rlp.pnk"
+#include "../src/lib/htab.pnk"
+#include "../src/lib/secp256k1.pnk"
+#include "../src/ssz.pnk"
+#include "../src/header.pnk"
+#include "../src/mpt.pnk"
+#include "../src/tx.pnk"
+#include "../src/state.pnk"
+#include "../src/bal.pnk"
+#include "../src/evm.pnk"
+#include "../src/evm_calls.pnk"
+#include "../src/precompiles.pnk"
+#include "../src/block.pnk"
+#include "../src/fork.pnk"
 
 fun 1 main() {
   mem_init();
@@ -29,9 +29,6 @@ fun 1 main() {
   ssz_offs = alloc(64);
   ssz_init();
   mpt_init();
-  u256_ws_init();
-  hdr_zero8 = alloc(8);
-  memzero(hdr_zero8, 8);
   evm_init();
   fork_init();
   var {1,1} inp = input_blob();
@@ -50,7 +47,7 @@ fun 1 main() {
   }
   var 1 root = alloc(32);
   htr_new_payload_request(si, root);
-  var 1 succ = verify_stateless_new_payload(si);
+  var succ = 0;
   var 1 n = serialize_result(out, root, succ, lds 1 (si + SI_CHAIN_ID),
       lds 1 (si + SI_BN_SOME), lds 1 (si + SI_BN), lds 1 (si + SI_TS_SOME), lds 1 (si + SI_TS));
   /* debug: failure code after the result bytes (harness compares only n bytes) */

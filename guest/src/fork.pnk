@@ -4,7 +4,8 @@
    system transactions, withdrawals, requests, receipts) and ElExecute.lean
    (execute_block_interior). Requires every other module. */
 
-exception Fail : 1;   /* any rejection folded into successful_validation = false */
+exception Fail : 1;
+#define DBG(k) !st8 OUTPUT_ADDR + 100, k   /* any rejection folded into successful_validation = false */
 
 #define TX_MAX_GAS_LIMIT 16777216
 #define SYSTEM_TRANSACTION_GAS 30000000
@@ -62,24 +63,24 @@ fun 1 fork_init() {
   }
   st8 precompile_addrs + 17 * 20 + 18, 1;   /* 0x0100 */
   beacon_roots_address = alloc(24);
-  addr_from_words(beacon_roots_address, 998878, -3264180380726370886, 8580542797046987778);
+  addr_from_words(beacon_roots_address, 998902, -2940146324018716745, -5135364565508379646);
   history_storage_address = alloc(24);
-  addr_from_words(history_storage_address, 63798, 2919409010143398402, 3670889013506965813);
+  addr_from_words(history_storage_address, 63752, 2878298490047003138, 3700577164601600309);
   withdrawal_request_address = alloc(24);
-  addr_from_words(withdrawal_request_address, 2401, -1328012547788530309, -5898106541880152062);
+  addr_from_words(withdrawal_request_address, 2401, -1204696728184237670, -2867251832604823550);
   consolidation_request_address = alloc(24);
-  addr_from_words(consolidation_request_address, 48093, -4048946473501656446, -8144209183296359855);
+  addr_from_words(consolidation_request_address, 48093, -4049219273472911457, -8430470610026466735);
   builder_deposit_address = alloc(24);
-  addr_from_words(builder_deposit_address, 49140, 5088776306999779977, -6003392823296340350);
+  addr_from_words(builder_deposit_address, 49140, 7603452151126424148, 760111669195932290);
   builder_exit_address = alloc(24);
-  addr_from_words(builder_exit_address, 25814, 7783040819010535612, -4948248587287400830);
+  addr_from_words(builder_exit_address, 25814, 8669529151676140297, 4307224735379260034);
   deposit_contract_address = alloc(24);
-  addr_from_words(deposit_contract_address, 0, 2421270144240564659, -5079604175371782662);
+  addr_from_words(deposit_contract_address, 0, 2421447037043915651, -7152273453469989382);
   deposit_event_signature_hash = alloc(32);
-  st_be64(deposit_event_signature_hash, 7249007868851090242);
-  st_be64(deposit_event_signature_hash + 8, -5804927584836652479);
-  st_be64(deposit_event_signature_hash + 16, -7362398183926566243);
-  st_be64(deposit_event_signature_hash + 24, -6149735498328409915);
+  st_be64(deposit_event_signature_hash + 0, 7249595157780304706);
+  st_be64(deposit_event_signature_hash + 8, -5770713811851067319);
+  st_be64(deposit_event_signature_hash + 16, -1737845673849485158);
+  st_be64(deposit_event_signature_hash + 24, -6372452478019946299);
   return 0;
 }
 
@@ -279,7 +280,9 @@ fun 1 process_unchecked_system_transaction(1 target, 1 data, 1 data_n) {
   st m + MSG_ACC_ADDRS, aa;
   var 1 ak = htab_new(52, 8);
   st m + MSG_ACC_KEYS, ak;
+  DBG(37);
   var 1 out = process_message_call(m);
+  DBG(38);
   incorporate_tx_into_block();
   return out;
 }
@@ -433,6 +436,7 @@ fun 1 process_transaction(1 tx, 1 index, 1 pubkey) {
   var {1,1} enc = encode_transaction(tx);
   st (lds 1 (bo + BO_TXS)) + index * 16, enc.0;
   st (lds 1 (bo + BO_TXS)) + index * 16 + 8, enc.1;
+  DBG(30);
   var {1,1} cid = tx_chain_id(tx);
   if cid.0 != 0 {
     if cid.1 != (lds 1 (be + BE_CHAIN_ID)) {
@@ -441,11 +445,15 @@ fun 1 process_transaction(1 tx, 1 index, 1 pubkey) {
   }
   var 1 sender = alloc(24);
   recover_sender_from_public_key(tx, lds 1 (be + BE_CHAIN_ID), pubkey, sender);
+  DBG(31);
   var {1,1,1} intrinsic = validate_transaction(tx, sender);
+  DBG(32);
   var intrinsic_gas = intrinsic.0 + intrinsic.1;
   var {1,1,1,1} price = check_transaction(tx, sender);
+  DBG(33);
   var 1 tx_blob_gas_used = calculate_total_blob_gas(tx);
   var 1 acct = get_account(sender);
+  DBG(34);
   var {1,1,1,1} blob_gas_fee = <0, 0, 0, 0>;
   if tx_blob_gas_used != 0 {
     var {1,1,1,1} bgp = calculate_blob_gas_price(lds 1 (be + BE_EXCESS_BLOB_GAS));
@@ -464,6 +472,7 @@ fun 1 process_transaction(1 tx, 1 index, 1 pubkey) {
   bal = u256_sub(bal, effective_gas_fee);
   bal = u256_sub(bal, blob_gas_fee);
   set_account_balance(sender, bal);
+  DBG(35);
   /* access list */
   var 1 te = te_new();
   st te + TE_ORIGIN, sender;
@@ -523,6 +532,7 @@ fun 1 process_transaction(1 tx, 1 index, 1 pubkey) {
   st te + TE_TX_HASH, txh;
   st te + TE_INTRINSIC_REGULAR, intrinsic.0;
   st te + TE_INTRINSIC_STATE, intrinsic.1;
+  DBG(36);
   /* prepare_message */
   var 1 m = msg_new();
   st m + MSG_BE, be;
@@ -533,7 +543,9 @@ fun 1 process_transaction(1 tx, 1 index, 1 pubkey) {
   st m + MSG_RESERVOIR, reservoir;
   st m + MSG_VALUE, lds {1,1,1,1} (tx + TX_VALUE);
   var 1 aa = htab_new(20, 64);
+  DBG(50);
   htab_set(aa, sender, 1);
+  DBG(51);
   i = 0;
   while i < 18 {
     htab_set(aa, precompile_addrs + i * 20, 1);
@@ -544,12 +556,14 @@ fun 1 process_transaction(1 tx, 1 index, 1 pubkey) {
     htab_set(aa, lds 1 (al_addrs + i * 8), 1);
     i = i + 1;
   }
+  DBG(52);
   var 1 ak = htab_new(52, 16);
   i = 0;
   while i < nkeys {
     htab_set(ak, al_keys + i * 52, 1);
     i = i + 1;
   }
+  DBG(53);
   var 1 empty = alloc(8);
   if (lds 1 (tx + TX_TO)) == 0 {
     var 1 sa = get_account(sender);
@@ -569,8 +583,13 @@ fun 1 process_transaction(1 tx, 1 index, 1 pubkey) {
     st m + MSG_CODE_N, 0;
     st m + MSG_CODE_ADDRESS, lds 1 (tx + TX_TO);
   }
+  DBG(54);
   st m + MSG_TRANSFER_VALUE, 1;
   htab_set(aa, lds 1 (m + MSG_CURRENT_TARGET), 1);
+  DBG(55);
+  !stw OUTPUT_ADDR + 224, m;
+  !stw OUTPUT_ADDR + 232, lds 1 (m + MSG_CURRENT_TARGET);
+  !stw OUTPUT_ADDR + 240, lds 1 (tx + TX_TO);
   st m + MSG_ACC_ADDRS, aa;
   st m + MSG_ACC_KEYS, ak;
   var 1 out = process_message_call(m);
@@ -596,6 +615,7 @@ fun 1 process_transaction(1 tx, 1 index, 1 pubkey) {
   st bo + BO_STATE_GAS_USED, (lds 1 (bo + BO_STATE_GAS_USED)) + tx_state_gas_nat;
   st bo + BO_BLOB_GAS_USED, (lds 1 (bo + BO_BLOB_GAS_USED)) + tx_blob_gas_used;
   st bo + BO_CUMULATIVE_GAS, (lds 1 (bo + BO_CUMULATIVE_GAS)) + tx_gas_used;
+  DBG(39);
   /* receipt */
   var logs = lds 1 (out + MCO_LOGS);
   if logs == 0 {
@@ -747,6 +767,7 @@ fun 1 execute_block(1 si, 1 hdr) {
   st bo + BO_RECEIPT_LOGS, rls;
   st bo + BO_NTX, ntx;
   bal_init();
+  DBG(20);
   /* apply_body */
   process_unchecked_system_transaction(beacon_roots_address, lds 1 (si + SI_PBBR), 32);
   var lasth = zero32;
@@ -754,23 +775,31 @@ fun 1 execute_block(1 si, 1 hdr) {
     lasth = block_hashes + (block_hashes_n - 1) * 32;
   }
   process_unchecked_system_transaction(history_storage_address, lasth, 32);
+  DBG(21);
   state_fresh_tx();
   track_ancestor_access(1);
   var ptxs = lds 1 (pl + PL_TXS);
   var i = 0;
   while i < ntx {
     var 1 tx = decode_transaction(SLICE_PTR(ptxs, i), SLICE_LEN(ptxs, i));
+    DBG(22);
     process_transaction(tx, i, (lds 1 (si + SI_PK)) + i * PUBKEY_SIZE);
+    DBG(23);
     i = i + 1;
   }
   bal_index = ntx + 1;
+  DBG(24);
   process_withdrawals(pl);
+  DBG(25);
   process_general_purpose_requests();
+  DBG(26);
   var {1,1} bal = build_block_access_list_rlp();
   validate_block_access_list_gas_limit(lds 1 (be + BE_GAS_LIMIT));
+  DBG(27);
   /* post-execution checks */
   var 1 root = alloc(32);
   compute_state_root(root);
+  DBG(28);
   var 1 txroot = alloc(32);
   build_mpt_indexed(txs, ntx, txroot);
   var 1 rroot = alloc(32);
@@ -839,6 +868,7 @@ fun 1 run_attempt(1 si) {
       throw BlockErr 2;
     }
   }
+  DBG(10);
   /* validate_headers */
   var {1,1} vh = validate_headers(lds 1 (si + SI_HEADERS), lds 1 (si + SI_HEADERS_N));
   var nh = lds 1 (si + SI_HEADERS_N);
@@ -848,10 +878,12 @@ fun 1 run_attempt(1 si) {
   var parent = lds 1 (vh.0 + (nh - 1) * 8);
   block_hashes = vh.1;
   block_hashes_n = nh;
+  DBG(11);
   /* pre-state */
   var 1 nodedb = nodedb_build(lds 1 (si + SI_STATE), lds 1 (si + SI_STATE_N));
   var 1 codedb = nodedb_build(lds 1 (si + SI_CODES), lds 1 (si + SI_CODES_N));
   state_init(nodedb, lds 1 (parent + HDR_STATE_ROOT), codedb);
+  DBG(12);
   /* execute_new_payload_request pre-checks */
   var txs = lds 1 (pl + PL_TXS);
   var ntx = lds 1 (pl + PL_TXS_N);
@@ -862,14 +894,18 @@ fun 1 run_attempt(1 si) {
     }
     i = i + 1;
   }
+  DBG(13);
   var 1 hdr = payload_header(si);
+  DBG(14);
   var 1 bh = alloc(32);
   header_hash(hdr, bh);
   var 1 eq = memeq(bh, (lds 1 (pl + PL_RAW)) + PLO_BLOCK_HASH, 32);
   if eq == 0 {
     throw BlockErr 5;   /* Invalid block hash */
   }
+  DBG(15);
   var 1 vvh = is_valid_versioned_hashes(si);
+  DBG(16);
   if vvh == 0 {
     throw BlockErr 6;
   }
@@ -880,7 +916,9 @@ fun 1 run_attempt(1 si) {
   if (lds 1 (si + SI_PK_N)) != ntx {
     throw BlockErr 8;   /* public key count mismatch */
   }
+  DBG(17);
   validate_header(parent, hdr);
+  DBG(18);
   /* block environment */
   be = alloc(BE_SIZE);
   memzero(be, BE_SIZE);
@@ -898,7 +936,9 @@ fun 1 run_attempt(1 si) {
   st be + BE_SLOT, lds 1 (hdr + HDR_SLOT);
   st be + BE_PUBKEYS, lds 1 (si + SI_PK);
   st be + BE_PUBKEYS_N, lds 1 (si + SI_PK_N);
+  DBG(19);
   execute_block(si, hdr);
+  DBG(40);
   return 0;
 }
 
@@ -906,43 +946,43 @@ fun 1 run_attempt(1 si) {
 fun 1 attempt_l1(1 si) {
   var e = 0;
   try run_attempt(si)
-  catch BlockErr => e { throw Fail 1; }
+  catch BlockErr => e { !st8 OUTPUT_ADDR + 70, e; throw Fail 1; }
   return 0;
 }
 fun 1 attempt_l2(1 si) {
   var e = 0;
   try attempt_l1(si)
-  catch HdrErr => e { throw Fail 2; }
+  catch HdrErr => e { !st8 OUTPUT_ADDR + 70, e; throw Fail 2; }
   return 0;
 }
 fun 1 attempt_l3(1 si) {
   var e = 0;
   try attempt_l2(si)
-  catch RlpErr => e { throw Fail 3; }
+  catch RlpErr => e { !st8 OUTPUT_ADDR + 70, e; throw Fail 3; }
   return 0;
 }
 fun 1 attempt_l4(1 si) {
   var e = 0;
   try attempt_l3(si)
-  catch MptErr => e { throw Fail 4; }
+  catch MptErr => e { !st8 OUTPUT_ADDR + 70, e; throw Fail 4; }
   return 0;
 }
 fun 1 attempt_l5(1 si) {
   var e = 0;
   try attempt_l4(si)
-  catch StateErr => e { throw Fail 5; }
+  catch StateErr => e { !st8 OUTPUT_ADDR + 70, e; throw Fail 5; }
   return 0;
 }
 fun 1 attempt_l6(1 si) {
   var e = 0;
   try attempt_l5(si)
-  catch TxErr => e { throw Fail 6; }
+  catch TxErr => e { !st8 OUTPUT_ADDR + 70, e; throw Fail 6; }
   return 0;
 }
 fun 1 attempt_l7(1 si) {
   var e = 0;
   try attempt_l6(si)
-  catch EvmErr => e { throw Fail 7; }
+  catch EvmErr => e { !st8 OUTPUT_ADDR + 70, e; throw Fail 7; }
   return 0;
 }
 
