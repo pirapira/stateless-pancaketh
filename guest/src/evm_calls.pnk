@@ -9,7 +9,11 @@
    (precompile_index / run_precompile). */
 
 #include "secp_consts.h"
+#ifdef GUEST_DEBUG
 #define DBG(k) !st8 OUTPUT_ADDR + 100, k
+#else
+#define DBG(k) skip
+#endif
 
 /* MessageCallOutput */
 #define MCO_GAS_LEFT 0
@@ -320,10 +324,12 @@ fun 1 set_delegation() {
 /* prepare_dispatch() at depth 0 */
 fun 1 prepare_dispatch() {
   var msg = lds 1 (ev + EV_MSG);
+#ifdef GUEST_DEBUG
   !stw OUTPUT_ADDR + 192, msg;
   !stw OUTPUT_ADDR + 200, lds 1 (msg + MSG_TARGET);
   !stw OUTPUT_ADDR + 208, lds 1 (msg + MSG_CURRENT_TARGET);
   !stw OUTPUT_ADDR + 216, ev;
+#endif
   if (lds 1 (msg + MSG_TARGET)) == 0 {
     var 1 pre = get_pre_state_account(lds 1 (msg + MSG_CURRENT_TARGET));
     var 1 e = acct_is_empty(pre);

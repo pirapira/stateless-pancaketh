@@ -5,7 +5,11 @@
    (execute_block_interior). Requires every other module. */
 
 exception Fail : 1;
-#define DBG(k) !st8 OUTPUT_ADDR + 100, k   /* any rejection folded into successful_validation = false */
+#ifdef GUEST_DEBUG
+#define DBG(k) !st8 OUTPUT_ADDR + 100, k
+#else
+#define DBG(k) skip
+#endif
 
 #define TX_MAX_GAS_LIMIT 16777216
 #define SYSTEM_TRANSACTION_GAS 30000000
@@ -587,9 +591,11 @@ fun 1 process_transaction(1 tx, 1 index, 1 pubkey) {
   st m + MSG_TRANSFER_VALUE, 1;
   htab_set(aa, lds 1 (m + MSG_CURRENT_TARGET), 1);
   DBG(55);
+#ifdef GUEST_DEBUG
   !stw OUTPUT_ADDR + 224, m;
   !stw OUTPUT_ADDR + 232, lds 1 (m + MSG_CURRENT_TARGET);
   !stw OUTPUT_ADDR + 240, lds 1 (tx + TX_TO);
+#endif
   st m + MSG_ACC_ADDRS, aa;
   st m + MSG_ACC_KEYS, ak;
   var 1 out = process_message_call(m);

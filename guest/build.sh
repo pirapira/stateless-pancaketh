@@ -10,7 +10,11 @@ CPP="${CPP:-cpp}"
 src="$1"; out="$2"
 b="${out%.elf}"
 # Sources are a cpp translation unit (#include / #define for constants).
-"$CPP" -P -w -nostdinc -I "$HERE/src" -x c "$src" | grep -v '^#' > "$b.pp.pnk"
+cpp_debug_args=()
+if [[ "${DEBUG:-0}" == "1" ]]; then
+  cpp_debug_args=(-DGUEST_DEBUG)
+fi
+"$CPP" "${cpp_debug_args[@]}" -P -w -nostdinc -I "$HERE/src" -x c "$src" | grep -v '^#' > "$b.pp.pnk"
 "$CAKE" --pancake --target=riscv < "$b.pp.pnk" > "$b.cake.S"
 # cake's .S uses C-preprocessor macros (cdecl, makesym); run cpp first.
 "$CPP" -P -x assembler-with-cpp "$b.cake.S" > "$b.cake.s"

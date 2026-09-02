@@ -117,6 +117,7 @@ fun 1 state_fresh_tx() {
   t = htab_new(52, 16);
   st ts + TS_TRANSIENT, t;
   journal_n = 0;
+#ifdef GUEST_DEBUG
   !stw OUTPUT_ADDR + 128, ts;
   !stw OUTPUT_ADDR + 136, lds 1 (ts + TS_ACCT_READS);
   !stw OUTPUT_ADDR + 144, lds 1 (ts + TS_CODE_READS);
@@ -125,6 +126,7 @@ fun 1 state_fresh_tx() {
   !stw OUTPUT_ADDR + 168, lds 1 (ts + TS_ACCT_WRITES);
   !stw OUTPUT_ADDR + 176, lds 1 (bs + BS_ACCT_WRITES);
   !stw OUTPUT_ADDR + 184, lds 1 (ts + TS_CREATED);
+#endif
   return 0;
 }
 
