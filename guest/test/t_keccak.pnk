@@ -1,0 +1,22 @@
+#include "config.h"
+#include "lib/mem.pnk"
+#include "lib/keccak.pnk"
+fun 1 main() {
+  mem_init();
+  keccak_init();
+  var {1,1} inp = input_blob();
+  var 1 out = alloc(192);
+  var 1 n200 = min(inp.1, 200);
+  var 1 n136 = min(inp.1, 136);
+  var 1 n135 = min(inp.1, 135);
+  var 1 n201 = min(inp.1, 201);
+  keccak256(inp.0, inp.1, out);
+  keccak256(inp.0, 0, out + 32);
+  keccak256(inp.0, n200, out + 64);
+  keccak256(inp.0, n136, out + 96);
+  keccak256(inp.0, n135, out + 128);
+  keccak256(inp.0 + 1, n201 - 1, out + 160);   /* unaligned input pointer */
+  output_write(out, 192);
+  @halt(@base, 0, @base, 0);
+  return 0;
+}

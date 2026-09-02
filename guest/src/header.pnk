@@ -1,0 +1,437 @@
+/* header.pnk -- block headers: RLP decode (Stateless.lean _decode_header),
+   RLP encode + block hash (BlocksRlp.lean headerToRlpItem / headerHash),
+   validate_headers (Stateless.lean), validate_header / check_gas_limit /
+   calculate_base_fee_per_gas (SeamShell.lean), calculate_excess_blob_gas /
+   calculate_blob_gas_price / taylor_exponential (Gas.lean).
+   Requires: lib/mem, lib/arith, lib/u256, lib/rlp, lib/keccak. */
+
+exception HdrErr : 1;      /* headerDecodeError */
+exception BlockErr : 1;    /* invalidBlock (any InvalidBlock raise) */
+
+/* --- field helpers ------------------------------------------------------ */
+
+/* rlp.decode_to uint path: bytes item, no leading zero, width <= maxb
+   (maxb == 0: unbounded). Returns the item payload as <ptr, len>. */
+fun {1,1} hdr_uint_field(1 arr, 1 i, 1 maxb) {
+  var {1,1,1,1} it = rlp_item(SLICE_PTR(arr, i), SLICE_LEN(arr, i));
+  if it.0 != 0 {
+    throw HdrErr 1;
+  }
+  if it.2 != 0 {
+    if (ld8 (it.1)) == 0 {
+      throw HdrErr 2;
+    }
+  }
+  if maxb != 0 {
+    if it.2 >+ maxb {
+      throw HdrErr 3;
+    }
+  }
+  return <it.1, it.2>;
+}
+
+/* A word-sized uint field (guest envelope: wider than 8 bytes rejects). */
+fun 1 hdr_word_field(1 arr, 1 i) {
+  var {1,1} f = hdr_uint_field(arr, i, 0);
+  if f.1 >+ 8 {
+    throw HdrErr 4;
+  }
+  var v = 0;
+  var j = 0;
+  while j <+ f.1 {
+    v = (v << 8) | (ld8 (f.0 + j));
+    j = j + 1;
+  }
+  return v;
+}
+
+/* A U256 uint field (<= 32 bytes). */
+fun {1,1,1,1} hdr_u256_field(1 arr, 1 i, 1 maxb) {
+  var {1,1} f = hdr_uint_field(arr, i, maxb);
+  if f.1 >+ 32 {
+    throw HdrErr 5;
+  }
+  var {1,1,1,1} v = u256_from_be(f.0, f.1);
+  return v;
+}
+
+/* Fixed-width bytes field: returns the payload pointer. */
+fun 1 hdr_bytes_field(1 arr, 1 i, 1 width) {
+  var {1,1,1,1} it = rlp_item(SLICE_PTR(arr, i), SLICE_LEN(arr, i));
+  if it.0 != 0 {
+    throw HdrErr 6;
+  }
+  if it.2 != width {
+    throw HdrErr 7;
+  }
+  return it.1;
+}
+
+/* Unbounded bytes field: <ptr, len>. */
+fun {1,1} hdr_raw_field(1 arr, 1 i) {
+  var {1,1,1,1} it = rlp_item(SLICE_PTR(arr, i), SLICE_LEN(arr, i));
+  if it.0 != 0 {
+    throw HdrErr 8;
+  }
+  return <it.1, it.2>;
+}
+
+/* _decode_header(header_bytes): 23 fields (amsterdam) or 21 (previous
+   fork). Any RLP or typed-field failure raises HdrErr. */
+fun 1 decode_header(1 p, 1 len) {
+  var {1,1,1,1} top = rlp_decode_fully(p, len);
+  if top.0 != 1 {
+    throw HdrErr 10;
+  }
+  var {1,1} lst = rlp_list_to_slices(top.1, top.2);
+  var arr = lst.0;
+  var n = lst.1;
+  var is_current = 0;
+  if n == 23 {
+    is_current = 1;
+  } else {
+    if n != 21 {
+      throw HdrErr 11;
+    }
+  }
+  var 1 h = alloc(HDR_SIZE);
+  st h + HDR_IS_CURRENT, is_current;
+  var 1 f = hdr_bytes_field(arr, 0, 32);
+  st h + HDR_PARENT_HASH, f;
+  f = hdr_bytes_field(arr, 1, 32);
+  st h + HDR_OMMERS_HASH, f;
+  f = hdr_bytes_field(arr, 2, 20);
+  st h + HDR_COINBASE, f;
+  f = hdr_bytes_field(arr, 3, 32);
+  st h + HDR_STATE_ROOT, f;
+  f = hdr_bytes_field(arr, 4, 32);
+  st h + HDR_TX_ROOT, f;
+  f = hdr_bytes_field(arr, 5, 32);
+  st h + HDR_RECEIPT_ROOT, f;
+  f = hdr_bytes_field(arr, 6, 256);
+  st h + HDR_BLOOM, f;
+  var {1,1,1,1} d = hdr_u256_field(arr, 7, 0);
+  st h + HDR_DIFFICULTY, d;
+  var 1 w = hdr_word_field(arr, 8);
+  st h + HDR_NUMBER, w;
+  w = hdr_word_field(arr, 9);
+  st h + HDR_GAS_LIMIT, w;
+  w = hdr_word_field(arr, 10);
+  st h + HDR_GAS_USED, w;
+  /* timestamp: U256 in the reference (width 32); word envelope here */
+  var {1,1} tsf = hdr_uint_field(arr, 11, 32);
+  if tsf.1 >+ 8 {
+    throw HdrErr 12;
+  }
+  w = hdr_word_field(arr, 11);
+  st h + HDR_TIMESTAMP, w;
+  var {1,1} ex = hdr_raw_field(arr, 12);
+  st h + HDR_EXTRA, ex.0;
+  st h + HDR_EXTRA_N, ex.1;
+  f = hdr_bytes_field(arr, 13, 32);
+  st h + HDR_PREV_RANDAO, f;
+  f = hdr_bytes_field(arr, 14, 8);
+  st h + HDR_NONCE, f;
+  d = hdr_u256_field(arr, 15, 0);
+  st h + HDR_BASE_FEE, d;
+  f = hdr_bytes_field(arr, 16, 32);
+  st h + HDR_WITHDRAWALS_ROOT, f;
+  var {1,1} bg = hdr_uint_field(arr, 17, 8);
+  w = hdr_word_field(arr, 17);
+  st h + HDR_BLOB_GAS_USED, w;
+  bg = hdr_uint_field(arr, 18, 8);
+  w = hdr_word_field(arr, 18);
+  st h + HDR_EXCESS_BLOB_GAS, w;
+  f = hdr_bytes_field(arr, 19, 32);
+  st h + HDR_PBBR, f;
+  f = hdr_bytes_field(arr, 20, 32);
+  st h + HDR_REQUESTS_HASH, f;
+  if is_current != 0 {
+    f = hdr_bytes_field(arr, 21, 32);
+    st h + HDR_BAL_HASH, f;
+    bg = hdr_uint_field(arr, 22, 8);
+    w = hdr_word_field(arr, 22);
+    st h + HDR_SLOT, w;
+  } else {
+    st h + HDR_BAL_HASH, 0;
+    st h + HDR_SLOT, 0;
+  }
+  return h;
+}
+
+/* --- encoding ----------------------------------------------------------- */
+
+/* Append a minimal big-endian U256 scalar item at dst; returns bytes written. */
+fun 1 rlp_put_u256(1 dst, {1,1,1,1} v) {
+  var 1 mark = heap_mark();
+  var 1 tmp = alloc(32);
+  var 1 n = u256_to_be_min(v, tmp);
+  var 1 w = rlp_encode_bytes(dst, tmp, n);
+  heap_release(mark);
+  return w;
+}
+
+/* rlp.encode(header) into a fresh buffer. Returns <ptr, len>. */
+fun {1,1} encode_header(1 h) {
+  var 1 buf = alloc(1024);
+  var p = buf + 9;           /* room for the list header */
+  var 1 w = rlp_encode_bytes(p, lds 1 (h + HDR_PARENT_HASH), 32);
+  p = p + w;
+  w = rlp_encode_bytes(p, lds 1 (h + HDR_OMMERS_HASH), 32);
+  p = p + w;
+  w = rlp_encode_bytes(p, lds 1 (h + HDR_COINBASE), 20);
+  p = p + w;
+  w = rlp_encode_bytes(p, lds 1 (h + HDR_STATE_ROOT), 32);
+  p = p + w;
+  w = rlp_encode_bytes(p, lds 1 (h + HDR_TX_ROOT), 32);
+  p = p + w;
+  w = rlp_encode_bytes(p, lds 1 (h + HDR_RECEIPT_ROOT), 32);
+  p = p + w;
+  w = rlp_encode_bytes(p, lds 1 (h + HDR_BLOOM), 256);
+  p = p + w;
+  w = rlp_put_u256(p, lds {1,1,1,1} (h + HDR_DIFFICULTY));
+  p = p + w;
+  w = rlp_encode_word(p, lds 1 (h + HDR_NUMBER));
+  p = p + w;
+  w = rlp_encode_word(p, lds 1 (h + HDR_GAS_LIMIT));
+  p = p + w;
+  w = rlp_encode_word(p, lds 1 (h + HDR_GAS_USED));
+  p = p + w;
+  w = rlp_encode_word(p, lds 1 (h + HDR_TIMESTAMP));
+  p = p + w;
+  w = rlp_encode_bytes(p, lds 1 (h + HDR_EXTRA), lds 1 (h + HDR_EXTRA_N));
+  p = p + w;
+  w = rlp_encode_bytes(p, lds 1 (h + HDR_PREV_RANDAO), 32);
+  p = p + w;
+  w = rlp_encode_bytes(p, lds 1 (h + HDR_NONCE), 8);
+  p = p + w;
+  w = rlp_put_u256(p, lds {1,1,1,1} (h + HDR_BASE_FEE));
+  p = p + w;
+  w = rlp_encode_bytes(p, lds 1 (h + HDR_WITHDRAWALS_ROOT), 32);
+  p = p + w;
+  w = rlp_encode_word(p, lds 1 (h + HDR_BLOB_GAS_USED));
+  p = p + w;
+  w = rlp_encode_word(p, lds 1 (h + HDR_EXCESS_BLOB_GAS));
+  p = p + w;
+  w = rlp_encode_bytes(p, lds 1 (h + HDR_PBBR), 32);
+  p = p + w;
+  w = rlp_encode_bytes(p, lds 1 (h + HDR_REQUESTS_HASH), 32);
+  p = p + w;
+  if (lds 1 (h + HDR_IS_CURRENT)) != 0 {
+    w = rlp_encode_bytes(p, lds 1 (h + HDR_BAL_HASH), 32);
+    p = p + w;
+    w = rlp_encode_word(p, lds 1 (h + HDR_SLOT));
+    p = p + w;
+  }
+  var payload_len = p - (buf + 9);
+  var 1 hl = rlp_list_header_len(payload_len);
+  var start = buf + 9 - hl;
+  rlp_encode_list_header(start, payload_len);
+  return <start, payload_len + hl>;
+}
+
+/* keccak256(rlp.encode(header)) -> 32 bytes at out. */
+fun 1 header_hash(1 h, 1 out) {
+  var 1 mark = heap_mark();
+  var {1,1} e = encode_header(h);
+  keccak256(e.0, e.1, out);
+  heap_release(mark);
+  return 0;
+}
+
+/* --- validate_headers (Stateless.lean) --------------------------------- */
+
+/* Decode the witness headers and check parent-hash contiguity. Returns
+   <headers word array (n records), block hashes (n*32 bytes)>. Raises
+   HdrErr / BlockErr. */
+fun {1,1} validate_headers(1 arr, 1 n) {
+  if n >+ 256 {
+    throw BlockErr 1;   /* tooManyHeaders */
+  }
+  var 1 hs = alloc(n * 8 + 8);
+  var 1 hashes = alloc(n * 32 + 32);
+  var i = 0;
+  while i < n {
+    var 1 h = decode_header(SLICE_PTR(arr, i), SLICE_LEN(arr, i));
+    st hs + i * 8, h;
+    keccak256(SLICE_PTR(arr, i), SLICE_LEN(arr, i), hashes + i * 32);
+    i = i + 1;
+  }
+  i = 1;
+  while i < n {
+    var 1 eq = memeq(lds 1 ((lds 1 (hs + i * 8)) + HDR_PARENT_HASH), hashes + (i - 1) * 32, 32);
+    if eq == 0 {
+      throw BlockErr 2;   /* headersNotContiguous */
+    }
+    i = i + 1;
+  }
+  return <hs, hashes>;
+}
+
+/* --- gas rules (Gas.lean, SeamShell.lean) ------------------------------ */
+
+/* taylor_exponential(factor, numerator, denominator) in U256; a value that
+   would exceed 2^256 traps (envelope: the reference is unbounded). */
+fun {1,1,1,1} taylor_exponential(1 factor, 1 numerator, 1 denominator) {
+  var {1,1,1,1} den = u256_from_word(denominator);
+  var {1,1,1,1} num = u256_from_word(numerator);
+  var {1,1,1,1} acc = u256_from_word(factor);
+  acc = u256_mul(acc, den);
+  var {1,1,1,1} out = <0, 0, 0, 0>;
+  var i = 1;
+  var {1,1,1,1} zero = <0, 0, 0, 0>;
+  var 1 nz = u256_is_zero(acc);
+  while nz == 0 {
+    out = u256_add(out, acc);
+    var {1,1,1,1,1,1,1,1} prod = u256_mul_full(acc, num);
+    if (prod.4 | prod.5 | prod.6 | prod.7) != 0 {
+      @trap(@base, 0, @base, 0);
+    }
+    var {1,1,1,1} p = <prod.0, prod.1, prod.2, prod.3>;
+    var {1,1,1,1} di = u256_from_word(i);
+    di = u256_mul(di, den);
+    acc = u256_div(p, di);
+    i = i + 1;
+    nz = u256_is_zero(acc);
+  }
+  out = u256_div(out, den);
+  return out;
+}
+
+/* calculate_blob_gas_price(excess_blob_gas) as U256. */
+fun {1,1,1,1} calculate_blob_gas_price(1 excess_blob_gas) {
+  var {1,1,1,1} r = taylor_exponential(BLOB_MIN_GASPRICE, excess_blob_gas, BLOB_BASE_FEE_UPDATE_FRACTION);
+  return r;
+}
+
+/* calculate_excess_blob_gas(parent_header). */
+fun 1 calculate_excess_blob_gas(1 parent) {
+  var excess = lds 1 (parent + HDR_EXCESS_BLOB_GAS);
+  var used = lds 1 (parent + HDR_BLOB_GAS_USED);
+  var {1,1,1,1} base_fee = lds {1,1,1,1} (parent + HDR_BASE_FEE);
+  var parent_blob_gas = excess + used;
+  if parent_blob_gas <+ BLOB_TARGET_GAS_PER_BLOCK {
+    return 0;
+  }
+  var {1,1,1,1} price = calculate_blob_gas_price(excess);
+  var {1,1,1,1} per_blob = u256_from_word(GAS_PER_BLOB);
+  var {1,1,1,1} target_price = u256_mul(per_blob, price);
+  var {1,1,1,1} base_cost = u256_from_word(BLOB_BASE_COST);
+  var {1,1,1,1} base_blob_tx_price = u256_mul(base_cost, base_fee);
+  var 1 gt = u256_gt(base_blob_tx_price, target_price);
+  if gt != 0 {
+    var 1 q = udiv(used * (BLOB_SCHEDULE_MAX - BLOB_SCHEDULE_TARGET), BLOB_SCHEDULE_MAX);
+    return excess + q;
+  }
+  return parent_blob_gas - BLOB_TARGET_GAS_PER_BLOCK;
+}
+
+/* check_gas_limit(gas_limit, parent_gas_limit) */
+fun 1 check_gas_limit(1 gas_limit, 1 parent_gas_limit) {
+  var 1 max_delta = udiv(parent_gas_limit, GAS_LIMIT_ADJUSTMENT_FACTOR);
+  if gas_limit >=+ parent_gas_limit + max_delta {
+    return 0;
+  }
+  if gas_limit + max_delta <=+ parent_gas_limit {
+    return 0;
+  }
+  if gas_limit <+ GAS_LIMIT_MINIMUM {
+    return 0;
+  }
+  return 1;
+}
+
+/* calculate_base_fee_per_gas(...) -> U256; raises BlockErr on the
+   gas-limit check. Fee arithmetic is U256 (the reference is unbounded). */
+fun {1,1,1,1} calculate_base_fee_per_gas(1 block_gas_limit, 1 parent_gas_limit,
+    1 parent_gas_used, {1,1,1,1} parent_base_fee) {
+  var parent_gas_target = parent_gas_limit >>> 1;
+  var 1 ok = check_gas_limit(block_gas_limit, parent_gas_limit);
+  if ok == 0 {
+    throw BlockErr 10;
+  }
+  if parent_gas_used == parent_gas_target {
+    return parent_base_fee;
+  }
+  var {1,1,1,1} tgt = u256_from_word(parent_gas_target);
+  var {1,1,1,1} eight = u256_from_word(8);
+  if parent_gas_used >+ parent_gas_target {
+    var {1,1,1,1} delta = u256_from_word(parent_gas_used - parent_gas_target);
+    var {1,1,1,1} pfd = u256_mul(parent_base_fee, delta);
+    var {1,1,1,1} tfd = u256_div(pfd, tgt);
+    var {1,1,1,1} bfd = u256_div(tfd, eight);
+    var 1 z = u256_is_zero(bfd);
+    if z != 0 {
+      bfd = u256_from_word(1);
+    }
+    var {1,1,1,1} r = u256_add(parent_base_fee, bfd);
+    return r;
+  }
+  var {1,1,1,1} delta2 = u256_from_word(parent_gas_target - parent_gas_used);
+  var {1,1,1,1} pfd2 = u256_mul(parent_base_fee, delta2);
+  var {1,1,1,1} tfd2 = u256_div(pfd2, tgt);
+  var {1,1,1,1} bfd2 = u256_div(tfd2, eight);
+  var {1,1,1,1} r2 = u256_sub(parent_base_fee, bfd2);
+  return r2;
+}
+
+var 1 hdr_zero8 = 0;
+
+/* validate_header(parent_header, header): every failure raises BlockErr. */
+fun 1 validate_header(1 parent, 1 h) {
+  if (lds 1 (h + HDR_NUMBER)) <+ 1 {
+    throw BlockErr 20;
+  }
+  var 1 ebg = calculate_excess_blob_gas(parent);
+  if (lds 1 (h + HDR_EXCESS_BLOB_GAS)) != ebg {
+    throw BlockErr 21;
+  }
+  if (lds 1 (h + HDR_GAS_USED)) >+ (lds 1 (h + HDR_GAS_LIMIT)) {
+    throw BlockErr 22;
+  }
+  var {1,1,1,1} expected = calculate_base_fee_per_gas(lds 1 (h + HDR_GAS_LIMIT),
+      lds 1 (parent + HDR_GAS_LIMIT), lds 1 (parent + HDR_GAS_USED),
+      lds {1,1,1,1} (parent + HDR_BASE_FEE));
+  var 1 eq = u256_eq(expected, lds {1,1,1,1} (h + HDR_BASE_FEE));
+  if eq == 0 {
+    throw BlockErr 23;
+  }
+  if (lds 1 (h + HDR_TIMESTAMP)) <=+ (lds 1 (parent + HDR_TIMESTAMP)) {
+    throw BlockErr 24;
+  }
+  if (lds 1 (h + HDR_NUMBER)) != (lds 1 (parent + HDR_NUMBER)) + 1 {
+    throw BlockErr 25;
+  }
+  if (lds 1 (h + HDR_EXTRA_N)) >+ 32 {
+    throw BlockErr 26;
+  }
+  var 1 dz = u256_is_zero(lds {1,1,1,1} (h + HDR_DIFFICULTY));
+  if dz == 0 {
+    throw BlockErr 27;
+  }
+  if hdr_zero8 == 0 {
+    hdr_zero8 = alloc(8);
+    memzero(hdr_zero8, 8);
+  }
+  eq = memeq(lds 1 (h + HDR_NONCE), hdr_zero8, 8);
+  if eq == 0 {
+    throw BlockErr 28;
+  }
+  /* EMPTY_OMMER_HASH = keccak256(rlp([])) = keccak256(0xc0) */
+  var 1 mark = heap_mark();
+  var 1 tmp = alloc(64);
+  st8 tmp, 192;
+  keccak256(tmp, 1, tmp + 32);
+  eq = memeq(lds 1 (h + HDR_OMMERS_HASH), tmp + 32, 32);
+  if eq == 0 {
+    heap_release(mark);
+    throw BlockErr 29;
+  }
+  header_hash(parent, tmp);
+  eq = memeq(lds 1 (h + HDR_PARENT_HASH), tmp, 32);
+  heap_release(mark);
+  if eq == 0 {
+    throw BlockErr 30;
+  }
+  return 0;
+}

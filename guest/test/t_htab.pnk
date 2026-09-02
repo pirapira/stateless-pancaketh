@@ -1,0 +1,39 @@
+#include "config.h"
+#include "lib/mem.pnk"
+#include "lib/htab.pnk"
+/* Insert blob[i*32..] keys (32-byte) with value i for i < N, delete every
+   third one, re-insert some, then report: count, and for each i the lookup
+   result (found flag | value<<8) as a word. */
+fun 1 main() {
+  mem_init();
+  var {1,1} inp = input_blob();
+  var n = inp.1 >>> 5;
+  if n >+ 150 { n = 150; }
+  var 1 t = htab_new(32, 4);
+  var i = 0;
+  while i < n {
+    htab_set(t, inp.0 + i * 32, i + 1000);
+    i = i + 1;
+  }
+  i = 0;
+  while i < n {
+    if i - (i >>> 2) * 4 == 0 { htab_del(t, inp.0 + i * 32); }   /* i % 4 == 0 -> delete (no udiv) */
+    i = i + 1;
+  }
+  i = 0;
+  while i < n {
+    if i - (i >>> 3) * 8 == 0 { htab_set(t, inp.0 + i * 32, i + 5000); }  /* i % 8 == 0 -> reinsert */
+    i = i + 1;
+  }
+  var 1 out = alloc(8 * 200);
+  st out, lds 1 (t + HT_COUNT);
+  i = 0;
+  while i < n {
+    var {1,1} r = htab_get(t, inp.0 + i * 32);
+    st out + 8 + i * 8, r.0 | (r.1 << 8);
+    i = i + 1;
+  }
+  output_write(out, 8 + n * 8);
+  @halt(@base, 0, @base, 0);
+  return 0;
+}

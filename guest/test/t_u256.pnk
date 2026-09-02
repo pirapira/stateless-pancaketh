@@ -1,0 +1,165 @@
+/* t_u256.pnk -- exercise lib/u256.pnk against tools/gen_u256_vectors.py.
+   Input: N cases of 96 bytes (a, b, m as 32-byte big-endian).  Output per case:
+   U256_NRES results of 32 bytes each, big-endian, in the order documented in
+   tools/gen_u256_vectors.py.  OPS_MASK (cpp) selects which ops run; a skipped
+   op writes zeros (used only for instruction-cost measurements). */
+#include "config.h"
+#include "lib/mem.pnk"
+#include "lib/arith.pnk"
+#include "lib/u256.pnk"
+
+#define U256_NRES 22
+#ifndef OPS_MASK
+#define OPS_MASK 4194303
+#endif
+#define OP(k) ((OPS_MASK >> (k)) & 1)
+
+fun 1 main() {
+  mem_init();
+  var {1,1} inp = input_blob();
+  var 1 ncase = inp.1;
+  ncase = ncase >>> 5;                 /* bytes / 96 = (bytes / 32) / 3 */
+  var {1,1} nq = udivmod(ncase, 3);
+  ncase = nq.0;
+  var 1 out = alloc(ncase * U256_NRES * 32);
+  var 1 tmp = alloc(64);
+  var c = 0;
+  while c <+ ncase {
+    var p = inp.0 + c * 96;
+    var o = out + c * (U256_NRES * 32);
+    var U256 a = u256_from_be(p, 32);
+    var U256 b = u256_from_be(p + 32, 32);
+    var U256 m = u256_from_be(p + 64, 32);
+    var sh = b.0 & 511;
+    var U256 r = <0, 0, 0, 0>;
+    var i = 0;
+    while i <+ U256_NRES * 32 {
+      st o + i, 0;
+      i = i + 8;
+    }
+#if OP(0)
+    r = u256_add(a, b);
+    u256_to_be32(r, o);
+#endif
+#if OP(1)
+    r = u256_sub(a, b);
+    u256_to_be32(r, o + 32);
+#endif
+#if OP(2)
+    r = u256_mul(a, b);
+    u256_to_be32(r, o + 64);
+#endif
+#if OP(3)
+    r = u256_div(a, b);
+    u256_to_be32(r, o + 96);
+#endif
+#if OP(4)
+    r = u256_mod(a, b);
+    u256_to_be32(r, o + 128);
+#endif
+#if OP(5)
+    r = u256_sdiv(a, b);
+    u256_to_be32(r, o + 160);
+#endif
+#if OP(6)
+    r = u256_smod(a, b);
+    u256_to_be32(r, o + 192);
+#endif
+#if OP(7)
+    r = u256_addmod(a, b, m);
+    u256_to_be32(r, o + 224);
+#endif
+#if OP(8)
+    r = u256_mulmod(a, b, m);
+    u256_to_be32(r, o + 256);
+#endif
+#if OP(9)
+    r = u256_exp(a, <sh, 0, 0, 0>);
+    u256_to_be32(r, o + 288);
+#endif
+#if OP(10)
+    r = u256_shl(a, sh);
+    u256_to_be32(r, o + 320);
+#endif
+#if OP(11)
+    r = u256_shr(a, sh);
+    u256_to_be32(r, o + 352);
+#endif
+#if OP(12)
+    r = u256_sar(a, sh);
+    u256_to_be32(r, o + 384);
+#endif
+#if OP(13)
+    r = u256_signextend(b.0 & 63, a);
+    u256_to_be32(r, o + 416);
+#endif
+#if OP(14)
+    var 1 by = u256_byte(b.0 & 63, a);
+    r = u256_from_word(by);
+    u256_to_be32(r, o + 448);
+#endif
+#if OP(15)
+    var flags = 0;
+    var 1 f_lt = u256_lt(a, b);
+    var 1 f_gt = u256_gt(a, b);
+    var 1 f_slt = u256_slt(a, b);
+    var 1 f_sgt = u256_sgt(a, b);
+    var 1 f_eq = u256_eq(a, b);
+    var 1 f_cmp = u256_cmp(a, b);
+    var 1 f_z = u256_is_zero(a);
+    var 1 f_fw = u256_fits_word(a);
+    var {1,1,1,1,1} ac = u256_add_carry(a, b);
+    var 1 mlen = u256_to_be_min(a, tmp);
+    var U256 rt = u256_from_be(tmp, mlen);
+    var 1 f_rt = u256_eq(rt, a);
+    var 1 lowa = u256_low(a);
+    var U256 fw = u256_from_word(lowa);
+    var 1 f_fw2 = u256_eq(fw, a);
+    var U256 zz = u256_sub(a, a);
+    var 1 f_zz = u256_is_zero(zz);
+    var U256 nn = u256_neg(a);
+    nn = u256_neg(nn);
+    var 1 f_nn = u256_eq(nn, a);
+    flags = f_lt | (f_gt << 1) | (f_slt << 2) | (f_sgt << 3) | (f_eq << 4) | (f_cmp << 5)
+          | (f_z << 7) | (f_fw << 8) | (ac.4 << 9) | (f_rt << 10) | (f_fw2 << 11)
+          | (f_zz << 12) | (f_nn << 13);
+    r = u256_from_word(flags);
+    u256_to_be32(r, o + 480);
+#endif
+#if OP(16)
+    var 1 bl = u256_bit_length(a);
+    var 1 byl = u256_byte_length(a);
+    var 1 ml2 = u256_to_be_min(a, tmp);
+    r = u256_from_word(bl | (byl << 16) | (ml2 << 32));
+    u256_to_be32(r, o + 512);
+#endif
+#if OP(17)
+    r = u256_and(a, b);
+    u256_to_be32(r, o + 544);
+#endif
+#if OP(18)
+    var U256 nb = u256_not(b);
+    r = u256_or(a, nb);
+    u256_to_be32(r, o + 576);
+#endif
+#if OP(19)
+    var U256 na = u256_neg(a);
+    r = u256_xor(na, b);
+    u256_to_be32(r, o + 608);
+#endif
+#if OP(20)
+    var U512 full = u256_mul_full(a, b);
+    r = <full.4, full.5, full.6, full.7>;
+    u256_to_be32(r, o + 640);
+#endif
+#if OP(21)
+    var 1 fn = min(m.0 & 63, 32);
+    r = u256_from_be(p, fn);
+    u256_to_be32(r, o + 672);
+#endif
+    c = c + 1;
+  }
+  output_write(out, ncase * U256_NRES * 32);
+  @halt(@base, 0, @base, 0);
+  return 0;
+}

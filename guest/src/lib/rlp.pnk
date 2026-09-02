@@ -1,0 +1,268 @@
+/* lib/rlp.pnk -- RLP (Recursive Length Prefix) decoding and encoding.
+   Ports EvmAsm/EL/RLP/Decode.lean (decodeAux, decodeItems, readLength),
+   FullDecode.lean (decodeFully), Basic.lean (encodeBytes, encode),
+   Scalar.lean and Stateless/SpecRef/Transactions.lean decodeItemScalar.
+   Strictness matches execution-specs ethereum_rlp: non-canonical length
+   encodings, 0x81 <byte < 0x80>, truncation and (decodeFully) trailing
+   bytes all raise RlpErr.
+
+   Items are described as <kind, payload_ptr, payload_len, total_len>:
+   kind 0 = byte string, 1 = list; total_len = header + payload. */
+
+exception RlpErr : 1;
+
+fun 1 rlp_fail(1 code) {
+  throw RlpErr code;
+  return 0;
+}
+
+/* readLength (Decode.lean): big-endian value of the n bytes at p
+   (1 <= n <= 8, availability checked by the caller). A multi-byte length
+   with a leading zero byte is non-canonical. */
+fun 1 rlp_read_length(1 p, 1 n) {
+  if (n >+ 1) && ((ld8 p) == 0) {
+    rlp_fail(2);
+  }
+  var v = 0;
+  var i = 0;
+  while i <+ n {
+    v = (v << 8) | (ld8 (p + i));
+    i = i + 1;
+  }
+  return v;
+}
+
+/* decodeAux: decode the item at p within len bytes. Nested list payloads
+   are validated recursively (decodeItems must consume the payload exactly). */
+fun {1,1,1,1} rlp_item(1 p, 1 len) {
+  if len == 0 {
+    rlp_fail(1);
+  }
+  var b = ld8 p;
+  if b <+ 128 {
+    return <0, p, 1, 1>;
+  }
+  if b <=+ 183 {
+    /* short string: 0x80 + len */
+    var n = b - 128;
+    if (len - 1) <+ n {
+      rlp_fail(3);
+    }
+    if n == 1 {
+      if (ld8 (p + 1)) <+ 128 {
+        rlp_fail(4);   /* single byte < 0x80 must be its own encoding */
+      }
+    }
+    return <0, p + 1, n, 1 + n>;
+  }
+  if b <=+ 191 {
+    /* long string: 0xB7 + lenLen */
+    var ll = b - 183;
+    if (len - 1) <+ ll {
+      rlp_fail(3);
+    }
+    var 1 n = rlp_read_length(p + 1, ll);
+    if n <=+ 55 {
+      rlp_fail(5);   /* must have used the short form */
+    }
+    if (len - 1 - ll) <+ n {
+      rlp_fail(3);
+    }
+    return <0, p + 1 + ll, n, 1 + ll + n>;
+  }
+  if b <=+ 247 {
+    /* short list: 0xC0 + len */
+    var n = b - 192;
+    if (len - 1) <+ n {
+      rlp_fail(3);
+    }
+    rlp_list_count(p + 1, n);
+    return <1, p + 1, n, 1 + n>;
+  }
+  /* long list: 0xF7 + lenLen */
+  var ll = b - 247;
+  if (len - 1) <+ ll {
+    rlp_fail(3);
+  }
+  var 1 n = rlp_read_length(p + 1, ll);
+  if n <=+ 55 {
+    rlp_fail(5);
+  }
+  if (len - 1 - ll) <+ n {
+    rlp_fail(3);
+  }
+  rlp_list_count(p + 1 + ll, n);
+  return <1, p + 1 + ll, n, 1 + ll + n>;
+}
+
+/* decodeFully: the item at p must consume exactly len bytes. */
+fun {1,1,1,1} rlp_decode_fully(1 p, 1 len) {
+  var {1,1,1,1} it = rlp_item(p, len);
+  if it.3 != len {
+    rlp_fail(6);   /* trailing bytes */
+  }
+  return it;
+}
+
+/* decodeItems: number of items in the list payload at (p, len). Each item
+   must lie within the payload; throws on any malformed item. */
+fun 1 rlp_list_count(1 p, 1 len) {
+  var count = 0;
+  var off = 0;
+  while off <+ len {
+    var {1,1,1,1} it = rlp_item(p + off, len - off);
+    off = off + it.3;
+    count = count + 1;
+  }
+  return count;
+}
+
+/* Split the list payload at (p, len) into a slice array: element i is
+   <item_ptr, item_total_len> at arr + i*16 (the whole encoded item, so
+   callers re-run rlp_item on it). Returns <arr, count>. */
+fun {1,1} rlp_list_to_slices(1 p, 1 len) {
+  var 1 count = rlp_list_count(p, len);
+  var 1 arr = alloc(count * 16);
+  var i = 0;
+  var off = 0;
+  while i <+ count {
+    var {1,1,1,1} it = rlp_item(p + off, len - off);
+    st arr + i * 16, p + off;
+    st arr + i * 16 + 8, it.3;
+    off = off + it.3;
+    i = i + 1;
+  }
+  return <arr, count>;
+}
+
+/* ---- scalars (decodeItemScalar / _deserialize_to_uint) ---------------- */
+
+/* Big-endian bytes -> word. Throws if n > 8 or on a leading zero byte
+   (non-canonical integer). n == 0 is the canonical zero. */
+fun 1 rlp_bytes_to_word(1 p, 1 n) {
+  if n >+ 8 {
+    rlp_fail(20);
+  }
+  if (n >+ 0) && ((ld8 p) == 0) {
+    rlp_fail(21);
+  }
+  var v = 0;
+  var i = 0;
+  while i <+ n {
+    v = (v << 8) | (ld8 (p + i));
+    i = i + 1;
+  }
+  return v;
+}
+
+/* decodeItemScalar checks on a byte-string payload: no leading zero, and
+   (only when maxbytes != 0) at most maxbytes bytes. Returns 0 or throws. */
+fun 1 rlp_check_uint_bytes(1 p, 1 n, 1 maxbytes) {
+  if (n >+ 0) && ((ld8 p) == 0) {
+    rlp_fail(21);
+  }
+  if (maxbytes != 0) && (n >+ maxbytes) {
+    rlp_fail(22);
+  }
+  return 0;
+}
+
+/* ---- encoding ------------------------------------------------------- */
+
+/* Number of big-endian bytes in the minimal encoding of v (0 for v == 0). */
+fun 1 rlp_be_len(1 v) {
+  var n = 0;
+  while v != 0 {
+    v = v >>> 8;
+    n = n + 1;
+  }
+  return n;
+}
+
+/* Write v as n big-endian bytes at dst. */
+fun 1 rlp_put_be(1 dst, 1 v, 1 n) {
+  var i = n;
+  while i >+ 0 {
+    i = i - 1;
+    st8 dst + i, v;
+    v = v >>> 8;
+  }
+  return 0;
+}
+
+/* Header for a payload of n bytes with short-form base (0x80 or 0xC0). */
+fun 1 rlp_write_header(1 dst, 1 base, 1 n) {
+  if n <=+ 55 {
+    st8 dst, base + n;
+    return 1;
+  }
+  var 1 ll = rlp_be_len(n);
+  st8 dst, base + 55 + ll;
+  rlp_put_be(dst + 1, n, ll);
+  return 1 + ll;
+}
+
+fun 1 rlp_header_len(1 n) {
+  if n <=+ 55 {
+    return 1;
+  }
+  var 1 ll = rlp_be_len(n);
+  return 1 + ll;
+}
+
+/* encodeBytes: RLP string encoding of the n bytes at src into dst.
+   Returns the number of bytes written. */
+fun 1 rlp_encode_bytes(1 dst, 1 src, 1 n) {
+  if n == 1 {
+    var b = ld8 src;
+    if b <+ 128 {
+      st8 dst, b;
+      return 1;
+    }
+  }
+  var 1 h = rlp_write_header(dst, 128, n);
+  memcpy(dst + h, src, n);
+  return h + n;
+}
+
+/* encodeScalar for a 64-bit word: minimal big-endian bytes as a string.
+   0 encodes as 0x80 (the empty string). */
+fun 1 rlp_encode_word(1 dst, 1 w) {
+  if w == 0 {
+    st8 dst, 128;
+    return 1;
+  }
+  if w <+ 128 {
+    st8 dst, w;
+    return 1;
+  }
+  var 1 ll = rlp_be_len(w);
+  st8 dst, 128 + ll;
+  rlp_put_be(dst + 1, w, ll);
+  return 1 + ll;
+}
+
+fun 1 rlp_encode_list_header(1 dst, 1 payload_len) {
+  return rlp_write_header(dst, 192, payload_len);
+}
+
+/* Encoded size of a string of n bytes whose first byte is first_byte. */
+fun 1 rlp_bytes_encoded_len(1 first_byte, 1 n) {
+  if (n == 1) && (first_byte <+ 128) {
+    return 1;
+  }
+  var 1 h = rlp_header_len(n);
+  return h + n;
+}
+
+fun 1 rlp_list_header_len(1 payload_len) {
+  return rlp_header_len(payload_len);
+}
+
+fun 1 rlp_word_encoded_len(1 w) {
+  if w <+ 128 {
+    return 1;
+  }
+  var 1 ll = rlp_be_len(w);
+  return 1 + ll;
+}

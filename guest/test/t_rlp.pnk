@@ -1,0 +1,142 @@
+/* t_rlp.pnk -- RLP decoder/encoder unit test. Input blob: sequence of
+   [u32 LE len][rlp bytes]. Output: one 32-byte record per item (layout in
+   tools/gen_rlp_vectors.py, which also produces the expected records). */
+#include "config.h"
+#include "types.h"
+#include "lib/mem.pnk"
+#include "lib/rlp.pnk"
+
+var 1 rec = 0;   /* current 32-byte output record */
+
+fun 1 rlp_test_item(1 p, 1 len) {
+  memzero(rec, 32);
+  var err = 0;
+  var {1,1,1,1} it = <0, 0, 0, 0>;
+  /* byte 29: prefix decode (rlp_item) status */
+  try it = rlp_item(p, len)
+  catch RlpErr => err {
+    st8 rec + 29, 1;
+  }
+  try it = rlp_decode_fully(p, len)
+  catch RlpErr => err {
+    st8 rec, 1;
+    return 0;
+  }
+  st8 rec + 1, it.0;
+  st_le32(rec + 2, it.2);
+  st_le32(rec + 6, it.3);
+  var 1 mark = heap_mark();
+  var 1 buf = alloc(len + 16);
+  if it.0 == 0 {
+    /* strings */
+    var w = 0;
+    var werr = 0;
+    try w = rlp_bytes_to_word(it.1, it.2)
+    catch RlpErr => err {
+      werr = 1;
+    }
+    if werr == 0 {
+      st_le64(rec + 14, w);
+      /* byte 25: encode_word round trip and word_encoded_len */
+      var 1 wn = rlp_encode_word(buf, w);
+      var 1 wl = rlp_word_encoded_len(w);
+      if (wn == len) && (wl == len) {
+        var 1 eq = memeq(buf, p, len);
+        st8 rec + 25, eq;
+      }
+    } else {
+      var i = 0;
+      while i < 8 {
+        st8 rec + 14 + i, 255;
+        i = i + 1;
+      }
+    }
+    /* byte 22: encode_bytes round trip */
+    var 1 en = rlp_encode_bytes(buf, it.1, it.2);
+    if en == len {
+      var 1 eq2 = memeq(buf, p, len);
+      st8 rec + 22, eq2;
+    }
+    /* byte 24: bytes_encoded_len */
+    var fb = 0;
+    if it.2 >+ 0 {
+      fb = ld8 it.1;
+    }
+    var 1 el = rlp_bytes_encoded_len(fb, it.2);
+    if el == len {
+      st8 rec + 24, 1;
+    }
+    /* bytes 26, 27: check_uint_bytes with no width / width 4 */
+    var c0 = 0;
+    try c0 = rlp_check_uint_bytes(it.1, it.2, 0)
+    catch RlpErr => err {
+      st8 rec + 26, 1;
+    }
+    var c4 = 0;
+    try c4 = rlp_check_uint_bytes(it.1, it.2, 4)
+    catch RlpErr => err {
+      st8 rec + 27, 1;
+    }
+  } else {
+    /* lists */
+    var 1 cnt = rlp_list_count(it.1, it.2);
+    st_le32(rec + 10, cnt);
+    /* byte 23: list header round trip */
+    var 1 hn = rlp_encode_list_header(buf, it.2);
+    if (hn + it.2) == len {
+      var 1 eq3 = memeq(buf, p, hn);
+      st8 rec + 23, eq3;
+    }
+    /* byte 24: list_header_len */
+    var 1 hl = rlp_list_header_len(it.2);
+    if (hl + it.2) == len {
+      st8 rec + 24, 1;
+    }
+    /* byte 28: slices consistent with count / lengths / rlp_item */
+    var {1,1} sl = rlp_list_to_slices(it.1, it.2);
+    var ok = 1;
+    if sl.1 != cnt {
+      ok = 0;
+    }
+    var i = 0;
+    var sum = 0;
+    var q = it.1;
+    while i <+ sl.1 {
+      if SLICE_PTR(sl.0, i) != q {
+        ok = 0;
+      }
+      var {1,1,1,1} sub = rlp_item(SLICE_PTR(sl.0, i), SLICE_LEN(sl.0, i));
+      if sub.3 != SLICE_LEN(sl.0, i) {
+        ok = 0;
+      }
+      sum = sum + SLICE_LEN(sl.0, i);
+      q = q + SLICE_LEN(sl.0, i);
+      i = i + 1;
+    }
+    if sum != it.2 {
+      ok = 0;
+    }
+    st8 rec + 28, ok;
+  }
+  heap_release(mark);
+  return 0;
+}
+
+fun 1 main() {
+  mem_init();
+  var {1,1} inp = input_blob();
+  var 1 out = alloc(65536);
+  var off = 0;
+  var n = 0;
+  while (off + 4 <=+ inp.1) && (n <+ 2048) {
+    var len = LD_LE32(inp.0 + off);
+    off = off + 4;
+    rec = out + n * 32;
+    rlp_test_item(inp.0 + off, len);
+    off = off + len;
+    n = n + 1;
+  }
+  output_write(out, n * 32);
+  @halt(@base, 0, @base, 0);
+  return 0;
+}

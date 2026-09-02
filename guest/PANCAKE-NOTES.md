@@ -51,3 +51,17 @@ Empirically verified against the prebuilt `cake` (CakeML e8eca63, 2026-08-24).
   aligned with the Lean/Python names.
 * Unit tests: `guest/test/t_*.pnk` (a `main` that reads `input_blob()`, computes, and
   `output_write`s the result), checked with `tools/unit.py TEST INPUT 'python-expr'`.
+
+## More pitfalls (from the library ports)
+* A reserved word used as a variable (`st`, `in`, ...) gives a parse error at its first USE,
+  not at the declaration.
+* Word constants >= 2^63 must be written as negative decimals (signed 64-bit).
+* Forward references and mutual recursion between top-level functions work.
+* `try x = f(...) catch` works with a struct-shaped `x` declared before the `try`.
+* `objdump -d` shows cake's `.text` as `.word` data; to disassemble use
+  `objcopy -O binary -j .text` then `objdump -D -b binary -m riscv:rv64 --adjust-vma=0x80000000`.
+* `output_write(src, n)` writes from output offset 0: accumulate multi-record test output in a
+  heap buffer and write once.
+* Register pressure: ~30 live locals compile but spill; order statements for short live ranges
+  in hot loops.
+* `tools/unit.py TEST INPUT @file.py` uses `expected(blob)` from the file as the oracle.

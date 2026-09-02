@@ -112,3 +112,50 @@
 #define MAX_PUBLIC_KEYS 32768
 /* chunk counts of the byte-list limits: (limit+31)/32 */
 #define CHUNKS_2_30 33554432
+
+/* Header record (Stateless.lean Header / mkHeaderFields). Byte fields are
+   pointers (into the RLP payload or into computed 32-byte buffers). Scalars
+   number/gasLimit/gasUsed/timestamp/blobGasUsed/excessBlobGas/slot are
+   words (the reference allows wider values; wider ones are rejected —
+   the guest envelope documented in Stateless.lean numericFieldWidths).
+   difficulty and baseFeePerGas are U256 (4 words). */
+#define HDR_IS_CURRENT     0
+#define HDR_PARENT_HASH    8
+#define HDR_OMMERS_HASH    16
+#define HDR_COINBASE       24
+#define HDR_STATE_ROOT     32
+#define HDR_TX_ROOT        40
+#define HDR_RECEIPT_ROOT   48
+#define HDR_BLOOM          56
+#define HDR_DIFFICULTY     64    /* U256 */
+#define HDR_NUMBER         96
+#define HDR_GAS_LIMIT      104
+#define HDR_GAS_USED       112
+#define HDR_TIMESTAMP      120
+#define HDR_EXTRA          128
+#define HDR_EXTRA_N        136
+#define HDR_PREV_RANDAO    144
+#define HDR_NONCE          152   /* ptr to 8 bytes */
+#define HDR_BASE_FEE       160   /* U256 */
+#define HDR_WITHDRAWALS_ROOT 192
+#define HDR_BLOB_GAS_USED  200
+#define HDR_EXCESS_BLOB_GAS 208
+#define HDR_PBBR           216
+#define HDR_REQUESTS_HASH  224
+#define HDR_BAL_HASH       232   /* ptr, only when HDR_IS_CURRENT */
+#define HDR_SLOT           240
+#define HDR_SIZE           248
+
+/* Gas constants (Gas.lean GasCosts / StateGasCosts) */
+#define GAS_LIMIT_ADJUSTMENT_FACTOR 1024
+#define GAS_LIMIT_MINIMUM 5000
+#define GAS_PER_BLOB 131072
+#define BLOB_SCHEDULE_TARGET 14
+#define BLOB_SCHEDULE_MAX 21
+#define BLOB_TARGET_GAS_PER_BLOCK 1835008
+#define BLOB_BASE_COST 8192
+#define BLOB_MIN_GASPRICE 1
+#define BLOB_BASE_FEE_UPDATE_FRACTION 11684671
+#define MAX_BLOB_GAS_PER_BLOCK 2752512
+#define BLOB_COUNT_LIMIT 6
+#define MAX_RLP_BLOCK_SIZE 8388608

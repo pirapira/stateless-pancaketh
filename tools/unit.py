@@ -5,6 +5,8 @@ the output bytes (as hex, truncated to expected length) with the hex string
 produced by evaluating EXPECT_EXPR in Python (blob = input blob bytes without
 the ziskemu framing; hashlib available)."""
 import hashlib, os, struct, subprocess, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pyref
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPIKE_RUN = os.environ.get("SPIKE_RUN", os.path.join(ROOT, "evm-asm/scripts/spike/spike_run"))
 test, inp, expr = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -18,7 +20,10 @@ out = os.path.join(bdir, name + ".out")
 env = dict(os.environ); env.setdefault("SPIKE_OUTPUT_LEN", "4096")
 log = subprocess.run([SPIKE_RUN, elf, inp, out], capture_output=True, text=True, env=env)
 print(log.stderr.strip().splitlines()[-1] if log.stderr.strip() else f"rc={log.returncode}")
-expected = eval(expr, {"blob": blob, "hashlib": hashlib, "struct": struct})
+if expr.startswith("@"):
+    ns = {}; exec(open(expr[1:]).read(), ns); expected = ns["expected"](blob)
+else:
+    expected = eval(expr, {"blob": blob, "hashlib": hashlib, "struct": struct, "keccak256": pyref.keccak256})
 if isinstance(expected, bytes): expected = expected.hex()
 actual = open(out, "rb").read()[:len(expected)//2].hex()
 print("expected", expected); print("actual  ", actual)
