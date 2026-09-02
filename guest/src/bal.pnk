@@ -1,0 +1,587 @@
+/* bal.pnk -- port of BlockAccessLists.lean (block_access_lists.py, EIP-7928):
+   BlockAccessListBuilder, update_builder_from_tx, incorporate_tx_into_block,
+   build_block_access_list, _build_from_builder (sorted), RLP encoding,
+   hash_block_access_list, validate_block_access_list_gas_limit.
+   Requires: state.pnk and its dependencies.
+
+   Builder: accounts htab addr(20) -> AccountData record:
+     AD_STOR_CHANGES : htab slot(32) -> growable list of <idx, value(4 limbs)> (40-byte entries)
+     AD_STOR_READS   : htab slot(32) -> 1
+     AD_BAL_CHANGES  : list of <idx, post_balance(4 limbs)>   (40-byte entries)
+     AD_NONCE_CHANGES: list of <idx, new_nonce>               (16-byte entries)
+     AD_CODE_CHANGES : list of <idx, ptr, len>                (24-byte entries)
+   Growable list record: LST_PTR, LST_N, LST_CAP, element size fixed by user. */
+
+#define LST_PTR 0
+#define LST_N 8
+#define LST_CAP 16
+#define LST_SIZE 24
+
+#define AD_STOR_CHANGES 0
+#define AD_STOR_READS 8
+#define AD_BAL_CHANGES 16
+#define AD_NONCE_CHANGES 24
+#define AD_CODE_CHANGES 32
+#define AD_SIZE 40
+
+#define BLOCK_ACCESS_LIST_ITEM_GAS 2000
+
+var 1 bal_accounts = 0;   /* htab addr -> AccountData */
+var 1 bal_index = 0;      /* builder.block_access_index */
+
+fun 1 lst_new(1 esz, 1 cap) {
+  var 1 l = alloc(LST_SIZE);
+  var 1 p = alloc(esz * cap);
+  st l + LST_PTR, p;
+  st l + LST_N, 0;
+  st l + LST_CAP, cap;
+  return l;
+}
+
+/* Returns the address of a fresh slot for an element of size esz. */
+fun 1 lst_push(1 l, 1 esz) {
+  var n = lds 1 (l + LST_N);
+  var cap = lds 1 (l + LST_CAP);
+  if n >=+ cap {
+    var 1 np = alloc(esz * cap * 2);
+    memcpy(np, lds 1 (l + LST_PTR), esz * n);
+    st l + LST_PTR, np;
+    st l + LST_CAP, cap * 2;
+  }
+  st l + LST_N, n + 1;
+  return (lds 1 (l + LST_PTR)) + n * esz;
+}
+
+fun 1 bal_init() {
+  bal_accounts = htab_new(20, 64);
+  bal_index = 0;
+  return 0;
+}
+
+/* ensure_account -> AccountData */
+fun 1 bal_ensure_account(1 addr) {
+  var {1,1} m = htab_get(bal_accounts, addr);
+  if m.0 != 0 {
+    return m.1;
+  }
+  var 1 ad = alloc(AD_SIZE);
+  var 1 t = htab_new(32, 8);
+  st ad + AD_STOR_CHANGES, t;
+  t = htab_new(32, 8);
+  st ad + AD_STOR_READS, t;
+  var 1 l = lst_new(40, 4);
+  st ad + AD_BAL_CHANGES, l;
+  l = lst_new(16, 4);
+  st ad + AD_NONCE_CHANGES, l;
+  l = lst_new(24, 2);
+  st ad + AD_CODE_CHANGES, l;
+  htab_set(bal_accounts, addr, ad);
+  return ad;
+}
+
+/* upsertByIndex for lists whose first word is the block access index;
+   returns the entry address (existing or appended). */
+fun 1 lst_upsert_idx(1 l, 1 esz, 1 idx) {
+  var n = lds 1 (l + LST_N);
+  var p = lds 1 (l + LST_PTR);
+  var i = 0;
+  while i < n {
+    if (lds 1 (p + i * esz)) == idx {
+      return p + i * esz;
+    }
+    i = i + 1;
+  }
+  var 1 e = lst_push(l, esz);
+  st e, idx;
+  return e;
+}
+
+fun 1 add_storage_write(1 addr, 1 slot, 1 idx, {1,1,1,1} new_value) {
+  var 1 ad = bal_ensure_account(addr);
+  var t = lds 1 (ad + AD_STOR_CHANGES);
+  var {1,1} m = htab_get(t, slot);
+  var l = 0;
+  if m.0 == 0 {
+    l = lst_new(40, 2);
+    htab_set(t, slot, l);
+  } else {
+    l = m.1;
+  }
+  var 1 e = lst_upsert_idx(l, 40, idx);
+  st e + 8, new_value;
+  return 0;
+}
+
+fun 1 add_storage_read(1 addr, 1 slot) {
+  var 1 ad = bal_ensure_account(addr);
+  htab_set(lds 1 (ad + AD_STOR_READS), slot, 1);
+  return 0;
+}
+
+fun 1 add_balance_change(1 addr, 1 idx, {1,1,1,1} post_balance) {
+  var 1 ad = bal_ensure_account(addr);
+  var 1 e = lst_upsert_idx(lds 1 (ad + AD_BAL_CHANGES), 40, idx);
+  st e + 8, post_balance;
+  return 0;
+}
+
+/* keeps the HIGHEST nonce per index */
+fun 1 add_nonce_change(1 addr, 1 idx, 1 new_nonce) {
+  var 1 ad = bal_ensure_account(addr);
+  var l = lds 1 (ad + AD_NONCE_CHANGES);
+  var n = lds 1 (l + LST_N);
+  var p = lds 1 (l + LST_PTR);
+  var i = 0;
+  while i < n {
+    if (lds 1 (p + i * 16)) == idx {
+      if new_nonce >+ (lds 1 (p + i * 16 + 8)) {
+        st p + i * 16 + 8, new_nonce;
+      }
+      return 0;
+    }
+    i = i + 1;
+  }
+  var 1 e = lst_push(l, 16);
+  st e, idx;
+  st e + 8, new_nonce;
+  return 0;
+}
+
+fun 1 add_code_change(1 addr, 1 idx, 1 code, 1 code_len) {
+  var 1 ad = bal_ensure_account(addr);
+  var 1 e = lst_upsert_idx(lds 1 (ad + AD_CODE_CHANGES), 24, idx);
+  st e + 8, code;
+  st e + 16, code_len;
+  return 0;
+}
+
+fun 1 add_touched_account(1 addr) {
+  bal_ensure_account(addr);
+  return 0;
+}
+
+/* ---- update_builder_from_tx ---------------------------------------------------- */
+
+/* _get_pre_tx_account: block writes, else the witness directly. */
+fun 1 get_pre_tx_account(1 addr) {
+  var {1,1} w = htab_get(lds 1 (bs + BS_ACCT_WRITES), addr);
+  if w.0 != 0 {
+    return w.1;
+  }
+  record_pre_state_read(addr);
+  var 1 a = ws_get_account_optional(addr);
+  return a;
+}
+
+fun {1,1,1,1} get_pre_tx_storage(1 addr, 1 key) {
+  var {1,1} v = stor_lookup(lds 1 (bs + BS_STOR_WRITES), addr, key);
+  if v.0 != 0 {
+    return lds {1,1,1,1} (v.1);
+  }
+  record_pre_state_read(addr);
+  var {1,1,1,1} r = ws_get_storage(addr, key);
+  return r;
+}
+
+fun 1 update_builder_from_tx() {
+  var idx = bal_index;
+  var aw = lds 1 (ts + TS_ACCT_WRITES);
+  var cap = lds 1 (aw + HT_CAP);
+  var i = 0;
+  while i < cap {
+    var {1,1,1} s = htab_slot(aw, i);
+    if s.0 != 0 {
+      var addr = s.1;
+      var post = s.2;
+      var 1 pre = get_pre_tx_account(addr);
+      var {1,1,1,1} pre_bal = <0, 0, 0, 0>;
+      var pre_nonce = 0;
+      var pre_ch = empty_code_hash;
+      if pre != ACCT_NONE {
+        pre_bal = lds {1,1,1,1} (pre + ACCT_BALANCE);
+        pre_nonce = lds 1 (pre + ACCT_NONCE);
+        pre_ch = lds 1 (pre + ACCT_CODE_HASH);
+      }
+      var {1,1,1,1} post_bal = <0, 0, 0, 0>;
+      var post_nonce = 0;
+      var post_ch = empty_code_hash;
+      if post != ACCT_NONE {
+        post_bal = lds {1,1,1,1} (post + ACCT_BALANCE);
+        post_nonce = lds 1 (post + ACCT_NONCE);
+        post_ch = lds 1 (post + ACCT_CODE_HASH);
+      }
+      var 1 eq = u256_eq(pre_bal, post_bal);
+      if eq == 0 {
+        add_balance_change(addr, idx, post_bal);
+      }
+      if pre_nonce != post_nonce {
+        add_nonce_change(addr, idx, post_nonce);
+      }
+      eq = memeq(pre_ch, post_ch, 32);
+      if eq == 0 {
+        var {1,1} code = get_code(post_ch, addr);
+        add_code_change(addr, idx, code.0, code.1);
+      }
+    }
+    i = i + 1;
+  }
+  var outer = lds 1 (ts + TS_STOR_WRITES);
+  cap = lds 1 (outer + HT_CAP);
+  i = 0;
+  while i < cap {
+    var {1,1,1} s2 = htab_slot(outer, i);
+    if s2.0 != 0 {
+      var inner = s2.2;
+      var icap = lds 1 (inner + HT_CAP);
+      var j = 0;
+      while j < icap {
+        var {1,1,1} e = htab_slot(inner, j);
+        if e.0 != 0 {
+          var {1,1,1,1} pre_v = get_pre_tx_storage(s2.1, e.1);
+          var {1,1,1,1} post_v = lds {1,1,1,1} (e.2);
+          var 1 eq2 = u256_eq(pre_v, post_v);
+          if eq2 == 0 {
+            add_storage_write(s2.1, e.1, idx, post_v);
+          }
+        }
+        j = j + 1;
+      }
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+/* incorporate_tx_into_block: BAL update, then merge. */
+fun 1 incorporate_tx_into_block() {
+  update_builder_from_tx();
+  merge_tx_into_block();
+  return 0;
+}
+
+/* ---- build + encode + hash ---------------------------------------------------- */
+
+/* Sort an array of n fixed-size elements by a key: kind 0 = first word
+   (index), kind 1 = 20-byte address at elem, kind 2 = 32-byte big-endian
+   bytes at elem. Stable insertion sort (inputs are small). */
+fun 1 sort_elems(1 p, 1 n, 1 esz, 1 kind, 1 tmp) {
+  var i = 1;
+  while i < n {
+    var j = i;
+    while j > 0 {
+      var a = p + (j - 1) * esz;
+      var b = p + j * esz;
+      var gt = 0;
+      if kind == 0 {
+        if (lds 1 a) >+ (lds 1 b) {
+          gt = 1;
+        }
+      } else {
+        var len = 20;
+        if kind == 2 {
+          len = 32;
+        }
+        var k = 0;
+        while k <+ len {
+          var ca = ld8 (a + k);
+          var cb = ld8 (b + k);
+          if ca != cb {
+            if ca >+ cb {
+              gt = 1;
+            }
+            k = len;
+          }
+          k = k + 1;
+        }
+      }
+      if gt == 0 {
+        break;
+      }
+      memcpy(tmp, a, esz);
+      memcpy(a, b, esz);
+      memcpy(b, tmp, esz);
+      j = j - 1;
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+/* Copy the 32-byte keys of a htab into a sorted array; <ptr, n>. */
+fun {1,1} sorted_keys32(1 t, 1 tmp) {
+  var {1,1} k = htab_keys(t);
+  sort_elems(k.0, k.1, 32, 2, tmp);
+  return k;
+}
+
+/* Encoded RLP of one AccountChanges into dst; returns bytes written.
+   Builds the payload at dst+9 then prepends the list header. */
+fun 1 bal_encode_account(1 dst, 1 addr, 1 ad, 1 tmp) {
+  var p = dst + 9;
+  var 1 w = rlp_encode_bytes(p, addr, 20);
+  p = p + w;
+  /* storage_changes: sorted by slot; each [slot, [[idx, value]...]] */
+  var 1 mark = heap_mark();
+  var sc = lds 1 (ad + AD_STOR_CHANGES);
+  var {1,1} slots = sorted_keys32(sc, tmp);
+  var q = p + 9;   /* list payload start (leave room for header) */
+  var i = 0;
+  while i < slots.1 {
+    var slot = slots.0 + i * 32;
+    var {1,1} m = htab_get(sc, slot);
+    var l = m.1;
+    var n = lds 1 (l + LST_N);
+    var lp = lds 1 (l + LST_PTR);
+    sort_elems(lp, n, 40, 0, tmp);
+    /* inner: [slot, [changes]] */
+    var r = q + 9;
+    var {1,1,1,1} sv = u256_from_be(slot, 32);
+    w = rlp_put_u256(r, sv);
+    r = r + w;
+    var cs = r + 9;
+    var j = 0;
+    while j < n {
+      var e = lp + j * 40;
+      var c = cs + 9;
+      w = rlp_encode_word(c, lds 1 e);
+      c = c + w;
+      w = rlp_put_u256(c, lds {1,1,1,1} (e + 8));
+      c = c + w;
+      var 1 hl = rlp_list_header_len(c - (cs + 9));
+      /* move payload to sit right after its header */
+      memcpy(cs + hl, cs + 9, c - (cs + 9));
+      rlp_encode_list_header(cs, c - (cs + 9));
+      cs = cs + hl + (c - (cs + 9));
+      j = j + 1;
+    }
+    var 1 hl2 = rlp_list_header_len(cs - (r + 9));
+    memcpy(r + hl2, r + 9, cs - (r + 9));
+    rlp_encode_list_header(r, cs - (r + 9));
+    r = r + hl2 + (cs - (r + 9));
+    var 1 hl3 = rlp_list_header_len(r - (q + 9));
+    memcpy(q + hl3, q + 9, r - (q + 9));
+    rlp_encode_list_header(q, r - (q + 9));
+    q = q + hl3 + (r - (q + 9));
+    i = i + 1;
+  }
+  var 1 hl4 = rlp_list_header_len(q - (p + 9));
+  memcpy(p + hl4, p + 9, q - (p + 9));
+  rlp_encode_list_header(p, q - (p + 9));
+  p = p + hl4 + (q - (p + 9));
+  /* storage_reads: slots read but not written, sorted */
+  var sr = lds 1 (ad + AD_STOR_READS);
+  var {1,1} rk = htab_keys(sr);
+  /* filter out written slots in place */
+  var kept = 0;
+  i = 0;
+  while i < rk.1 {
+    var 1 hasw = htab_has(sc, rk.0 + i * 32);
+    if hasw == 0 {
+      memcpy(rk.0 + kept * 32, rk.0 + i * 32, 32);
+      kept = kept + 1;
+    }
+    i = i + 1;
+  }
+  sort_elems(rk.0, kept, 32, 2, tmp);
+  q = p + 9;
+  i = 0;
+  while i < kept {
+    var {1,1,1,1} sv2 = u256_from_be(rk.0 + i * 32, 32);
+    w = rlp_put_u256(q, sv2);
+    q = q + w;
+    i = i + 1;
+  }
+  var 1 hl5 = rlp_list_header_len(q - (p + 9));
+  memcpy(p + hl5, p + 9, q - (p + 9));
+  rlp_encode_list_header(p, q - (p + 9));
+  p = p + hl5 + (q - (p + 9));
+  /* balance_changes [[idx, post_balance]] sorted by idx */
+  var l2 = lds 1 (ad + AD_BAL_CHANGES);
+  var n2 = lds 1 (l2 + LST_N);
+  var lp2 = lds 1 (l2 + LST_PTR);
+  sort_elems(lp2, n2, 40, 0, tmp);
+  q = p + 9;
+  i = 0;
+  while i < n2 {
+    var e2 = lp2 + i * 40;
+    var c2 = q + 9;
+    w = rlp_encode_word(c2, lds 1 e2);
+    c2 = c2 + w;
+    w = rlp_put_u256(c2, lds {1,1,1,1} (e2 + 8));
+    c2 = c2 + w;
+    var 1 hl6 = rlp_list_header_len(c2 - (q + 9));
+    memcpy(q + hl6, q + 9, c2 - (q + 9));
+    rlp_encode_list_header(q, c2 - (q + 9));
+    q = q + hl6 + (c2 - (q + 9));
+    i = i + 1;
+  }
+  var 1 hl7 = rlp_list_header_len(q - (p + 9));
+  memcpy(p + hl7, p + 9, q - (p + 9));
+  rlp_encode_list_header(p, q - (p + 9));
+  p = p + hl7 + (q - (p + 9));
+  /* nonce_changes [[idx, nonce]] */
+  var l3 = lds 1 (ad + AD_NONCE_CHANGES);
+  var n3 = lds 1 (l3 + LST_N);
+  var lp3 = lds 1 (l3 + LST_PTR);
+  sort_elems(lp3, n3, 16, 0, tmp);
+  q = p + 9;
+  i = 0;
+  while i < n3 {
+    var e3 = lp3 + i * 16;
+    var c3 = q + 9;
+    w = rlp_encode_word(c3, lds 1 e3);
+    c3 = c3 + w;
+    w = rlp_encode_word(c3, lds 1 (e3 + 8));
+    c3 = c3 + w;
+    var 1 hl8 = rlp_list_header_len(c3 - (q + 9));
+    memcpy(q + hl8, q + 9, c3 - (q + 9));
+    rlp_encode_list_header(q, c3 - (q + 9));
+    q = q + hl8 + (c3 - (q + 9));
+    i = i + 1;
+  }
+  var 1 hl9 = rlp_list_header_len(q - (p + 9));
+  memcpy(p + hl9, p + 9, q - (p + 9));
+  rlp_encode_list_header(p, q - (p + 9));
+  p = p + hl9 + (q - (p + 9));
+  /* code_changes [[idx, code]] */
+  var l4 = lds 1 (ad + AD_CODE_CHANGES);
+  var n4 = lds 1 (l4 + LST_N);
+  var lp4 = lds 1 (l4 + LST_PTR);
+  sort_elems(lp4, n4, 24, 0, tmp);
+  q = p + 9;
+  i = 0;
+  while i < n4 {
+    var e4 = lp4 + i * 24;
+    var c4 = q + 9;
+    w = rlp_encode_word(c4, lds 1 e4);
+    c4 = c4 + w;
+    w = rlp_encode_bytes(c4, lds 1 (e4 + 8), lds 1 (e4 + 16));
+    c4 = c4 + w;
+    var 1 hl10 = rlp_list_header_len(c4 - (q + 9));
+    memcpy(q + hl10, q + 9, c4 - (q + 9));
+    rlp_encode_list_header(q, c4 - (q + 9));
+    q = q + hl10 + (c4 - (q + 9));
+    i = i + 1;
+  }
+  var 1 hl11 = rlp_list_header_len(q - (p + 9));
+  memcpy(p + hl11, p + 9, q - (p + 9));
+  rlp_encode_list_header(p, q - (p + 9));
+  p = p + hl11 + (q - (p + 9));
+  heap_release(mark);
+  /* outer list header */
+  var payload = p - (dst + 9);
+  var 1 hl12 = rlp_list_header_len(payload);
+  memcpy(dst + hl12, dst + 9, payload);
+  rlp_encode_list_header(dst, payload);
+  return hl12 + payload;
+}
+
+/* build_block_access_list(builder, block_state) + rlp encoding.
+   Returns <ptr, len> of rlp(BlockAccessList). */
+fun {1,1} build_block_access_list_rlp() {
+  /* block-level storage reads and touched accounts */
+  var sr = lds 1 (bs + BS_STOR_READS);
+  var cap = lds 1 (sr + HT_CAP);
+  var i = 0;
+  while i < cap {
+    var {1,1,1} s = htab_slot(sr, i);
+    if s.0 != 0 {
+      add_storage_read(s.1, s.1 + 20);
+    }
+    i = i + 1;
+  }
+  var ar = lds 1 (bs + BS_ACCT_READS);
+  cap = lds 1 (ar + HT_CAP);
+  i = 0;
+  while i < cap {
+    var {1,1,1} s2 = htab_slot(ar, i);
+    if s2.0 != 0 {
+      add_touched_account(s2.1);
+    }
+    i = i + 1;
+  }
+  /* sorted addresses */
+  var 1 tmp = alloc(64);
+  var {1,1} addrs = htab_keys(bal_accounts);
+  /* htab_keys packs at the key stride (24 for 20-byte keys) */
+  sort_elems(addrs.0, addrs.1, 24, 1, tmp);
+  /* size estimate: code changes dominate; compute an upper bound */
+  var total = 1024;
+  i = 0;
+  while i < addrs.1 {
+    var {1,1} m = htab_get(bal_accounts, addrs.0 + i * 24);
+    var ad = m.1;
+    total = total + 128 + (lds 1 ((lds 1 (ad + AD_STOR_READS)) + HT_COUNT)) * 40;
+    total = total + (lds 1 ((lds 1 (ad + AD_STOR_CHANGES)) + HT_COUNT)) * 96;
+    var sc = lds 1 (ad + AD_STOR_CHANGES);
+    var scap = lds 1 (sc + HT_CAP);
+    var j = 0;
+    while j < scap {
+      var {1,1,1} e = htab_slot(sc, j);
+      if e.0 != 0 {
+        total = total + (lds 1 (e.2 + LST_N)) * 48;
+      }
+      j = j + 1;
+    }
+    total = total + (lds 1 ((lds 1 (ad + AD_BAL_CHANGES)) + LST_N)) * 48;
+    total = total + (lds 1 ((lds 1 (ad + AD_NONCE_CHANGES)) + LST_N)) * 24;
+    var cl = lds 1 (ad + AD_CODE_CHANGES);
+    var cn = lds 1 (cl + LST_N);
+    var cp = lds 1 (cl + LST_PTR);
+    j = 0;
+    while j < cn {
+      total = total + 32 + (lds 1 (cp + j * 24 + 16));
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  var 1 buf = alloc(total + 64);
+  var p = buf + 9;
+  i = 0;
+  while i < addrs.1 {
+    var {1,1} m2 = htab_get(bal_accounts, addrs.0 + i * 24);
+    var 1 w = bal_encode_account(p, addrs.0 + i * 24, m2.1, tmp);
+    p = p + w;
+    i = i + 1;
+  }
+  var payload = p - (buf + 9);
+  var 1 hl = rlp_list_header_len(payload);
+  var start = buf + 9 - hl;
+  rlp_encode_list_header(start, payload);
+  return <start, hl + payload>;
+}
+
+/* validate_block_access_list_gas_limit over the builder (same counting as
+   over the built list: accounts + unique slots written or read). */
+fun 1 validate_block_access_list_gas_limit(1 block_gas_limit) {
+  var items = 0;
+  var cap = lds 1 (bal_accounts + HT_CAP);
+  var i = 0;
+  while i < cap {
+    var {1,1,1} s = htab_slot(bal_accounts, i);
+    if s.0 != 0 {
+      var ad = s.2;
+      var sc = lds 1 (ad + AD_STOR_CHANGES);
+      var sr = lds 1 (ad + AD_STOR_READS);
+      items = items + 1 + (lds 1 (sc + HT_COUNT));
+      var rcap = lds 1 (sr + HT_CAP);
+      var j = 0;
+      while j < rcap {
+        var {1,1,1} e = htab_slot(sr, j);
+        if e.0 != 0 {
+          var 1 hasw = htab_has(sc, e.1);
+          if hasw == 0 {
+            items = items + 1;
+          }
+        }
+        j = j + 1;
+      }
+    }
+    i = i + 1;
+  }
+  var 1 lim = udiv(block_gas_limit, BLOCK_ACCESS_LIST_ITEM_GAS);
+  if items >+ lim {
+    throw BlockErr 40;
+  }
+  return 0;
+}

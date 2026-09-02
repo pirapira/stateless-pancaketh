@@ -1,0 +1,713 @@
+/* state.pnk -- port of StateTracker.lean (state_tracker.py): BlockState /
+   TransactionState with witness-backed pre-state reads (WitnessReads.lean),
+   writes, snapshot/rollback (journal-based; observationally equal to the
+   copy/restore of the reference: reads and created_accounts survive a
+   rollback, the four write maps are restored).
+   Requires: lib/mem, lib/arith, lib/u256, lib/keccak, lib/rlp, lib/htab, mpt.
+
+   Map representations (Python dicts -> hash tables; order is unobservable):
+   * accountWrites : addr(20) -> ACCT record ptr, or ACCT_NONE for a deleted account
+   * storageWrites : addr(20) -> inner htab: key(32) -> ptr to 32-byte U256 (4 LE limbs)
+   * codeWrites    : hash(32) -> ptr to <ptr,len> slice record
+   * accountReads/preStateReads/createdAccounts : addr(20) -> 1
+   * storageReads  : addr||key (52) -> 1 ; codeReads : addr||hash (52) -> 1
+   * transientStorage : addr||key (52) -> ptr to U256 */
+
+exception StateErr : 1;
+
+#define ACCT_NONE 1
+
+/* WitnessPreState */
+#define WS_NODEDB      0
+#define WS_STATE_ROOT  8    /* ptr 32 */
+#define WS_CODEDB      16
+#define WS_STATE_TRIE  24   /* decoded root node (0 = empty), memo of _get_decoded_secure_root */
+#define WS_STORAGE_TRIES 32 /* htab root(32) -> decoded root node ptr (+1 so 0 means "empty trie") */
+#define WS_SIZE        40
+
+/* BlockState */
+#define BS_WS          0
+#define BS_ACCT_READS  8
+#define BS_ACCT_WRITES 16
+#define BS_STOR_READS  24
+#define BS_STOR_WRITES 32
+#define BS_CODE_READS  40
+#define BS_CODE_WRITES 48
+#define BS_ANC_SOME    56
+#define BS_ANC_OFF     64
+#define BS_PRE_READS   72
+#define BS_SIZE        80
+
+/* TransactionState */
+#define TS_PARENT      0
+#define TS_ACCT_READS  8
+#define TS_ACCT_WRITES 16
+#define TS_STOR_READS  24
+#define TS_STOR_WRITES 32
+#define TS_CODE_READS  40
+#define TS_CODE_WRITES 48
+#define TS_CREATED     56
+#define TS_TRANSIENT   64
+#define TS_SIZE        72
+
+var 1 ws = 0;          /* the WitnessPreState */
+var 1 bs = 0;          /* the BlockState */
+var 1 ts = 0;          /* the current TransactionState */
+var 1 sk_buf = 0;      /* 52-byte scratch for addr||key */
+var 1 journal = 0;     /* undo records: <htab, keycopy, had_old, old> (32 bytes each) */
+var 1 journal_n = 0;
+var 1 journal_cap = 0;
+
+/* ---- init ---------------------------------------------------------------- */
+
+fun 1 state_init(1 nodedb, 1 state_root, 1 codedb) {
+  ws = alloc(WS_SIZE);
+  st ws + WS_NODEDB, nodedb;
+  st ws + WS_STATE_ROOT, state_root;
+  st ws + WS_CODEDB, codedb;
+  var 1 root = decode_witness_to_mpt(nodedb, state_root);
+  st ws + WS_STATE_TRIE, root;
+  var 1 t = htab_new(32, 64);
+  st ws + WS_STORAGE_TRIES, t;
+  bs = alloc(BS_SIZE);
+  st bs + BS_WS, ws;
+  t = htab_new(20, 256);
+  st bs + BS_ACCT_READS, t;
+  t = htab_new(20, 256);
+  st bs + BS_ACCT_WRITES, t;
+  t = htab_new(52, 256);
+  st bs + BS_STOR_READS, t;
+  t = htab_new(20, 64);
+  st bs + BS_STOR_WRITES, t;
+  t = htab_new(52, 64);
+  st bs + BS_CODE_READS, t;
+  t = htab_new(32, 64);
+  st bs + BS_CODE_WRITES, t;
+  st bs + BS_ANC_SOME, 0;
+  st bs + BS_ANC_OFF, 0;
+  t = htab_new(20, 256);
+  st bs + BS_PRE_READS, t;
+  sk_buf = alloc(64);
+  journal_cap = 262144;
+  journal = alloc(journal_cap * 32);
+  journal_n = 0;
+  ts = 0;
+  return 0;
+}
+
+/* A fresh TransactionState over the block state (Python
+   `TransactionState(parent=block_state)`); resets the journal. */
+fun 1 state_fresh_tx() {
+  ts = alloc(TS_SIZE);
+  st ts + TS_PARENT, bs;
+  var 1 t = htab_new(20, 64);
+  st ts + TS_ACCT_READS, t;
+  t = htab_new(20, 64);
+  st ts + TS_ACCT_WRITES, t;
+  t = htab_new(52, 64);
+  st ts + TS_STOR_READS, t;
+  t = htab_new(20, 16);
+  st ts + TS_STOR_WRITES, t;
+  t = htab_new(52, 16);
+  st ts + TS_CODE_READS, t;
+  t = htab_new(32, 16);
+  st ts + TS_CODE_WRITES, t;
+  t = htab_new(20, 16);
+  st ts + TS_CREATED, t;
+  t = htab_new(52, 16);
+  st ts + TS_TRANSIENT, t;
+  journal_n = 0;
+  return 0;
+}
+
+/* ---- journal ------------------------------------------------------------- */
+
+/* Record the previous binding of key in map t, then set it. */
+fun 1 jset(1 t, 1 key, 1 value) {
+  var {1,1} old = htab_get(t, key);
+  if journal_n >=+ journal_cap {
+    @trap(@base, 0, @base, 0);
+  }
+  var klen = lds 1 (t + HT_KEYLEN);
+  var 1 kc = alloc(klen);
+  memcpy(kc, key, klen);
+  var r = journal + journal_n * 32;
+  st r, t;
+  st r + 8, kc;
+  st r + 16, old.0;
+  st r + 24, old.1;
+  journal_n = journal_n + 1;
+  htab_set(t, key, value);
+  return 0;
+}
+
+fun 1 jdel(1 t, 1 key) {
+  var {1,1} old = htab_get(t, key);
+  if old.0 == 0 {
+    return 0;
+  }
+  if journal_n >=+ journal_cap {
+    @trap(@base, 0, @base, 0);
+  }
+  var klen = lds 1 (t + HT_KEYLEN);
+  var 1 kc = alloc(klen);
+  memcpy(kc, key, klen);
+  var r = journal + journal_n * 32;
+  st r, t;
+  st r + 8, kc;
+  st r + 16, 1;
+  st r + 24, old.1;
+  journal_n = journal_n + 1;
+  htab_del(t, key);
+  return 0;
+}
+
+/* copy_tx_state -> snapshot handle */
+fun 1 state_snapshot() {
+  return journal_n;
+}
+
+/* restore_tx_state(snapshot) */
+fun 1 state_restore(1 snap) {
+  while journal_n >+ snap {
+    journal_n = journal_n - 1;
+    var r = journal + journal_n * 32;
+    var t = lds 1 r;
+    var key = lds 1 (r + 8);
+    if (lds 1 (r + 16)) != 0 {
+      htab_set(t, key, lds 1 (r + 24));
+    } else {
+      htab_del(t, key);
+    }
+  }
+  return 0;
+}
+
+/* ---- helpers --------------------------------------------------------------- */
+
+fun 1 sk_make(1 addr, 1 key) {
+  memcpy(sk_buf, addr, 20);
+  memcpy(sk_buf + 20, key, 32);
+  return sk_buf;
+}
+
+fun 1 acct_new(1 nonce, {1,1,1,1} balance, 1 code_hash) {
+  var 1 a = alloc(ACCT_SIZE);
+  st a + ACCT_NONCE, nonce;
+  st a + ACCT_BALANCE, balance;
+  st a + ACCT_STORAGE_ROOT, empty_trie_root;
+  st a + ACCT_CODE_HASH, code_hash;
+  return a;
+}
+
+fun 1 acct_empty() {
+  var 1 a = acct_new(0, <0, 0, 0, 0>, empty_code_hash);
+  return a;
+}
+
+fun 1 acct_copy(1 a) {
+  var 1 b = alloc(ACCT_SIZE);
+  memcpy(b, a, ACCT_SIZE);
+  return b;
+}
+
+fun 1 record_pre_state_read(1 addr) {
+  htab_set(lds 1 (bs + BS_PRE_READS), addr, 1);
+  return 0;
+}
+
+/* ---- witness reads (WitnessReads.lean) --------------------------------------- */
+
+/* accountLeaf: the state-trie leaf for an address. <found, ptr, len> */
+fun {1,1,1} ws_account_leaf(1 addr) {
+  var 1 mark = heap_mark();
+  var 1 h = alloc(32);
+  keccak256(addr, 20, h);
+  var {1,1,1} r = trie_lookup(lds 1 (ws + WS_STATE_TRIE), h);
+  heap_release(mark);
+  return r;
+}
+
+/* get_account_optional on the witness: ACCT record ptr or ACCT_NONE. */
+fun 1 ws_get_account_optional(1 addr) {
+  var {1,1,1} leaf = ws_account_leaf(addr);
+  if leaf.0 == 0 {
+    return ACCT_NONE;
+  }
+  var 1 a = alloc(ACCT_SIZE);
+  decode_account_from_leaf(leaf.1, leaf.2, a);
+  return a;
+}
+
+/* _storage_root_of: storage root ptr (EMPTY_TRIE_ROOT for a missing account). */
+fun 1 ws_storage_root_of(1 addr) {
+  var 1 a = ws_get_account_optional(addr);
+  if a == ACCT_NONE {
+    return empty_trie_root;
+  }
+  return lds 1 (a + ACCT_STORAGE_ROOT);
+}
+
+/* Decoded storage trie for a root hash, memoized (0 = empty trie). */
+fun 1 ws_storage_trie(1 root) {
+  var t = lds 1 (ws + WS_STORAGE_TRIES);
+  var {1,1} m = htab_get(t, root);
+  if m.0 != 0 {
+    return m.1 - 1;
+  }
+  var 1 node = decode_witness_to_mpt(lds 1 (ws + WS_NODEDB), root);
+  htab_set(t, root, node + 1);
+  return node;
+}
+
+/* get_storage on the witness -> U256 */
+fun {1,1,1,1} ws_get_storage(1 addr, 1 key) {
+  var 1 root = ws_storage_root_of(addr);
+  var 1 eq = memeq(root, empty_trie_root, 32);
+  if eq != 0 {
+    return <0, 0, 0, 0>;
+  }
+  var 1 node = ws_storage_trie(root);
+  var 1 mark = heap_mark();
+  var 1 h = alloc(32);
+  keccak256(key, 32, h);
+  var {1,1,1} r = trie_lookup(node, h);
+  heap_release(mark);
+  if r.0 == 0 {
+    return <0, 0, 0, 0>;
+  }
+  var {1,1,1,1} it = rlp_decode_fully(r.1, r.2);
+  if it.0 == 1 {
+    return <0, 0, 0, 0>;
+  }
+  if it.2 >+ 32 {
+    throw StateErr 1;   /* storageLeafMalformed (U256 overflow) */
+  }
+  var {1,1,1,1} v = u256_from_be(it.1, it.2);
+  return v;
+}
+
+/* get_code on the witness: <ptr, len>; missing hash -> StateErr */
+fun {1,1} ws_get_code(1 code_hash) {
+  var 1 eq = memeq(code_hash, empty_code_hash, 32);
+  if eq != 0 {
+    return <0, 0>;
+  }
+  var {1,1,1} r = nodedb_lookup(lds 1 (ws + WS_CODEDB), code_hash);
+  if r.0 == 0 {
+    throw StateErr 2;   /* codeHashMissing */
+  }
+  return <r.1, r.2>;
+}
+
+fun 1 ws_account_has_storage(1 addr) {
+  var 1 root = ws_storage_root_of(addr);
+  var 1 eq = memeq(root, empty_trie_root, 32);
+  if eq != 0 {
+    return 0;
+  }
+  return 1;
+}
+
+/* ---- reads (tracker) --------------------------------------------------------- */
+
+/* get_pre_state_account_optional */
+fun 1 get_pre_state_account_optional(1 addr) {
+  htab_set(lds 1 (ts + TS_ACCT_READS), addr, 1);
+  var {1,1} w = htab_get(lds 1 (bs + BS_ACCT_WRITES), addr);
+  if w.0 != 0 {
+    return w.1;
+  }
+  record_pre_state_read(addr);
+  var 1 a = ws_get_account_optional(addr);
+  return a;
+}
+
+fun 1 get_pre_state_account(1 addr) {
+  var 1 a = get_pre_state_account_optional(addr);
+  if a == ACCT_NONE {
+    a = acct_empty();
+  }
+  return a;
+}
+
+/* get_account_optional (tx layer first) -> ACCT ptr or ACCT_NONE */
+fun 1 get_account_optional(1 addr) {
+  htab_set(lds 1 (ts + TS_ACCT_READS), addr, 1);
+  var {1,1} w = htab_get(lds 1 (ts + TS_ACCT_WRITES), addr);
+  if w.0 != 0 {
+    return w.1;
+  }
+  var 1 a = get_pre_state_account_optional(addr);
+  return a;
+}
+
+fun 1 get_account(1 addr) {
+  var 1 a = get_account_optional(addr);
+  if a == ACCT_NONE {
+    a = acct_empty();
+  }
+  return a;
+}
+
+/* get_code(code_hash, address) -> <ptr, len> */
+fun {1,1} get_code(1 code_hash, 1 addr) {
+  var 1 eq = memeq(code_hash, empty_code_hash, 32);
+  if eq != 0 {
+    return <0, 0>;
+  }
+  var {1,1} w = htab_get(lds 1 (ts + TS_CODE_WRITES), code_hash);
+  if w.0 != 0 {
+    return <lds 1 (w.1), lds 1 (w.1 + 8)>;
+  }
+  w = htab_get(lds 1 (bs + BS_CODE_WRITES), code_hash);
+  if w.0 != 0 {
+    return <lds 1 (w.1), lds 1 (w.1 + 8)>;
+  }
+  var 1 k = sk_make(addr, code_hash);
+  htab_set(lds 1 (ts + TS_CODE_READS), k, 1);
+  var {1,1} c = ws_get_code(code_hash);
+  return c;
+}
+
+/* Lookup a slot in a two-level storage map: <found, ptr to U256>. */
+fun {1,1} stor_lookup(1 outer, 1 addr, 1 key) {
+  var {1,1} m = htab_get(outer, addr);
+  if m.0 == 0 {
+    return <0, 0>;
+  }
+  var {1,1} v = htab_get(m.1, key);
+  return v;
+}
+
+/* get_storage(address, key) -> U256 */
+fun {1,1,1,1} get_storage(1 addr, 1 key) {
+  var 1 k = sk_make(addr, key);
+  htab_set(lds 1 (ts + TS_STOR_READS), k, 1);
+  var {1,1} v = stor_lookup(lds 1 (ts + TS_STOR_WRITES), addr, key);
+  if v.0 != 0 {
+    return lds {1,1,1,1} (v.1);
+  }
+  v = stor_lookup(lds 1 (bs + BS_STOR_WRITES), addr, key);
+  if v.0 != 0 {
+    return lds {1,1,1,1} (v.1);
+  }
+  record_pre_state_read(addr);
+  var {1,1,1,1} r = ws_get_storage(addr, key);
+  return r;
+}
+
+/* get_storage_original(address, key) */
+fun {1,1,1,1} get_storage_original(1 addr, 1 key) {
+  var 1 created = htab_has(lds 1 (ts + TS_CREATED), addr);
+  if created != 0 {
+    return <0, 0, 0, 0>;
+  }
+  var {1,1} v = stor_lookup(lds 1 (bs + BS_STOR_WRITES), addr, key);
+  if v.0 != 0 {
+    return lds {1,1,1,1} (v.1);
+  }
+  record_pre_state_read(addr);
+  var {1,1,1,1} r = ws_get_storage(addr, key);
+  return r;
+}
+
+fun {1,1,1,1} get_transient_storage(1 addr, 1 key) {
+  var 1 k = sk_make(addr, key);
+  var {1,1} v = htab_get(lds 1 (ts + TS_TRANSIENT), k);
+  if v.0 == 0 {
+    return <0, 0, 0, 0>;
+  }
+  return lds {1,1,1,1} (v.1);
+}
+
+/* ---- predicates ------------------------------------------------------------------ */
+
+fun 1 account_exists(1 addr) {
+  var 1 a = get_account_optional(addr);
+  if a == ACCT_NONE {
+    return 0;
+  }
+  return 1;
+}
+
+fun 1 account_has_storage(1 addr) {
+  var {1,1} m = htab_get(lds 1 (ts + TS_STOR_WRITES), addr);
+  if m.0 != 0 {
+    if (lds 1 (m.1 + HT_COUNT)) >+ 0 {
+      return 1;
+    }
+  }
+  m = htab_get(lds 1 (bs + BS_STOR_WRITES), addr);
+  if m.0 != 0 {
+    if (lds 1 (m.1 + HT_COUNT)) >+ 0 {
+      return 1;
+    }
+  }
+  record_pre_state_read(addr);
+  var 1 r = ws_account_has_storage(addr);
+  return r;
+}
+
+fun 1 account_deployable(1 addr) {
+  var 1 a = get_account(addr);
+  if (lds 1 (a + ACCT_NONCE)) != 0 {
+    return 0;
+  }
+  var 1 eq = memeq(lds 1 (a + ACCT_CODE_HASH), empty_code_hash, 32);
+  if eq == 0 {
+    return 0;
+  }
+  var 1 hs = account_has_storage(addr);
+  if hs != 0 {
+    return 0;
+  }
+  return 1;
+}
+
+fun 1 acct_is_empty(1 a) {
+  if (lds 1 (a + ACCT_NONCE)) != 0 {
+    return 0;
+  }
+  var 1 eq = memeq(lds 1 (a + ACCT_CODE_HASH), empty_code_hash, 32);
+  if eq == 0 {
+    return 0;
+  }
+  var 1 z = u256_is_zero(lds {1,1,1,1} (a + ACCT_BALANCE));
+  return z;
+}
+
+fun 1 account_exists_and_is_empty(1 addr) {
+  var 1 a = get_account_optional(addr);
+  if a == ACCT_NONE {
+    return 0;
+  }
+  var 1 e = acct_is_empty(a);
+  return e;
+}
+
+fun 1 is_account_alive(1 addr) {
+  var 1 a = get_account_optional(addr);
+  if a == ACCT_NONE {
+    return 0;
+  }
+  var 1 e = acct_is_empty(a);
+  if e != 0 {
+    return 0;
+  }
+  return 1;
+}
+
+/* ---- writes ------------------------------------------------------------------------- */
+
+/* set_account(address, account-or-ACCT_NONE) */
+fun 1 set_account(1 addr, 1 a) {
+  jset(lds 1 (ts + TS_ACCT_WRITES), addr, a);
+  return 0;
+}
+
+fun 1 set_storage(1 addr, 1 key, {1,1,1,1} value) {
+  var 1 a = get_account_optional(addr);
+  if a == ACCT_NONE {
+    throw StateErr 3;   /* set_storage on non-existent account */
+  }
+  var outer = lds 1 (ts + TS_STOR_WRITES);
+  var {1,1} m = htab_get(outer, addr);
+  var inner = 0;
+  if m.0 == 0 {
+    inner = htab_new(32, 8);
+    jset(outer, addr, inner);
+  } else {
+    inner = m.1;
+  }
+  var 1 v = alloc(32);
+  st v, value;
+  jset(inner, key, v);
+  return 0;
+}
+
+/* destroy_storage: writes convert to reads, then the address entry goes. */
+fun 1 destroy_storage(1 addr) {
+  var outer = lds 1 (ts + TS_STOR_WRITES);
+  var {1,1} m = htab_get(outer, addr);
+  if m.0 == 0 {
+    return 0;
+  }
+  var inner = m.1;
+  var cap = lds 1 (inner + HT_CAP);
+  var i = 0;
+  while i < cap {
+    var {1,1,1} s = htab_slot(inner, i);
+    if s.0 != 0 {
+      var 1 k = sk_make(addr, s.1);
+      htab_set(lds 1 (ts + TS_STOR_READS), k, 1);
+    }
+    i = i + 1;
+  }
+  jdel(outer, addr);
+  return 0;
+}
+
+fun 1 destroy_account(1 addr) {
+  destroy_storage(addr);
+  set_account(addr, ACCT_NONE);
+  return 0;
+}
+
+/* The tail of modify_state: set, then destroy if empty (EIP-161). */
+fun 1 modify_state_commit(1 addr, 1 a) {
+  set_account(addr, a);
+  var 1 e = acct_is_empty(a);
+  if e != 0 {
+    destroy_account(addr);
+  }
+  return 0;
+}
+
+fun 1 clear_account_preserving_balance(1 addr) {
+  destroy_storage(addr);
+  var 1 a = get_account(addr);
+  a = acct_copy(a);
+  st a + ACCT_NONCE, 0;
+  st a + ACCT_CODE_HASH, empty_code_hash;
+  modify_state_commit(addr, a);
+  return 0;
+}
+
+fun 1 mark_account_created(1 addr) {
+  htab_set(lds 1 (ts + TS_CREATED), addr, 1);
+  return 0;
+}
+
+fun 1 set_transient_storage(1 addr, 1 key, {1,1,1,1} value) {
+  var 1 k = sk_make(addr, key);
+  var 1 z = u256_is_zero(value);
+  if z != 0 {
+    jdel(lds 1 (ts + TS_TRANSIENT), k);
+    return 0;
+  }
+  var 1 v = alloc(32);
+  st v, value;
+  jset(lds 1 (ts + TS_TRANSIENT), k, v);
+  return 0;
+}
+
+fun 1 move_ether(1 sender, 1 recipient, {1,1,1,1} amount) {
+  var 1 s = get_account(sender);
+  var 1 lt = u256_lt(lds {1,1,1,1} (s + ACCT_BALANCE), amount);
+  if lt != 0 {
+    throw StateErr 4;   /* move_ether: insufficient balance */
+  }
+  s = acct_copy(s);
+  var {1,1,1,1} nb = u256_sub(lds {1,1,1,1} (s + ACCT_BALANCE), amount);
+  st s + ACCT_BALANCE, nb;
+  modify_state_commit(sender, s);
+  var 1 r = get_account(recipient);
+  r = acct_copy(r);
+  nb = u256_add(lds {1,1,1,1} (r + ACCT_BALANCE), amount);
+  st r + ACCT_BALANCE, nb;
+  modify_state_commit(recipient, r);
+  return 0;
+}
+
+fun 1 create_ether(1 addr, {1,1,1,1} amount) {
+  var 1 a = get_account(addr);
+  a = acct_copy(a);
+  var {1,1,1,1} nb = u256_add(lds {1,1,1,1} (a + ACCT_BALANCE), amount);
+  st a + ACCT_BALANCE, nb;
+  modify_state_commit(addr, a);
+  return 0;
+}
+
+fun 1 set_account_balance(1 addr, {1,1,1,1} amount) {
+  var 1 a = get_account(addr);
+  a = acct_copy(a);
+  st a + ACCT_BALANCE, amount;
+  modify_state_commit(addr, a);
+  return 0;
+}
+
+fun 1 increment_nonce(1 addr) {
+  var 1 a = get_account(addr);
+  a = acct_copy(a);
+  st a + ACCT_NONCE, (lds 1 (a + ACCT_NONCE)) + 1;
+  modify_state_commit(addr, a);
+  return 0;
+}
+
+/* set_code(address, code): records the code preimage under its hash. */
+fun 1 set_code(1 addr, 1 code, 1 code_len) {
+  var 1 h = alloc(32);
+  keccak256(code, code_len, h);
+  var 1 eq = memeq(h, empty_code_hash, 32);
+  if eq == 0 {
+    var 1 sl = alloc(16);
+    st sl, code;
+    st sl + 8, code_len;
+    jset(lds 1 (ts + TS_CODE_WRITES), h, sl);
+  }
+  var 1 a = get_account(addr);
+  a = acct_copy(a);
+  st a + ACCT_CODE_HASH, h;
+  modify_state_commit(addr, a);
+  return 0;
+}
+
+/* ---- lifecycle ----------------------------------------------------------------------- */
+
+/* Merge a set-like htab into another. */
+fun 1 htab_union_into(1 dst, 1 src) {
+  var cap = lds 1 (src + HT_CAP);
+  var i = 0;
+  while i < cap {
+    var {1,1,1} s = htab_slot(src, i);
+    if s.0 != 0 {
+      htab_set(dst, s.1, s.2);
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+/* The merge half of incorporate_tx_into_block (mergeTxIntoBlock). */
+fun 1 merge_tx_into_block() {
+  htab_union_into(lds 1 (bs + BS_STOR_READS), lds 1 (ts + TS_STOR_READS));
+  htab_union_into(lds 1 (bs + BS_ACCT_READS), lds 1 (ts + TS_ACCT_READS));
+  htab_union_into(lds 1 (bs + BS_CODE_READS), lds 1 (ts + TS_CODE_READS));
+  htab_union_into(lds 1 (bs + BS_ACCT_WRITES), lds 1 (ts + TS_ACCT_WRITES));
+  htab_union_into(lds 1 (bs + BS_CODE_WRITES), lds 1 (ts + TS_CODE_WRITES));
+  /* storage: per address, merge slot maps */
+  var outer = lds 1 (ts + TS_STOR_WRITES);
+  var bouter = lds 1 (bs + BS_STOR_WRITES);
+  var cap = lds 1 (outer + HT_CAP);
+  var i = 0;
+  while i < cap {
+    var {1,1,1} s = htab_slot(outer, i);
+    if s.0 != 0 {
+      var {1,1} m = htab_get(bouter, s.1);
+      var binner = 0;
+      if m.0 == 0 {
+        binner = htab_new(32, 8);
+        htab_set(bouter, s.1, binner);
+      } else {
+        binner = m.1;
+      }
+      htab_union_into(binner, s.2);
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+/* track_ancestor_access(offset) */
+fun 1 track_ancestor_access(1 offset) {
+  if (lds 1 (bs + BS_ANC_SOME)) == 0 {
+    st bs + BS_ANC_SOME, 1;
+    st bs + BS_ANC_OFF, offset;
+  } else {
+    if offset >+ (lds 1 (bs + BS_ANC_OFF)) {
+      st bs + BS_ANC_OFF, offset;
+    }
+  }
+  return 0;
+}

@@ -21,7 +21,7 @@ env = dict(os.environ); env.setdefault("SPIKE_OUTPUT_LEN", "4096")
 log = subprocess.run([SPIKE_RUN, elf, inp, out], capture_output=True, text=True, env=env)
 print(log.stderr.strip().splitlines()[-1] if log.stderr.strip() else f"rc={log.returncode}")
 if expr.startswith("@"):
-    ns = {}; exec(open(expr[1:]).read(), ns); expected = ns["expected"](blob)
+    ns = {"__file__": os.path.abspath(expr[1:])}; exec(open(expr[1:]).read(), ns); expected = ns["expected"](blob)
 else:
     expected = eval(expr, {"blob": blob, "hashlib": hashlib, "struct": struct, "keccak256": pyref.keccak256})
 if isinstance(expected, bytes): expected = expected.hex()

@@ -1,0 +1,48 @@
+#include "config.h"
+#include "types.h"
+#include "lib/mem.pnk"
+#include "lib/arith.pnk"
+#include "lib/u256.pnk"
+#include "lib/sha256.pnk"
+#include "lib/keccak.pnk"
+#include "lib/rlp.pnk"
+#include "ssz.pnk"
+#include "header.pnk"
+/* For each witness header: block hash (32 bytes) via decode+re-encode+keccak,
+   then one word per header: re-encoding equals original (1/0). Then the
+   parent's excess-blob-gas rule and base fee as words. */
+fun 1 main() {
+  mem_init();
+  sha256_init();
+  keccak_init();
+  ssz_len_chunk = alloc(32);
+  ssz_offs = alloc(64);
+  ssz_init();
+  var {1,1} inp = input_blob();
+  var 1 si = decode_stateless_input(inp.0, inp.1);
+  var arr = lds 1 (si + SI_HEADERS);
+  var n = lds 1 (si + SI_HEADERS_N);
+  var {1,1} vh = validate_headers(arr, n);
+  var 1 out = alloc(n * 40 + 64);
+  var i = 0;
+  while i < n {
+    var h = lds 1 (vh.0 + i * 8);
+    header_hash(h, out + i * 32);
+    var {1,1} enc = encode_header(h);
+    var flag = 0;
+    if enc.1 == SLICE_LEN(arr, i) {
+      flag = memeq(enc.0, SLICE_PTR(arr, i), enc.1);
+    }
+    st out + n * 32 + i * 8, flag;
+    i = i + 1;
+  }
+  var parent = lds 1 (vh.0 + (n - 1) * 8);
+  var 1 ebg = calculate_excess_blob_gas(parent);
+  st out + n * 40, ebg;
+  var {1,1,1,1} bf = calculate_base_fee_per_gas(lds 1 (parent + HDR_GAS_LIMIT), lds 1 (parent + HDR_GAS_LIMIT),
+      lds 1 (parent + HDR_GAS_USED), lds {1,1,1,1} (parent + HDR_BASE_FEE));
+  st out + n * 40 + 8, bf.0;
+  output_write(out, n * 40 + 16);
+  @halt(@base, 0, @base, 0);
+  return 0;
+}
