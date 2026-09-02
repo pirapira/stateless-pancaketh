@@ -2,7 +2,7 @@
    Port of SpecRef PrecompilesHash.lean namespace Blake2b (G / compress), i.e.
    ethereum/crypto/blake2.py class Blake2b.  Lanes are native 64-bit words
    (Pancake arithmetic wraps mod 2^64; #>> is rotate right).  Needs lib/mem.pnk.
-   Tables are initialised lazily on first use. */
+   Call blake2_init before compression. */
 
 var 1 b2_sigma = 0;  /* 10 schedule rows, 16 nibbles per word */
 var 1 b2_iv = 0;     /* 8 IV words */
@@ -67,7 +67,6 @@ fun 1 blake2_g(1 a, 1 b, 1 c, 1 d, 1 x, 1 y) {
 /* compress(rounds, h, m, t0, t1, f): h = 8 lanes (updated in place to the
    output state h[i] ^ v[i] ^ v[i+8]), m = 16 message lanes, f = 0 or 1. */
 fun 1 blake2b_f(1 rounds, 1 h, 1 m, 1 t0, 1 t1, 1 f) {
-  blake2_init();
   memcpy(b2_v, h, 64);
   memcpy(b2_v + 64, b2_iv, 64);
   st b2_v + 96, V(12) ^ t0;

@@ -20,6 +20,7 @@ fun 1 run_case(1 p, 1 n, 1 stage, 1 sender, 1 scratch) {
 fun 1 main() {
   mem_init();
   keccak_init();
+  u256_ws_init();
   var 1 out = alloc(376);
   var 1 sender = alloc(24);
   memzero(sender, 24);

@@ -377,6 +377,17 @@ fun {1,1,1,1} calculate_base_fee_per_gas(1 block_gas_limit, 1 parent_gas_limit,
 
 var 1 hdr_zero8 = 0;
 
+/* Persistent zero nonce used by validate_header.  Initialise it before any
+   execution mark so the validator never leaves a global pointer in scratch. */
+fun 1 header_init() {
+  if hdr_zero8 != 0 {
+    return 0;
+  }
+  hdr_zero8 = alloc(8);
+  memzero(hdr_zero8, 8);
+  return 0;
+}
+
 /* validate_header(parent_header, header): every failure raises BlockErr. */
 fun 1 validate_header(1 parent, 1 h) {
   if (lds 1 (h + HDR_NUMBER)) <+ 1 {
@@ -408,10 +419,6 @@ fun 1 validate_header(1 parent, 1 h) {
   var 1 dz = u256_is_zero(lds {1,1,1,1} (h + HDR_DIFFICULTY));
   if dz == 0 {
     throw BlockErr 27;
-  }
-  if hdr_zero8 == 0 {
-    hdr_zero8 = alloc(8);
-    memzero(hdr_zero8, 8);
   }
   eq = memeq(lds 1 (h + HDR_NONCE), hdr_zero8, 8);
   if eq == 0 {

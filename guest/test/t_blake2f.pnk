@@ -6,6 +6,7 @@
 #include "lib/blake2.pnk"
 fun 1 main() {
   mem_init();
+  blake2_init();
   var {1,1} inp = input_blob();
   var 1 h = alloc(64);
   var 1 m = alloc(128);
