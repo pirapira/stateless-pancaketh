@@ -39,16 +39,17 @@ def run_case(elf, row, out_dir, use_zisk):
     if use_zisk:
         m = re.search(r"steps[=: ]+(\d+)", logtxt)
         if m: steps = int(m.group(1))
-    actual = ""
+    actual = ""; dbg = -1
     if os.path.exists(out):
         raw = open(out, "rb").read()
         # output region is zero-padded to SPIKE_OUTPUT_LEN; the SSZ result
         # length is 69 (normal) or 61 (sentinel). Trim by expected length.
         n = len(expected_hex) // 2
         actual = raw[:n].hex()
-        if len(raw) > n and any(raw[n:]):
+        dbg = raw[n] if len(raw) > n else 0   # guest debug byte: failure code
+        if len(raw) > n + 1 and any(raw[n+1:]):
             actual += "+"  # extra nonzero bytes past expected length
-    return dict(label=label, rc=rc, steps=steps, secs=dt, expected=expected_hex, actual=actual)
+    return dict(label=label, rc=rc, steps=steps, secs=dt, expected=expected_hex, actual=actual, dbg=dbg)
 
 def classify(r):
     e, a = r["expected"], r["actual"]
@@ -89,7 +90,7 @@ def main():
         if cls.startswith("PASS") and r["steps"] is not None: steps_pass.append(r["steps"])
         r["class"] = cls; r["regions"] = tag
         if cls.startswith("PASS") and a.quiet_passes: continue
-        line = f"  {cls:16s} {tag:16s} steps={r['steps']} {r['secs']:.2f}s {r['label'][:90]}"
+        line = f"  {cls:16s} {tag:16s} fail={r['dbg']:<3} steps={r['steps']} {r['secs']:.2f}s {r['label'][:80]}"
         print(line)
         if cls.startswith("FAIL"):
             print(f"    expected: {r['expected']}\n    actual:   {r['actual']}")

@@ -184,7 +184,7 @@ fun 1 recover_authority(1 auth) {
   var p = buf + 10;
   var 1 w = rlp_put_u256(p, lds {1,1,1,1} (auth + AUTH_CHAIN_ID));
   p = p + w;
-  w = rlp_encode_bytes(p, lds 1 (auth + AUTH_ADDRESS), 20);
+  w = rlp_encode_bytes(p, lds 1 (auth + AUTH_ADDR), 20);
   p = p + w;
   w = rlp_encode_word(p, lds 1 (auth + AUTH_NONCE));
   p = p + w;
@@ -293,7 +293,7 @@ fun 1 set_delegation() {
       var 1 pre = get_pre_state_account(authority);
       var {1,1} pre_code = get_code(lds 1 (pre + ACCT_CODE_HASH), authority);
       var 1 delegated_before = is_valid_delegation(pre_code.0, pre_code.1);
-      var 1 is_null = memeq(lds 1 (auth + AUTH_ADDRESS), null_address, 20);
+      var 1 is_null = memeq(lds 1 (auth + AUTH_ADDR), null_address, 20);
       if is_null != 0 {
         set_code(authority, null_address, 0);
       } else {
@@ -306,7 +306,7 @@ fun 1 set_delegation() {
         st8 code, 239;
         st8 code + 1, 1;
         st8 code + 2, 0;
-        memcpy(code + 3, lds 1 (auth + AUTH_ADDRESS), 20);
+        memcpy(code + 3, lds 1 (auth + AUTH_ADDR), 20);
         set_code(authority, code, 23);
       }
       increment_nonce(authority);

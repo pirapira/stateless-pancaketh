@@ -3,35 +3,55 @@
 #include "types.h"
 #include "lib/mem.pnk"
 #include "lib/arith.pnk"
+#include "lib/u256.pnk"
 #include "lib/sha256.pnk"
+#include "lib/keccak.pnk"
+#include "lib/rlp.pnk"
+#include "lib/htab.pnk"
+#include "lib/secp256k1.pnk"
 #include "ssz.pnk"
+#include "header.pnk"
+#include "mpt.pnk"
+#include "tx.pnk"
+#include "state.pnk"
+#include "bal.pnk"
+#include "evm.pnk"
+#include "evm_calls.pnk"
+#include "precompiles.pnk"
+#include "block.pnk"
+#include "fork.pnk"
 
 fun 1 main() {
   mem_init();
   sha256_init();
+  keccak_init();
   ssz_len_chunk = alloc(32);
   ssz_offs = alloc(64);
   ssz_init();
+  mpt_init();
+  evm_init();
+  fork_init();
   var {1,1} inp = input_blob();
   var 1 out = alloc(256);
-  var 1 zero32 = alloc(32);
-  memzero(zero32, 32);
+  var 1 z32 = alloc(32);
+  memzero(z32, 32);
   var si = 0;
   var err_code = 0;
   try si = decode_stateless_input(inp.0, inp.1)
   catch SszErr => err_code {
-    /* _default_failed_stateless_output */
-    var 1 n = serialize_result(out, zero32, 0, 0, 0, 0, 0, 0);
+    var 1 n = serialize_result(out, z32, 0, 0, 0, 0, 0, 0);
     output_write(out, n);
     @halt(@base, 0, @base, 0);
     return 1;
   }
   var 1 root = alloc(32);
   htr_new_payload_request(si, root);
-  var succ = 0;
+  var 1 succ = verify_stateless_new_payload(si);
   var 1 n = serialize_result(out, root, succ, lds 1 (si + SI_CHAIN_ID),
       lds 1 (si + SI_BN_SOME), lds 1 (si + SI_BN), lds 1 (si + SI_TS_SOME), lds 1 (si + SI_TS));
-  output_write(out, n);
+  /* debug: failure code after the result bytes (harness compares only n bytes) */
+  st8 out + n, fail_code;
+  output_write(out, n + 1);
   @halt(@base, 0, @base, 0);
   return 0;
 }

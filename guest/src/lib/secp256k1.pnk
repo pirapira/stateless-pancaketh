@@ -144,8 +144,50 @@ fun U256 fp_mul(U256 a, U256 b) {
    u = that (< 2^290, top part u_hi < 2^34), v = u_lo + (u_hi << 32) + 977 * u_hi
    (< 2^256 + 2^67); if v overflows 2^256 the result is (v mod 2^256) + C (< p),
    else one conditional subtraction of p. */
-#define PRD(x, y) p = (x) * (y); L = L + (p & M32); H = H + (p >>> 32);
-#define COL(dk) col = L + c; dk = col & M32; c = (col >>> 32) + H; L = 0; H = 0;
+#define SECP_FOLD_RETURN \
+  d15 = c;                                   /* < 2^32: the product is < 2^512 */ \
+  /* fold 1: u_k = d_k + d_(k+7) + 977 d_(k+8) + carry */ \
+  col = d0 + 977 * d8; \
+  var u0 = col & M32; c = col >>> 32; \
+  col = d1 + d8 + 977 * d9 + c; \
+  var u1 = col & M32; c = col >>> 32; \
+  col = d2 + d9 + 977 * d10 + c; \
+  var u2 = col & M32; c = col >>> 32; \
+  col = d3 + d10 + 977 * d11 + c; \
+  var u3 = col & M32; c = col >>> 32; \
+  col = d4 + d11 + 977 * d12 + c; \
+  var u4 = col & M32; c = col >>> 32; \
+  col = d5 + d12 + 977 * d13 + c; \
+  var u5 = col & M32; c = col >>> 32; \
+  col = d6 + d13 + 977 * d14 + c; \
+  var u6 = col & M32; c = col >>> 32; \
+  col = d7 + d14 + 977 * d15 + c; \
+  var u7 = col & M32; c = col >>> 32; \
+  var uhi = d15 + c;                         /* < 2^34 */ \
+  /* fold 2: v = u_lo + (uhi << 32) + 977 uhi */ \
+  col = u0 + 977 * uhi; \
+  var v0 = col & M32; c = col >>> 32; \
+  col = u1 + (uhi & M32) + c; \
+  var v1 = col & M32; c = col >>> 32; \
+  col = u2 + (uhi >>> 32) + c; \
+  var v2 = col & M32; c = col >>> 32; \
+  col = u3 + c; \
+  var v3 = col & M32; c = col >>> 32; \
+  col = u4 + c; \
+  var v4 = col & M32; c = col >>> 32; \
+  col = u5 + c; \
+  var v5 = col & M32; c = col >>> 32; \
+  col = u6 + c; \
+  var v6 = col & M32; c = col >>> 32; \
+  col = u7 + c; \
+  var v7 = col & M32; c = col >>> 32; \
+  var U256 r = <v0 | (v1 << 32), v2 | (v3 << 32), v4 | (v5 << 32), v6 | (v7 << 32)>; \
+  if c == 1 { \
+    return u256_add(r, <SECP_C, 0, 0, 0>);   /* r < 2^67: no carry, result < p */ \
+  } \
+  return fp_reduce(r);
+#define SECP_PRD(x, y) p = (x) * (y); L = L + (p & M32); H = H + (p >>> 32);
+#define SECP_COL(dk) col = L + c; dk = col & M32; c = (col >>> 32) + H; L = 0; H = 0;
 fun U256 fp_mul(U256 a, U256 b) {
   var a0 = a.0 & M32;
   var a1 = a.0 >>> 32;
@@ -172,83 +214,101 @@ fun U256 fp_mul(U256 a, U256 b) {
   var d4 = 0; var d5 = 0; var d6 = 0; var d7 = 0;
   var d8 = 0; var d9 = 0; var d10 = 0; var d11 = 0;
   var d12 = 0; var d13 = 0; var d14 = 0; var d15 = 0;
-  PRD(a0, b0)
-  COL(d0)
-  PRD(a0, b1) PRD(a1, b0)
-  COL(d1)
-  PRD(a0, b2) PRD(a1, b1) PRD(a2, b0)
-  COL(d2)
-  PRD(a0, b3) PRD(a1, b2) PRD(a2, b1) PRD(a3, b0)
-  COL(d3)
-  PRD(a0, b4) PRD(a1, b3) PRD(a2, b2) PRD(a3, b1) PRD(a4, b0)
-  COL(d4)
-  PRD(a0, b5) PRD(a1, b4) PRD(a2, b3) PRD(a3, b2) PRD(a4, b1) PRD(a5, b0)
-  COL(d5)
-  PRD(a0, b6) PRD(a1, b5) PRD(a2, b4) PRD(a3, b3) PRD(a4, b2) PRD(a5, b1) PRD(a6, b0)
-  COL(d6)
-  PRD(a0, b7) PRD(a1, b6) PRD(a2, b5) PRD(a3, b4) PRD(a4, b3) PRD(a5, b2) PRD(a6, b1) PRD(a7, b0)
-  COL(d7)
-  PRD(a1, b7) PRD(a2, b6) PRD(a3, b5) PRD(a4, b4) PRD(a5, b3) PRD(a6, b2) PRD(a7, b1)
-  COL(d8)
-  PRD(a2, b7) PRD(a3, b6) PRD(a4, b5) PRD(a5, b4) PRD(a6, b3) PRD(a7, b2)
-  COL(d9)
-  PRD(a3, b7) PRD(a4, b6) PRD(a5, b5) PRD(a6, b4) PRD(a7, b3)
-  COL(d10)
-  PRD(a4, b7) PRD(a5, b6) PRD(a6, b5) PRD(a7, b4)
-  COL(d11)
-  PRD(a5, b7) PRD(a6, b6) PRD(a7, b5)
-  COL(d12)
-  PRD(a6, b7) PRD(a7, b6)
-  COL(d13)
-  PRD(a7, b7)
-  COL(d14)
-  d15 = c;                                   /* < 2^32: the product is < 2^512 */
-  /* fold 1: u_k = d_k + d_(k+7) + 977 d_(k+8) + carry */
-  col = d0 + 977 * d8;
-  var u0 = col & M32; c = col >>> 32;
-  col = d1 + d8 + 977 * d9 + c;
-  var u1 = col & M32; c = col >>> 32;
-  col = d2 + d9 + 977 * d10 + c;
-  var u2 = col & M32; c = col >>> 32;
-  col = d3 + d10 + 977 * d11 + c;
-  var u3 = col & M32; c = col >>> 32;
-  col = d4 + d11 + 977 * d12 + c;
-  var u4 = col & M32; c = col >>> 32;
-  col = d5 + d12 + 977 * d13 + c;
-  var u5 = col & M32; c = col >>> 32;
-  col = d6 + d13 + 977 * d14 + c;
-  var u6 = col & M32; c = col >>> 32;
-  col = d7 + d14 + 977 * d15 + c;
-  var u7 = col & M32; c = col >>> 32;
-  var uhi = d15 + c;                         /* < 2^34 */
-  /* fold 2: v = u_lo + (uhi << 32) + 977 uhi */
-  col = u0 + 977 * uhi;
-  var v0 = col & M32; c = col >>> 32;
-  col = u1 + (uhi & M32) + c;
-  var v1 = col & M32; c = col >>> 32;
-  col = u2 + (uhi >>> 32) + c;
-  var v2 = col & M32; c = col >>> 32;
-  col = u3 + c;
-  var v3 = col & M32; c = col >>> 32;
-  col = u4 + c;
-  var v4 = col & M32; c = col >>> 32;
-  col = u5 + c;
-  var v5 = col & M32; c = col >>> 32;
-  col = u6 + c;
-  var v6 = col & M32; c = col >>> 32;
-  col = u7 + c;
-  var v7 = col & M32; c = col >>> 32;
-  var U256 r = <v0 | (v1 << 32), v2 | (v3 << 32), v4 | (v5 << 32), v6 | (v7 << 32)>;
-  if c == 1 {
-    return u256_add(r, <SECP_C, 0, 0, 0>);   /* r < 2^67: no carry, result < p */
-  }
-  return fp_reduce(r);
+  SECP_PRD(a0, b0)
+  SECP_COL(d0)
+  SECP_PRD(a0, b1) SECP_PRD(a1, b0)
+  SECP_COL(d1)
+  SECP_PRD(a0, b2) SECP_PRD(a1, b1) SECP_PRD(a2, b0)
+  SECP_COL(d2)
+  SECP_PRD(a0, b3) SECP_PRD(a1, b2) SECP_PRD(a2, b1) SECP_PRD(a3, b0)
+  SECP_COL(d3)
+  SECP_PRD(a0, b4) SECP_PRD(a1, b3) SECP_PRD(a2, b2) SECP_PRD(a3, b1) SECP_PRD(a4, b0)
+  SECP_COL(d4)
+  SECP_PRD(a0, b5) SECP_PRD(a1, b4) SECP_PRD(a2, b3) SECP_PRD(a3, b2) SECP_PRD(a4, b1) SECP_PRD(a5, b0)
+  SECP_COL(d5)
+  SECP_PRD(a0, b6) SECP_PRD(a1, b5) SECP_PRD(a2, b4) SECP_PRD(a3, b3) SECP_PRD(a4, b2) SECP_PRD(a5, b1) SECP_PRD(a6, b0)
+  SECP_COL(d6)
+  SECP_PRD(a0, b7) SECP_PRD(a1, b6) SECP_PRD(a2, b5) SECP_PRD(a3, b4) SECP_PRD(a4, b3) SECP_PRD(a5, b2) SECP_PRD(a6, b1) SECP_PRD(a7, b0)
+  SECP_COL(d7)
+  SECP_PRD(a1, b7) SECP_PRD(a2, b6) SECP_PRD(a3, b5) SECP_PRD(a4, b4) SECP_PRD(a5, b3) SECP_PRD(a6, b2) SECP_PRD(a7, b1)
+  SECP_COL(d8)
+  SECP_PRD(a2, b7) SECP_PRD(a3, b6) SECP_PRD(a4, b5) SECP_PRD(a5, b4) SECP_PRD(a6, b3) SECP_PRD(a7, b2)
+  SECP_COL(d9)
+  SECP_PRD(a3, b7) SECP_PRD(a4, b6) SECP_PRD(a5, b5) SECP_PRD(a6, b4) SECP_PRD(a7, b3)
+  SECP_COL(d10)
+  SECP_PRD(a4, b7) SECP_PRD(a5, b6) SECP_PRD(a6, b5) SECP_PRD(a7, b4)
+  SECP_COL(d11)
+  SECP_PRD(a5, b7) SECP_PRD(a6, b6) SECP_PRD(a7, b5)
+  SECP_COL(d12)
+  SECP_PRD(a6, b7) SECP_PRD(a7, b6)
+  SECP_COL(d13)
+  SECP_PRD(a7, b7)
+  SECP_COL(d14)
+  SECP_FOLD_RETURN
+}
+
+/* a^2 mod p: the comba columns pair symmetric products once (i < j) into
+   Lc/Hc, doubled at the column end (Lc, Hc < 2^35, so no overflow). */
+#define SECP_PRC(x, y) p = (x) * (y); Lc = Lc + (p & M32); Hc = Hc + (p >>> 32);
+#define SECP_COLS(dk) L = L + Lc + Lc; H = H + Hc + Hc; Lc = 0; Hc = 0; SECP_COL(dk)
+fun U256 fp_sqr(U256 a) {
+  var a0 = a.0 & M32;
+  var a1 = a.0 >>> 32;
+  var a2 = a.1 & M32;
+  var a3 = a.1 >>> 32;
+  var a4 = a.2 & M32;
+  var a5 = a.2 >>> 32;
+  var a6 = a.3 & M32;
+  var a7 = a.3 >>> 32;
+  var p = 0;
+  var L = 0;
+  var H = 0;
+  var Lc = 0;
+  var Hc = 0;
+  var c = 0;
+  var col = 0;
+  var d0 = 0; var d1 = 0; var d2 = 0; var d3 = 0;
+  var d4 = 0; var d5 = 0; var d6 = 0; var d7 = 0;
+  var d8 = 0; var d9 = 0; var d10 = 0; var d11 = 0;
+  var d12 = 0; var d13 = 0; var d14 = 0; var d15 = 0;
+  SECP_PRD(a0, a0)
+  SECP_COLS(d0)
+  SECP_PRC(a0, a1)
+  SECP_COLS(d1)
+  SECP_PRC(a0, a2) SECP_PRD(a1, a1)
+  SECP_COLS(d2)
+  SECP_PRC(a0, a3) SECP_PRC(a1, a2)
+  SECP_COLS(d3)
+  SECP_PRC(a0, a4) SECP_PRC(a1, a3) SECP_PRD(a2, a2)
+  SECP_COLS(d4)
+  SECP_PRC(a0, a5) SECP_PRC(a1, a4) SECP_PRC(a2, a3)
+  SECP_COLS(d5)
+  SECP_PRC(a0, a6) SECP_PRC(a1, a5) SECP_PRC(a2, a4) SECP_PRD(a3, a3)
+  SECP_COLS(d6)
+  SECP_PRC(a0, a7) SECP_PRC(a1, a6) SECP_PRC(a2, a5) SECP_PRC(a3, a4)
+  SECP_COLS(d7)
+  SECP_PRC(a1, a7) SECP_PRC(a2, a6) SECP_PRC(a3, a5) SECP_PRD(a4, a4)
+  SECP_COLS(d8)
+  SECP_PRC(a2, a7) SECP_PRC(a3, a6) SECP_PRC(a4, a5)
+  SECP_COLS(d9)
+  SECP_PRC(a3, a7) SECP_PRC(a4, a6) SECP_PRD(a5, a5)
+  SECP_COLS(d10)
+  SECP_PRC(a4, a7) SECP_PRC(a5, a6)
+  SECP_COLS(d11)
+  SECP_PRC(a5, a7) SECP_PRD(a6, a6)
+  SECP_COLS(d12)
+  SECP_PRC(a6, a7)
+  SECP_COLS(d13)
+  SECP_PRD(a7, a7)
+  SECP_COLS(d14)
+  SECP_FOLD_RETURN
 }
 #endif
-
+#if defined(SECP_SIMPLE_MUL) || defined(SECP_FOLD64_MUL)
 fun U256 fp_sqr(U256 a) {
   return fp_mul(a, a);
 }
+#endif
 
 /* a ^ e mod p, square-and-multiply from the most significant set bit. */
 fun U256 fp_pow(U256 a, U256 e) {
@@ -258,7 +318,7 @@ fun U256 fp_pow(U256 a, U256 e) {
   while i >+ 0 {
     i = i - 1;
     if started == 1 {
-      r = fp_mul(r, r);
+      r = fp_sqr(r);
     }
     var 1 bit = u256_bit(e, i);
     if bit == 1 {
@@ -425,19 +485,19 @@ fun 1 ec_double(1 pt) {
     return 0;
   }
   var U256 x = lds U256 EC_X(pt);
-  var U256 yy = fp_mul(y, y);            /* Y^2 */
+  var U256 yy = fp_sqr(y);               /* Y^2 */
   var U256 s = fp_mul(x, yy);            /* X Y^2 */
   s = fp_add(s, s);
   s = fp_add(s, s);                      /* S = 4 X Y^2 */
-  var U256 m = fp_mul(x, x);
+  var U256 m = fp_sqr(x);
   var U256 m2 = fp_add(m, m);
   m = fp_add(m2, m);                     /* M = 3 X^2 */
-  var U256 x3 = fp_mul(m, m);
+  var U256 x3 = fp_sqr(m);
   var U256 s2 = fp_add(s, s);
   x3 = fp_sub(x3, s2);                   /* X3 = M^2 - 2S */
   var U256 t = fp_sub(s, x3);
   t = fp_mul(m, t);                      /* M (S - X3) */
-  var U256 y4 = fp_mul(yy, yy);
+  var U256 y4 = fp_sqr(yy);
   y4 = fp_add(y4, y4);
   y4 = fp_add(y4, y4);
   y4 = fp_add(y4, y4);                   /* 8 Y^4 */
@@ -461,7 +521,7 @@ fun 1 ec_add_affine(1 pt, U256 ax, U256 ay) {
   }
   var U256 x1 = lds U256 EC_X(pt);
   var U256 y1 = lds U256 EC_Y(pt);
-  var U256 z1z1 = fp_mul(z1, z1);
+  var U256 z1z1 = fp_sqr(z1);
   var U256 u2 = fp_mul(ax, z1z1);        /* U2 = x2 Z1^2 */
   var U256 s2 = fp_mul(z1, z1z1);
   s2 = fp_mul(ay, s2);                   /* S2 = y2 Z1^3 */
@@ -478,10 +538,10 @@ fun 1 ec_add_affine(1 pt, U256 ax, U256 ay) {
   }
   var U256 h = fp_sub(u2, x1);           /* H = U2 - X1 */
   var U256 rr = fp_sub(s2, y1);          /* R = S2 - Y1 */
-  var U256 hh = fp_mul(h, h);
+  var U256 hh = fp_sqr(h);
   var U256 hhh = fp_mul(h, hh);
   var U256 v = fp_mul(x1, hh);           /* V = X1 H^2 */
-  var U256 x3 = fp_mul(rr, rr);
+  var U256 x3 = fp_sqr(rr);
   x3 = fp_sub(x3, hhh);
   var U256 v2 = fp_add(v, v);
   x3 = fp_sub(x3, v2);                   /* X3 = R^2 - H^3 - 2V */
@@ -513,8 +573,8 @@ fun 1 ec_add(1 pt, 1 q) {
   var U256 y1 = lds U256 EC_Y(pt);
   var U256 x2 = lds U256 EC_X(q);
   var U256 y2 = lds U256 EC_Y(q);
-  var U256 z1z1 = fp_mul(z1, z1);
-  var U256 z2z2 = fp_mul(z2, z2);
+  var U256 z1z1 = fp_sqr(z1);
+  var U256 z2z2 = fp_sqr(z2);
   var U256 u1 = fp_mul(x1, z2z2);        /* U1 = X1 Z2^2 */
   var U256 u2 = fp_mul(x2, z1z1);        /* U2 = X2 Z1^2 */
   var U256 s1 = fp_mul(z2, z2z2);
@@ -534,10 +594,10 @@ fun 1 ec_add(1 pt, 1 q) {
   }
   var U256 h = fp_sub(u2, u1);
   var U256 rr = fp_sub(s2, s1);
-  var U256 hh = fp_mul(h, h);
+  var U256 hh = fp_sqr(h);
   var U256 hhh = fp_mul(h, hh);
   var U256 v = fp_mul(u1, hh);
-  var U256 x3 = fp_mul(rr, rr);
+  var U256 x3 = fp_sqr(rr);
   x3 = fp_sub(x3, hhh);
   var U256 v2 = fp_add(v, v);
   x3 = fp_sub(x3, v2);
@@ -601,7 +661,7 @@ fun 1 ec_to_affine(1 pt) {
     return 0;
   }
   var U256 zi = fp_inv(z);
-  var U256 zi2 = fp_mul(zi, zi);
+  var U256 zi2 = fp_sqr(zi);
   var U256 zi3 = fp_mul(zi2, zi);
   var U256 x = lds U256 EC_X(pt);
   var U256 y = lds U256 EC_Y(pt);
@@ -613,8 +673,8 @@ fun 1 ec_to_affine(1 pt) {
 
 /* 1 if (x, y) satisfies y^2 == x^3 + 7 (Lean onCurve). */
 fun 1 ec_on_curve(U256 x, U256 y) {
-  var U256 l = fp_mul(y, y);
-  var U256 r = fp_mul(x, x);
+  var U256 l = fp_sqr(y);
+  var U256 r = fp_sqr(x);
   r = fp_mul(r, x);
   r = fp_add(r, SECP_B);
   return u256_eq(l, r);
@@ -637,11 +697,11 @@ fun 1 secp256k1_decompress_r(U256 r, 1 recid, 1 out) {
   if xlt == 0 {
     return 0;                                /* xOutOfRange */
   }
-  var U256 rhs = fp_mul(x, x);
+  var U256 rhs = fp_sqr(x);
   rhs = fp_mul(rhs, x);
   rhs = fp_add(rhs, SECP_B);                 /* x^3 + 7 */
   var U256 y0 = fp_sqrt(rhs);
-  var U256 chk = fp_mul(y0, y0);
+  var U256 chk = fp_sqr(y0);
   var 1 sq = u256_eq(chk, rhs);
   if sq == 0 {
     return 0;                                /* xNotSquare */

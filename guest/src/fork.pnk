@@ -1,0 +1,961 @@
+/* fork.pnk -- port of SeamShell.lean (_payload_header, is_valid_block_hash,
+   is_valid_versioned_hashes, MAX_RLP_BLOCK_SIZE, execute_new_payload_request
+   pre-checks), Fork.lean (apply_body, process_transaction, check_transaction,
+   system transactions, withdrawals, requests, receipts) and ElExecute.lean
+   (execute_block_interior). Requires every other module. */
+
+exception Fail : 1;   /* any rejection folded into successful_validation = false */
+
+#define TX_MAX_GAS_LIMIT 16777216
+#define SYSTEM_TRANSACTION_GAS 30000000
+#define SYSTEM_MAX_SSTORES_PER_CALL 16
+#define GWEI_TO_WEI 1000000000
+
+/* BlockOutput */
+#define BO_GAS_USED 0
+#define BO_STATE_GAS_USED 8
+#define BO_CUMULATIVE_GAS 16
+#define BO_TXS 24          /* slice array of encoded txs (transactions trie values) */
+#define BO_RECEIPTS 32     /* slice array of encoded receipts */
+#define BO_LOGS 40         /* LST of log ptrs */
+#define BO_BLOB_GAS_USED 48
+#define BO_REQUESTS 56     /* slice array */
+#define BO_REQUESTS_N 64
+#define BO_RECEIPT_LOGS 72 /* LST of per-receipt log lists */
+#define BO_NTX 80
+#define BO_SIZE 88
+
+var 1 be = 0;               /* the BlockEnvironment */
+var 1 bo = 0;               /* the BlockOutput */
+var 1 precompile_addrs = 0; /* 18 * 20 bytes */
+var 1 zero32 = 0;
+var 1 block_hashes = 0;     /* n*32 */
+var 1 block_hashes_n = 0;
+var 1 cur_si = 0;
+
+/* System addresses (Fork.lean constants) as 20-byte buffers */
+var 1 beacon_roots_address = 0;
+var 1 history_storage_address = 0;
+var 1 withdrawal_request_address = 0;
+var 1 consolidation_request_address = 0;
+var 1 builder_deposit_address = 0;
+var 1 builder_exit_address = 0;
+var 1 deposit_contract_address = 0;
+var 1 deposit_event_signature_hash = 0;
+
+fun 1 addr_from_words(1 out, 1 hi4, 1 mid8, 1 lo8) {
+  st_be32(out, hi4);
+  st_be64(out + 4, mid8);
+  st_be64(out + 12, lo8);
+  return 0;
+}
+
+fun 1 fork_init() {
+  zero32 = alloc(32);
+  memzero(zero32, 32);
+  precompile_addrs = alloc(18 * 20);
+  memzero(precompile_addrs, 18 * 20);
+  var i = 0;
+  while i < 17 {
+    st8 precompile_addrs + i * 20 + 19, i + 1;
+    i = i + 1;
+  }
+  st8 precompile_addrs + 17 * 20 + 18, 1;   /* 0x0100 */
+  beacon_roots_address = alloc(24);
+  addr_from_words(beacon_roots_address, 998878, -3264180380726370886, 8580542797046987778);
+  history_storage_address = alloc(24);
+  addr_from_words(history_storage_address, 63798, 2919409010143398402, 3670889013506965813);
+  withdrawal_request_address = alloc(24);
+  addr_from_words(withdrawal_request_address, 2401, -1328012547788530309, -5898106541880152062);
+  consolidation_request_address = alloc(24);
+  addr_from_words(consolidation_request_address, 48093, -4048946473501656446, -8144209183296359855);
+  builder_deposit_address = alloc(24);
+  addr_from_words(builder_deposit_address, 49140, 5088776306999779977, -6003392823296340350);
+  builder_exit_address = alloc(24);
+  addr_from_words(builder_exit_address, 25814, 7783040819010535612, -4948248587287400830);
+  deposit_contract_address = alloc(24);
+  addr_from_words(deposit_contract_address, 0, 2421270144240564659, -5079604175371782662);
+  deposit_event_signature_hash = alloc(32);
+  st_be64(deposit_event_signature_hash, 7249007868851090242);
+  st_be64(deposit_event_signature_hash + 8, -5804927584836652479);
+  st_be64(deposit_event_signature_hash + 16, -7362398183926566243);
+  st_be64(deposit_event_signature_hash + 24, -6149735498328409915);
+  return 0;
+}
+
+/* ---- _payload_header / _payload_block (SeamShell.lean) ---------------------- */
+
+var 1 wd_rlp_slices = 0;   /* encoded withdrawals of the payload */
+
+fun 1 payload_header(1 si) {
+  var pl = lds 1 (si + SI_PL);
+  var raw = lds 1 (pl + PL_RAW);
+  var 1 h = alloc(HDR_SIZE);
+  memzero(h, HDR_SIZE);
+  st h + HDR_IS_CURRENT, 1;
+  st h + HDR_PARENT_HASH, raw + PLO_PARENT_HASH;
+  var 1 oh = alloc(32);
+  var 1 tmp = alloc(8);
+  st8 tmp, 192;
+  keccak256(tmp, 1, oh);
+  st h + HDR_OMMERS_HASH, oh;
+  st h + HDR_COINBASE, raw + PLO_FEE_RECIPIENT;
+  st h + HDR_STATE_ROOT, raw + PLO_STATE_ROOT;
+  var 1 txr = alloc(32);
+  build_mpt_indexed(lds 1 (pl + PL_TXS), lds 1 (pl + PL_TXS_N), txr);
+  st h + HDR_TX_ROOT, txr;
+  st h + HDR_RECEIPT_ROOT, raw + PLO_RECEIPTS_ROOT;
+  st h + HDR_BLOOM, raw + PLO_LOGS_BLOOM;
+  st h + HDR_DIFFICULTY, <0, 0, 0, 0>;
+  st h + HDR_NUMBER, lds 1 (pl + PL_NUMBER);
+  st h + HDR_GAS_LIMIT, lds 1 (pl + PL_GAS_LIMIT);
+  st h + HDR_GAS_USED, lds 1 (pl + PL_GAS_USED);
+  st h + HDR_TIMESTAMP, lds 1 (pl + PL_TIMESTAMP);
+  st h + HDR_EXTRA, lds 1 (pl + PL_EXTRA);
+  st h + HDR_EXTRA_N, lds 1 (pl + PL_EXTRA_N);
+  st h + HDR_PREV_RANDAO, raw + PLO_PREV_RANDAO;
+  var 1 z8 = alloc(8);
+  memzero(z8, 8);
+  st h + HDR_NONCE, z8;
+  /* base fee: u256 little-endian in SSZ */
+  var {1,1,1,1} bf = <LD_LE64(raw + PLO_BASE_FEE), LD_LE64(raw + PLO_BASE_FEE + 8), LD_LE64(raw + PLO_BASE_FEE + 16), LD_LE64(raw + PLO_BASE_FEE + 24)>;
+  st h + HDR_BASE_FEE, bf;
+  /* withdrawals root */
+  var nwd = lds 1 (pl + PL_WD_N);
+  wd_rlp_slices = alloc(nwd * 16 + 16);
+  var i = 0;
+  while i < nwd {
+    var {1,1} e = encode_withdrawal_rlp((lds 1 (pl + PL_WD)) + i * WITHDRAWAL_SIZE);
+    st wd_rlp_slices + i * 16, e.0;
+    st wd_rlp_slices + i * 16 + 8, e.1;
+    i = i + 1;
+  }
+  var 1 wr = alloc(32);
+  build_mpt_indexed(wd_rlp_slices, nwd, wr);
+  st h + HDR_WITHDRAWALS_ROOT, wr;
+  st h + HDR_BLOB_GAS_USED, lds 1 (pl + PL_BLOB_GAS_USED);
+  st h + HDR_EXCESS_BLOB_GAS, lds 1 (pl + PL_EXCESS_BLOB_GAS);
+  st h + HDR_PBBR, lds 1 (si + SI_PBBR);
+  var {1,1} reqs = encode_execution_requests(lds 1 (si + SI_REQ));
+  var 1 rh = alloc(32);
+  compute_requests_hash(reqs.0, reqs.1, rh);
+  st h + HDR_REQUESTS_HASH, rh;
+  var 1 bh = alloc(32);
+  keccak256(lds 1 (pl + PL_BAL), lds 1 (pl + PL_BAL_N), bh);
+  st h + HDR_BAL_HASH, bh;
+  st h + HDR_SLOT, lds 1 (pl + PL_SLOT);
+  return h;
+}
+
+/* rlp.encode(block) length: [header, txs, ommers=[], withdrawals] */
+fun 1 block_rlp_length(1 hdr, 1 pl) {
+  var 1 mark = heap_mark();
+  var {1,1} he = encode_header(hdr);
+  heap_release(mark);
+  var total = he.1;
+  var txs = lds 1 (pl + PL_TXS);
+  var ntx = lds 1 (pl + PL_TXS_N);
+  var tl = 0;
+  var i = 0;
+  while i < ntx {
+    var n = SLICE_LEN(txs, i);
+    var fb = 0;
+    if n != 0 {
+      fb = ld8 (SLICE_PTR(txs, i));
+    }
+    var 1 el = rlp_bytes_encoded_len(fb, n);
+    tl = tl + el;
+    i = i + 1;
+  }
+  var 1 hl = rlp_list_header_len(tl);
+  total = total + hl + tl;
+  total = total + 1;   /* empty ommers list 0xc0 */
+  var nwd = lds 1 (pl + PL_WD_N);
+  var wl = 0;
+  i = 0;
+  while i < nwd {
+    wl = wl + SLICE_LEN(wd_rlp_slices, i);
+    i = i + 1;
+  }
+  hl = rlp_list_header_len(wl);
+  total = total + hl + wl;
+  hl = rlp_list_header_len(total);
+  return total + hl;
+}
+
+/* ---- transaction helpers ------------------------------------------------------- */
+
+fun 1 tx_is_blob(1 tx) {
+  if (lds 1 (tx + TX_TYPE)) == 3 {
+    return 1;
+  }
+  return 0;
+}
+
+fun 1 tx_is_setcode(1 tx) {
+  if (lds 1 (tx + TX_TYPE)) == 4 {
+    return 1;
+  }
+  return 0;
+}
+
+/* gas * price with overflow detection: <overflow, product> */
+fun {1,1,1,1,1} fee_mul(1 gas, {1,1,1,1} price) {
+  var {1,1,1,1,1,1,1,1} p = u256_mul_full(<gas, 0, 0, 0>, price);
+  var ovf = 0;
+  if (p.4 | p.5 | p.6 | p.7) != 0 {
+    ovf = 1;
+  }
+  return <ovf, p.0, p.1, p.2, p.3>;
+}
+
+/* is_valid_versioned_hashes(npr) */
+fun 1 is_valid_versioned_hashes(1 si) {
+  var pl = lds 1 (si + SI_PL);
+  var txs = lds 1 (pl + PL_TXS);
+  var ntx = lds 1 (pl + PL_TXS_N);
+  var vh = lds 1 (si + SI_VH);
+  var nvh = lds 1 (si + SI_VH_N);
+  var k = 0;
+  var i = 0;
+  while i < ntx {
+    var 1 tx = decode_transaction(SLICE_PTR(txs, i), SLICE_LEN(txs, i));
+    var 1 isb = tx_is_blob(tx);
+    if isb != 0 {
+      var nb = lds 1 (tx + TX_BLOB_HASHES_N);
+      var j = 0;
+      while j < nb {
+        if k >=+ nvh {
+          return 0;
+        }
+        var 1 eq = memeq((lds 1 (tx + TX_BLOB_HASHES)) + j * 32, vh + k * 32, 32);
+        if eq == 0 {
+          return 0;
+        }
+        k = k + 1;
+        j = j + 1;
+      }
+    }
+    i = i + 1;
+  }
+  if k != nvh {
+    return 0;
+  }
+  return 1;
+}
+
+/* ---- system transactions ------------------------------------------------------- */
+
+fun 1 te_new() {
+  var 1 te = alloc(TE_SIZE);
+  memzero(te, TE_SIZE);
+  return te;
+}
+
+/* process_unchecked_system_transaction(target, data) -> MessageCallOutput */
+fun 1 process_unchecked_system_transaction(1 target, 1 data, 1 data_n) {
+  state_fresh_tx();
+  var {1,1} code = ext_code_of(target);
+  var 1 te = te_new();
+  st te + TE_ORIGIN, vm_system_address;
+  st te + TE_RECIPIENT, target;
+  st te + TE_GAS_PRICE, lds {1,1,1,1} (be + BE_BASE_FEE);
+  st te + TE_GAS, SYSTEM_TRANSACTION_GAS;
+  st te + TE_RESERVOIR, SG_STORAGE_SET * SYSTEM_MAX_SSTORES_PER_CALL;
+  var 1 m = msg_new();
+  st m + MSG_BE, be;
+  st m + MSG_TE, te;
+  st m + MSG_CALLER, vm_system_address;
+  st m + MSG_TARGET, target;
+  st m + MSG_CURRENT_TARGET, target;
+  st m + MSG_GAS, SYSTEM_TRANSACTION_GAS;
+  st m + MSG_RESERVOIR, SG_STORAGE_SET * SYSTEM_MAX_SSTORES_PER_CALL;
+  st m + MSG_DATA, data;
+  st m + MSG_DATA_N, data_n;
+  st m + MSG_CODE_ADDRESS, target;
+  st m + MSG_CODE, code.0;
+  st m + MSG_CODE_N, code.1;
+  var 1 aa = htab_new(20, 8);
+  st m + MSG_ACC_ADDRS, aa;
+  var 1 ak = htab_new(52, 8);
+  st m + MSG_ACC_KEYS, ak;
+  var 1 out = process_message_call(m);
+  incorporate_tx_into_block();
+  return out;
+}
+
+fun 1 process_checked_system_transaction(1 target) {
+  state_fresh_tx();
+  var {1,1} code = ext_code_of(target);
+  if code.1 == 0 {
+    throw BlockErr 70;   /* System contract address does not contain code */
+  }
+  var 1 empty = alloc(8);
+  var 1 out = process_unchecked_system_transaction(target, empty, 0);
+  if (lds 1 (out + MCO_ERROR)) != 0 {
+    throw BlockErr 71;   /* System contract call failed */
+  }
+  return out;
+}
+
+/* ---- check_transaction (Fork.lean) ----------------------------------------------- */
+
+/* Returns effective gas price (U256); blob gas used is calculate_total_blob_gas. */
+fun {1,1,1,1} check_transaction(1 tx, 1 sender) {
+  var block_gas_limit = lds 1 (be + BE_GAS_LIMIT);
+  var regular_avail = block_gas_limit - (lds 1 (bo + BO_GAS_USED));
+  var state_avail = block_gas_limit - (lds 1 (bo + BO_STATE_GAS_USED));
+  var blob_avail = MAX_BLOB_GAS_PER_BLOCK - (lds 1 (bo + BO_BLOB_GAS_USED));
+  var gas = lds 1 (tx + TX_GAS);
+  var 1 capped = min(TX_MAX_GAS_LIMIT, gas);
+  if capped >+ regular_avail {
+    throw BlockErr 80;
+  }
+  if gas >+ state_avail {
+    throw BlockErr 81;
+  }
+  var 1 tx_blob_gas = calculate_total_blob_gas(tx);
+  if tx_blob_gas >+ blob_avail {
+    throw BlockErr 82;
+  }
+  var 1 acct = get_account(sender);
+  var {1,1,1,1} base_fee = lds {1,1,1,1} (be + BE_BASE_FEE);
+  var {1,1,1,1} price = <0, 0, 0, 0>;
+  var {1,1,1,1} max_fee_per_gas = <0, 0, 0, 0>;
+  var ty = lds 1 (tx + TX_TYPE);
+  if (ty == 0) || (ty == 1) {
+    var {1,1,1,1} gp = lds {1,1,1,1} (tx + TX_GAS_PRICE);
+    var 1 lt = u256_lt(gp, base_fee);
+    if lt != 0 {
+      throw BlockErr 83;
+    }
+    price = gp;
+    max_fee_per_gas = gp;
+  } else {
+    var {1,1,1,1} mf = lds {1,1,1,1} (tx + TX_MAX_FEE);
+    var {1,1,1,1} mp = lds {1,1,1,1} (tx + TX_MAX_PRIORITY_FEE);
+    var 1 lt1 = u256_lt(mf, mp);
+    if lt1 != 0 {
+      throw BlockErr 84;
+    }
+    var 1 lt2 = u256_lt(mf, base_fee);
+    if lt2 != 0 {
+      throw BlockErr 85;
+    }
+    var {1,1,1,1} diff = u256_sub(mf, base_fee);
+    var 1 lt3 = u256_lt(mp, diff);
+    var {1,1,1,1} prio = diff;
+    if lt3 != 0 {
+      prio = mp;
+    }
+    price = u256_add(prio, base_fee);
+    max_fee_per_gas = mf;
+  }
+  var {1,1,1,1,1} mgf = fee_mul(gas, max_fee_per_gas);
+  var ovf = mgf.0;
+  var {1,1,1,1} max_gas_fee = <mgf.1, mgf.2, mgf.3, mgf.4>;
+  if ty == 3 {
+    var nb = lds 1 (tx + TX_BLOB_HASHES_N);
+    if nb == 0 {
+      throw BlockErr 86;
+    }
+    if nb >+ BLOB_COUNT_LIMIT {
+      throw BlockErr 87;
+    }
+    var j = 0;
+    while j < nb {
+      if (ld8 ((lds 1 (tx + TX_BLOB_HASHES)) + j * 32)) != 1 {
+        throw BlockErr 88;
+      }
+      j = j + 1;
+    }
+    var {1,1,1,1} bgp = calculate_blob_gas_price(lds 1 (be + BE_EXCESS_BLOB_GAS));
+    var {1,1,1,1} mfb = lds {1,1,1,1} (tx + TX_MAX_FEE_PER_BLOB_GAS);
+    var 1 lt4 = u256_lt(mfb, bgp);
+    if lt4 != 0 {
+      throw BlockErr 89;
+    }
+    var {1,1,1,1,1} bf = fee_mul(tx_blob_gas, mfb);
+    if bf.0 != 0 {
+      ovf = 1;
+    }
+    var {1,1,1,1,1} sum = u256_add_carry(max_gas_fee, <bf.1, bf.2, bf.3, bf.4>);
+    if sum.4 != 0 {
+      ovf = 1;
+    }
+    max_gas_fee = <sum.0, sum.1, sum.2, sum.3>;
+  }
+  if ty == 4 {
+    if (lds 1 (tx + TX_AUTHORIZATIONS_N)) == 0 {
+      throw BlockErr 90;
+    }
+  }
+  /* nonce checks: tx nonce is U256 */
+  var {1,1,1,1} tn = lds {1,1,1,1} (tx + TX_NONCE);
+  var 1 fits = u256_fits_word(tn);
+  var an = lds 1 (acct + ACCT_NONCE);
+  if fits == 0 {
+    throw BlockErr 92;   /* nonce too high */
+  }
+  if an >+ tn.0 {
+    throw BlockErr 91;   /* nonce too low */
+  }
+  if an <+ tn.0 {
+    throw BlockErr 92;
+  }
+  if ovf != 0 {
+    throw BlockErr 93;   /* insufficient sender balance (fee overflow) */
+  }
+  var {1,1,1,1,1} need = u256_add_carry(max_gas_fee, lds {1,1,1,1} (tx + TX_VALUE));
+  if need.4 != 0 {
+    throw BlockErr 93;
+  }
+  var 1 lt5 = u256_lt(lds {1,1,1,1} (acct + ACCT_BALANCE), <need.0, need.1, need.2, need.3>);
+  if lt5 != 0 {
+    throw BlockErr 93;
+  }
+  var {1,1} scode = get_code(lds 1 (acct + ACCT_CODE_HASH), sender);
+  var 1 che = memeq(lds 1 (acct + ACCT_CODE_HASH), empty_code_hash, 32);
+  if che == 0 {
+    var 1 vd = is_valid_delegation(scode.0, scode.1);
+    if vd == 0 {
+      throw BlockErr 94;   /* not EOA */
+    }
+  }
+  return price;
+}
+
+/* ---- process_transaction (Fork.lean) --------------------------------------------- */
+
+fun 1 process_transaction(1 tx, 1 index, 1 pubkey) {
+  state_fresh_tx();
+  bal_index = index + 1;
+  var {1,1} enc = encode_transaction(tx);
+  st (lds 1 (bo + BO_TXS)) + index * 16, enc.0;
+  st (lds 1 (bo + BO_TXS)) + index * 16 + 8, enc.1;
+  var {1,1} cid = tx_chain_id(tx);
+  if cid.0 != 0 {
+    if cid.1 != (lds 1 (be + BE_CHAIN_ID)) {
+      throw BlockErr 100;   /* WrongChainIdError */
+    }
+  }
+  var 1 sender = alloc(24);
+  recover_sender_from_public_key(tx, lds 1 (be + BE_CHAIN_ID), pubkey, sender);
+  var {1,1,1} intrinsic = validate_transaction(tx, sender);
+  var intrinsic_gas = intrinsic.0 + intrinsic.1;
+  var {1,1,1,1} price = check_transaction(tx, sender);
+  var 1 tx_blob_gas_used = calculate_total_blob_gas(tx);
+  var 1 acct = get_account(sender);
+  var {1,1,1,1} blob_gas_fee = <0, 0, 0, 0>;
+  if tx_blob_gas_used != 0 {
+    var {1,1,1,1} bgp = calculate_blob_gas_price(lds 1 (be + BE_EXCESS_BLOB_GAS));
+    var {1,1,1,1,1} bgf = fee_mul(tx_blob_gas_used, bgp);
+    blob_gas_fee = <bgf.1, bgf.2, bgf.3, bgf.4>;
+  }
+  var gas = lds 1 (tx + TX_GAS);
+  var {1,1,1,1,1} egf = fee_mul(gas, price);
+  var {1,1,1,1} effective_gas_fee = <egf.1, egf.2, egf.3, egf.4>;
+  var execution_gas = gas - intrinsic_gas;
+  var regular_budget = TX_MAX_GAS_LIMIT - intrinsic.0;
+  var 1 mgas = min(regular_budget, execution_gas);
+  var reservoir = execution_gas - mgas;
+  increment_nonce(sender);
+  var {1,1,1,1} bal = lds {1,1,1,1} (acct + ACCT_BALANCE);
+  bal = u256_sub(bal, effective_gas_fee);
+  bal = u256_sub(bal, blob_gas_fee);
+  set_account_balance(sender, bal);
+  /* access list */
+  var 1 te = te_new();
+  st te + TE_ORIGIN, sender;
+  st te + TE_RECIPIENT, lds 1 (tx + TX_TO);
+  st te + TE_VALUE, lds {1,1,1,1} (tx + TX_VALUE);
+  st te + TE_GAS_PRICE, price;
+  st te + TE_GAS, mgas;
+  st te + TE_RESERVOIR, reservoir;
+  var nal = 0;
+  var 1 hal = tx_has_access_list(tx);
+  if hal != 0 {
+    nal = lds 1 (tx + TX_ACCESS_LIST_N);
+  }
+  var 1 al_addrs = alloc((nal + 1) * 8);
+  st al_addrs, lds 1 (be + BE_COINBASE);
+  var nkeys = 0;
+  var i = 0;
+  while i < nal {
+    var acc = (lds 1 (tx + TX_ACCESS_LIST)) + i * ACC_SIZE;
+    st al_addrs + (i + 1) * 8, lds 1 (acc + ACC_ADDR);
+    nkeys = nkeys + (lds 1 (acc + ACC_SLOTS_N));
+    i = i + 1;
+  }
+  var 1 al_keys = alloc(nkeys * 52 + 8);
+  var k = 0;
+  i = 0;
+  while i < nal {
+    var acc2 = (lds 1 (tx + TX_ACCESS_LIST)) + i * ACC_SIZE;
+    var ns = lds 1 (acc2 + ACC_SLOTS_N);
+    var j = 0;
+    while j < ns {
+      memcpy(al_keys + k * 52, lds 1 (acc2 + ACC_ADDR), 20);
+      memcpy(al_keys + k * 52 + 20, (lds 1 (acc2 + ACC_SLOTS)) + j * 32, 32);
+      k = k + 1;
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  st te + TE_AL_ADDRS, al_addrs;
+  st te + TE_AL_ADDRS_N, nal + 1;
+  st te + TE_AL_KEYS, al_keys;
+  st te + TE_AL_KEYS_N, nkeys;
+  var 1 isb = tx_is_blob(tx);
+  if isb != 0 {
+    st te + TE_BLOB_HASHES, lds 1 (tx + TX_BLOB_HASHES);
+    st te + TE_BLOB_HASHES_N, lds 1 (tx + TX_BLOB_HASHES_N);
+  }
+  var 1 issc = tx_is_setcode(tx);
+  if issc != 0 {
+    st te + TE_AUTHS, lds 1 (tx + TX_AUTHORIZATIONS);
+    st te + TE_AUTHS_N, lds 1 (tx + TX_AUTHORIZATIONS_N);
+  }
+  st te + TE_INDEX_SOME, 1;
+  st te + TE_INDEX, index;
+  var 1 txh = alloc(32);
+  keccak256(enc.0, enc.1, txh);
+  st te + TE_TX_HASH, txh;
+  st te + TE_INTRINSIC_REGULAR, intrinsic.0;
+  st te + TE_INTRINSIC_STATE, intrinsic.1;
+  /* prepare_message */
+  var 1 m = msg_new();
+  st m + MSG_BE, be;
+  st m + MSG_TE, te;
+  st m + MSG_CALLER, sender;
+  st m + MSG_TARGET, lds 1 (tx + TX_TO);
+  st m + MSG_GAS, mgas;
+  st m + MSG_RESERVOIR, reservoir;
+  st m + MSG_VALUE, lds {1,1,1,1} (tx + TX_VALUE);
+  var 1 aa = htab_new(20, 64);
+  htab_set(aa, sender, 1);
+  i = 0;
+  while i < 18 {
+    htab_set(aa, precompile_addrs + i * 20, 1);
+    i = i + 1;
+  }
+  i = 0;
+  while i < nal + 1 {
+    htab_set(aa, lds 1 (al_addrs + i * 8), 1);
+    i = i + 1;
+  }
+  var 1 ak = htab_new(52, 16);
+  i = 0;
+  while i < nkeys {
+    htab_set(ak, al_keys + i * 52, 1);
+    i = i + 1;
+  }
+  var 1 empty = alloc(8);
+  if (lds 1 (tx + TX_TO)) == 0 {
+    var 1 sa = get_account(sender);
+    var 1 ct = alloc(24);
+    compute_contract_address(sender, (lds 1 (sa + ACCT_NONCE)) - 1, ct);
+    st m + MSG_CURRENT_TARGET, ct;
+    st m + MSG_DATA, empty;
+    st m + MSG_DATA_N, 0;
+    st m + MSG_CODE, lds 1 (tx + TX_DATA);
+    st m + MSG_CODE_N, lds 1 (tx + TX_DATA_N);
+    st m + MSG_CODE_ADDRESS, 0;
+  } else {
+    st m + MSG_CURRENT_TARGET, lds 1 (tx + TX_TO);
+    st m + MSG_DATA, lds 1 (tx + TX_DATA);
+    st m + MSG_DATA_N, lds 1 (tx + TX_DATA_N);
+    st m + MSG_CODE, empty;
+    st m + MSG_CODE_N, 0;
+    st m + MSG_CODE_ADDRESS, lds 1 (tx + TX_TO);
+  }
+  st m + MSG_TRANSFER_VALUE, 1;
+  htab_set(aa, lds 1 (m + MSG_CURRENT_TARGET), 1);
+  st m + MSG_ACC_ADDRS, aa;
+  st m + MSG_ACC_KEYS, ak;
+  var 1 out = process_message_call(m);
+  /* gas accounting */
+  var used_before_refund = gas - (lds 1 (out + MCO_GAS_LEFT)) - (lds 1 (out + MCO_STATE_GAS_LEFT));
+  var 1 ubr5 = udiv_small5(used_before_refund);
+  var 1 refund = min(ubr5, lds 1 (out + MCO_REFUND));
+  var used_after_refund = used_before_refund - refund;
+  var 1 tx_gas_used = max(used_after_refund, intrinsic.2);
+  var tx_gas_left = gas - tx_gas_used;
+  var {1,1,1,1,1} gra = fee_mul(tx_gas_left, price);
+  var {1,1,1,1} priority_fee = u256_sub(price, lds {1,1,1,1} (be + BE_BASE_FEE));
+  var {1,1,1,1,1} tf = fee_mul(tx_gas_used, priority_fee);
+  create_ether(sender, <gra.1, gra.2, gra.3, gra.4>);
+  create_ether(lds 1 (be + BE_COINBASE), <tf.1, tf.2, tf.3, tf.4>);
+  var tx_state_gas = intrinsic.1 + (lds 1 (out + MCO_STATE_GAS_USED));   /* signed */
+  var tx_state_gas_nat = tx_state_gas;
+  if tx_state_gas < 0 {
+    tx_state_gas_nat = 0;
+  }
+  var 1 tx_regular_gas = max(used_before_refund - tx_state_gas_nat, intrinsic.2);
+  st bo + BO_GAS_USED, (lds 1 (bo + BO_GAS_USED)) + tx_regular_gas;
+  st bo + BO_STATE_GAS_USED, (lds 1 (bo + BO_STATE_GAS_USED)) + tx_state_gas_nat;
+  st bo + BO_BLOB_GAS_USED, (lds 1 (bo + BO_BLOB_GAS_USED)) + tx_blob_gas_used;
+  st bo + BO_CUMULATIVE_GAS, (lds 1 (bo + BO_CUMULATIVE_GAS)) + tx_gas_used;
+  /* receipt */
+  var logs = lds 1 (out + MCO_LOGS);
+  if logs == 0 {
+    logs = lst_new(8, 1);
+  }
+  var succeeded = 1;
+  if (lds 1 (out + MCO_ERROR)) != 0 {
+    succeeded = 0;
+  }
+  var {1,1} rc = encode_receipt(lds 1 (tx + TX_TYPE), succeeded, lds 1 (bo + BO_CUMULATIVE_GAS), logs);
+  st (lds 1 (bo + BO_RECEIPTS)) + index * 16, rc.0;
+  st (lds 1 (bo + BO_RECEIPTS)) + index * 16 + 8, rc.1;
+  var nl = lds 1 (logs + LST_N);
+  var lp = lds 1 (logs + LST_PTR);
+  i = 0;
+  while i < nl {
+    var 1 slot = lst_push(lds 1 (bo + BO_LOGS), 8);
+    st slot, lds 1 (lp + i * 8);
+    i = i + 1;
+  }
+  var 1 rl = lst_push(lds 1 (bo + BO_RECEIPT_LOGS), 8);
+  st rl, logs;
+  /* accounts to delete */
+  var del = lds 1 (out + MCO_DELETE);
+  if del != 0 {
+    var dcap = lds 1 (del + HT_CAP);
+    i = 0;
+    while i < dcap {
+      var {1,1,1} s = htab_slot(del, i);
+      if s.0 != 0 {
+        clear_account_preserving_balance(s.1);
+      }
+      i = i + 1;
+    }
+  }
+  incorporate_tx_into_block();
+  return 0;
+}
+
+/* x / 5 for the refund rule */
+fun 1 udiv_small5(1 x) {
+  var 1 q = udiv(x, 5);
+  return q;
+}
+
+/* ---- withdrawals / requests ---------------------------------------------------- */
+
+fun 1 process_withdrawals(1 pl) {
+  state_fresh_tx();
+  var nwd = lds 1 (pl + PL_WD_N);
+  var wd = lds 1 (pl + PL_WD);
+  var i = 0;
+  while i < nwd {
+    var w = wd + i * WITHDRAWAL_SIZE;
+    var {1,1,1,1} amt = <LD_LE64(w + 36), 0, 0, 0>;
+    var {1,1,1,1} wei = u256_mul(amt, <GWEI_TO_WEI, 0, 0, 0>);
+    create_ether(w + 16, wei);
+    i = i + 1;
+  }
+  incorporate_tx_into_block();
+  return 0;
+}
+
+fun 1 requests_append(1 type_byte, 1 data, 1 n) {
+  var 1 blob = alloc(n + 8);
+  st8 blob, type_byte;
+  memcpy(blob + 1, data, n);
+  var k = lds 1 (bo + BO_REQUESTS_N);
+  st (lds 1 (bo + BO_REQUESTS)) + k * 16, blob;
+  st (lds 1 (bo + BO_REQUESTS)) + k * 16 + 8, n + 1;
+  st bo + BO_REQUESTS_N, k + 1;
+  return 0;
+}
+
+/* parse_deposit_requests over the receipt logs */
+fun 1 process_general_purpose_requests() {
+  var rls = lds 1 (bo + BO_RECEIPT_LOGS);
+  var nr = lds 1 (rls + LST_N);
+  var rp = lds 1 (rls + LST_PTR);
+  var 1 dep = alloc(8);
+  var dep_n = 0;
+  var dep_cap = 0;
+  var i = 0;
+  while i < nr {
+    var logs = lds 1 (rp + i * 8);
+    var nl = lds 1 (logs + LST_N);
+    var lp = lds 1 (logs + LST_PTR);
+    var j = 0;
+    while j < nl {
+      var log = lds 1 (lp + j * 8);
+      var 1 isdep = memeq(lds 1 (log + LOG_ADDRESS), deposit_contract_address, 20);
+      if isdep != 0 {
+        if (lds 1 (log + LOG_TOPICS_N)) >+ 0 {
+          var 1 sig = memeq(lds 1 (log + LOG_TOPICS), deposit_event_signature_hash, 32);
+          if sig != 0 {
+            if dep_n + 192 >+ dep_cap {
+              var 1 nd = alloc(dep_cap * 2 + 1024);
+              memcpy(nd, dep, dep_n);
+              dep = nd;
+              dep_cap = dep_cap * 2 + 1024;
+            }
+            extract_deposit_data(lds 1 (log + LOG_DATA), lds 1 (log + LOG_DATA_N), dep + dep_n);
+            dep_n = dep_n + 192;
+          }
+        }
+      }
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  if dep_n >+ 0 {
+    requests_append(0, dep, dep_n);
+  }
+  var 1 o1 = process_checked_system_transaction(withdrawal_request_address);
+  if (lds 1 (o1 + MCO_RETDATA_N)) >+ 0 {
+    requests_append(1, lds 1 (o1 + MCO_RETDATA), lds 1 (o1 + MCO_RETDATA_N));
+  }
+  var 1 o2 = process_checked_system_transaction(consolidation_request_address);
+  if (lds 1 (o2 + MCO_RETDATA_N)) >+ 0 {
+    requests_append(2, lds 1 (o2 + MCO_RETDATA), lds 1 (o2 + MCO_RETDATA_N));
+  }
+  var 1 o3 = process_checked_system_transaction(builder_deposit_address);
+  if (lds 1 (o3 + MCO_RETDATA_N)) >+ 0 {
+    requests_append(3, lds 1 (o3 + MCO_RETDATA), lds 1 (o3 + MCO_RETDATA_N));
+  }
+  var 1 o4 = process_checked_system_transaction(builder_exit_address);
+  if (lds 1 (o4 + MCO_RETDATA_N)) >+ 0 {
+    requests_append(4, lds 1 (o4 + MCO_RETDATA), lds 1 (o4 + MCO_RETDATA_N));
+  }
+  return 0;
+}
+
+/* ---- apply_body + execute_block_interior ---------------------------------------- */
+
+fun 1 execute_block(1 si, 1 hdr) {
+  var pl = lds 1 (si + SI_PL);
+  var ntx = lds 1 (pl + PL_TXS_N);
+  bo = alloc(BO_SIZE);
+  memzero(bo, BO_SIZE);
+  var 1 txs = alloc(ntx * 16 + 16);
+  st bo + BO_TXS, txs;
+  var 1 rcs = alloc(ntx * 16 + 16);
+  st bo + BO_RECEIPTS, rcs;
+  var 1 logs = lst_new(8, 16);
+  st bo + BO_LOGS, logs;
+  var 1 reqs = alloc(8 * 16);
+  st bo + BO_REQUESTS, reqs;
+  var 1 rls = lst_new(8, 16);
+  st bo + BO_RECEIPT_LOGS, rls;
+  st bo + BO_NTX, ntx;
+  bal_init();
+  /* apply_body */
+  process_unchecked_system_transaction(beacon_roots_address, lds 1 (si + SI_PBBR), 32);
+  var lasth = zero32;
+  if block_hashes_n >+ 0 {
+    lasth = block_hashes + (block_hashes_n - 1) * 32;
+  }
+  process_unchecked_system_transaction(history_storage_address, lasth, 32);
+  state_fresh_tx();
+  track_ancestor_access(1);
+  var ptxs = lds 1 (pl + PL_TXS);
+  var i = 0;
+  while i < ntx {
+    var 1 tx = decode_transaction(SLICE_PTR(ptxs, i), SLICE_LEN(ptxs, i));
+    process_transaction(tx, i, (lds 1 (si + SI_PK)) + i * PUBKEY_SIZE);
+    i = i + 1;
+  }
+  bal_index = ntx + 1;
+  process_withdrawals(pl);
+  process_general_purpose_requests();
+  var {1,1} bal = build_block_access_list_rlp();
+  validate_block_access_list_gas_limit(lds 1 (be + BE_GAS_LIMIT));
+  /* post-execution checks */
+  var 1 root = alloc(32);
+  compute_state_root(root);
+  var 1 txroot = alloc(32);
+  build_mpt_indexed(txs, ntx, txroot);
+  var 1 rroot = alloc(32);
+  build_mpt_indexed(rcs, ntx, rroot);
+  var 1 bloom = alloc(256);
+  logs_bloom(lds 1 (bo + BO_LOGS), bloom);
+  var 1 wroot = alloc(32);
+  build_mpt_indexed(wd_rlp_slices, lds 1 (pl + PL_WD_N), wroot);
+  var 1 rqh = alloc(32);
+  compute_requests_hash(lds 1 (bo + BO_REQUESTS), lds 1 (bo + BO_REQUESTS_N), rqh);
+  var 1 balh = alloc(32);
+  keccak256(bal.0, bal.1, balh);
+  var 1 bgu = max(lds 1 (bo + BO_GAS_USED), lds 1 (bo + BO_STATE_GAS_USED));
+  if bgu != (lds 1 (hdr + HDR_GAS_USED)) {
+    throw BlockErr 110;
+  }
+  var 1 eq = memeq(txroot, lds 1 (hdr + HDR_TX_ROOT), 32);
+  if eq == 0 {
+    throw BlockErr 111;
+  }
+  eq = memeq(root, lds 1 (hdr + HDR_STATE_ROOT), 32);
+  if eq == 0 {
+    throw BlockErr 112;
+  }
+  eq = memeq(rroot, lds 1 (hdr + HDR_RECEIPT_ROOT), 32);
+  if eq == 0 {
+    throw BlockErr 113;
+  }
+  eq = memeq(bloom, lds 1 (hdr + HDR_BLOOM), 256);
+  if eq == 0 {
+    throw BlockErr 114;
+  }
+  eq = memeq(wroot, lds 1 (hdr + HDR_WITHDRAWALS_ROOT), 32);
+  if eq == 0 {
+    throw BlockErr 115;
+  }
+  if (lds 1 (bo + BO_BLOB_GAS_USED)) != (lds 1 (hdr + HDR_BLOB_GAS_USED)) {
+    throw BlockErr 116;
+  }
+  eq = memeq(rqh, lds 1 (hdr + HDR_REQUESTS_HASH), 32);
+  if eq == 0 {
+    throw BlockErr 117;
+  }
+  eq = memeq(balh, lds 1 (hdr + HDR_BAL_HASH), 32);
+  if eq == 0 {
+    throw BlockErr 118;
+  }
+  return 0;
+}
+
+/* ---- verify_stateless_new_payload: the attempt (everything that can reject) ---- */
+
+fun 1 run_attempt(1 si) {
+  var pl = lds 1 (si + SI_PL);
+  /* validate_chain_config */
+  if ((lds 1 (si + SI_BN_SOME)) == 0) && ((lds 1 (si + SI_TS_SOME)) == 0) {
+    throw BlockErr 1;   /* forkActivationMissing */
+  }
+  if (lds 1 (si + SI_BN_SOME)) != 0 {
+    if (lds 1 (pl + PL_NUMBER)) <+ (lds 1 (si + SI_BN)) {
+      throw BlockErr 2;   /* inactiveForkConfig */
+    }
+  }
+  if (lds 1 (si + SI_TS_SOME)) != 0 {
+    if (lds 1 (pl + PL_TIMESTAMP)) <+ (lds 1 (si + SI_TS)) {
+      throw BlockErr 2;
+    }
+  }
+  /* validate_headers */
+  var {1,1} vh = validate_headers(lds 1 (si + SI_HEADERS), lds 1 (si + SI_HEADERS_N));
+  var nh = lds 1 (si + SI_HEADERS_N);
+  if nh == 0 {
+    throw BlockErr 3;   /* no witness headers */
+  }
+  var parent = lds 1 (vh.0 + (nh - 1) * 8);
+  block_hashes = vh.1;
+  block_hashes_n = nh;
+  /* pre-state */
+  var 1 nodedb = nodedb_build(lds 1 (si + SI_STATE), lds 1 (si + SI_STATE_N));
+  var 1 codedb = nodedb_build(lds 1 (si + SI_CODES), lds 1 (si + SI_CODES_N));
+  state_init(nodedb, lds 1 (parent + HDR_STATE_ROOT), codedb);
+  /* execute_new_payload_request pre-checks */
+  var txs = lds 1 (pl + PL_TXS);
+  var ntx = lds 1 (pl + PL_TXS_N);
+  var i = 0;
+  while i < ntx {
+    if SLICE_LEN(txs, i) == 0 {
+      throw BlockErr 4;   /* Empty transaction in payload */
+    }
+    i = i + 1;
+  }
+  var 1 hdr = payload_header(si);
+  var 1 bh = alloc(32);
+  header_hash(hdr, bh);
+  var 1 eq = memeq(bh, (lds 1 (pl + PL_RAW)) + PLO_BLOCK_HASH, 32);
+  if eq == 0 {
+    throw BlockErr 5;   /* Invalid block hash */
+  }
+  var 1 vvh = is_valid_versioned_hashes(si);
+  if vvh == 0 {
+    throw BlockErr 6;
+  }
+  var 1 bl = block_rlp_length(hdr, pl);
+  if bl >+ MAX_RLP_BLOCK_SIZE {
+    throw BlockErr 7;
+  }
+  if (lds 1 (si + SI_PK_N)) != ntx {
+    throw BlockErr 8;   /* public key count mismatch */
+  }
+  validate_header(parent, hdr);
+  /* block environment */
+  be = alloc(BE_SIZE);
+  memzero(be, BE_SIZE);
+  st be + BE_CHAIN_ID, lds 1 (si + SI_CHAIN_ID);
+  st be + BE_GAS_LIMIT, lds 1 (hdr + HDR_GAS_LIMIT);
+  st be + BE_BLOCK_HASHES, block_hashes;
+  st be + BE_BLOCK_HASHES_N, block_hashes_n;
+  st be + BE_COINBASE, lds 1 (hdr + HDR_COINBASE);
+  st be + BE_NUMBER, lds 1 (hdr + HDR_NUMBER);
+  st be + BE_BASE_FEE, lds {1,1,1,1} (hdr + HDR_BASE_FEE);
+  st be + BE_TIME, lds 1 (hdr + HDR_TIMESTAMP);
+  st be + BE_PREV_RANDAO, lds 1 (hdr + HDR_PREV_RANDAO);
+  st be + BE_EXCESS_BLOB_GAS, lds 1 (hdr + HDR_EXCESS_BLOB_GAS);
+  st be + BE_PBBR, lds 1 (hdr + HDR_PBBR);
+  st be + BE_SLOT, lds 1 (hdr + HDR_SLOT);
+  st be + BE_PUBKEYS, lds 1 (si + SI_PK);
+  st be + BE_PUBKEYS_N, lds 1 (si + SI_PK_N);
+  execute_block(si, hdr);
+  return 0;
+}
+
+/* Exception translation ladder: every rejection kind -> Fail. */
+fun 1 attempt_l1(1 si) {
+  var e = 0;
+  try run_attempt(si)
+  catch BlockErr => e { throw Fail 1; }
+  return 0;
+}
+fun 1 attempt_l2(1 si) {
+  var e = 0;
+  try attempt_l1(si)
+  catch HdrErr => e { throw Fail 2; }
+  return 0;
+}
+fun 1 attempt_l3(1 si) {
+  var e = 0;
+  try attempt_l2(si)
+  catch RlpErr => e { throw Fail 3; }
+  return 0;
+}
+fun 1 attempt_l4(1 si) {
+  var e = 0;
+  try attempt_l3(si)
+  catch MptErr => e { throw Fail 4; }
+  return 0;
+}
+fun 1 attempt_l5(1 si) {
+  var e = 0;
+  try attempt_l4(si)
+  catch StateErr => e { throw Fail 5; }
+  return 0;
+}
+fun 1 attempt_l6(1 si) {
+  var e = 0;
+  try attempt_l5(si)
+  catch TxErr => e { throw Fail 6; }
+  return 0;
+}
+fun 1 attempt_l7(1 si) {
+  var e = 0;
+  try attempt_l6(si)
+  catch EvmErr => e { throw Fail 7; }
+  return 0;
+}
+
+/* verify_stateless_new_payload's successful_validation bit */
+fun 1 verify_stateless_new_payload(1 si) {
+  var e = 0;
+  var ok = 1;
+  try attempt_l7(si)
+  catch Fail => e {
+    ok = 0;
+    fail_code = e;
+  }
+  return ok;
+}
+
+var 1 fail_code = 0;
