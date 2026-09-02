@@ -42,3 +42,8 @@ function by function.
   (sha256 merkleization ~2M, secp256k1 recovery ~7M per transaction, keccak ~8k/permutation).
   Debug bytes: output[69] = failure class (1 BlockErr, 2 HdrErr, 3 RlpErr, 4 MptErr, 5 StateErr,
   6 TxErr, 7 EvmErr), output[70] = code (see `throw` sites), output[100] = last stage marker.
+* 2026-09-02: ziskemu runs the guest (output identical to spike). Fixture 00000 (1 tx, 5.8 KB input):
+  24.1M ZisK steps, cost 2.75G (114 cost/step; the gist's reth is ~120 cost/step), 0.14 s emulation.
+  Profile (spike PC histogram, `tools/spike_prof`): secp256k1 field mul/sqr ~47%, sha256 ~21%
+  (before zero-hash precomputation), keccak ~8%. The gist's devnet-7 block 115260 input is not in
+  this checkout; `tools/eest-run.py --ziskemu` reports ZisK steps for any manifest.
