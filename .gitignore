@@ -2,3 +2,4 @@ work/
 guest/build/
 __pycache__/
 *.pyc
+tools/spike_prof/spike_prof
