@@ -12,13 +12,18 @@ Empirically verified against the prebuilt `cake` (CakeML e8eca63, 2026-08-24).
   `&& ||` logical. **No division or modulo** — use `udivmod/udiv/umod` in `lib/arith.pnk`.
   No 64x64->128 multiply: split into 32-bit halves.
 * Comparisons: `< <= > >=` are SIGNED; `<+ <=+ >+ >=+` are UNSIGNED. `== !=`.
-  Use unsigned for addresses/lengths. Bitwise ops bind tighter than comparisons.
+  They produce ordinary 0/1 expressions. Use unsigned for addresses/lengths. Bitwise
+  ops bind tighter than comparisons.
 * **Function calls are statements, never expressions.** Allowed forms only:
   `var 1 x = f(a);` (declaring call: shape annotation REQUIRED), `x = f(a);`,
   `f(a);`, `return f(a);`. Never `g(f(a))`, `f(a) + 1`, `if f(a) {`.
+  In particular, `st ev + EV_OUTPUT, alloc(8)` is invalid; bind the result first:
+  `var 1 empty = alloc(8);`.
   For expression-level helpers use cpp macros (see `ROTR32`, `LD_LE32` in `config.h`).
 * Locals: `var x = e;` (shape 1 default), `var {1,1} p = <a, b>;` structs.
   Field access `p.0`. Struct-returning functions: `fun {1,1} f(...) { return <a,b>; }`.
+  Struct literals can be passed directly as call arguments, and flat 8-field structs
+  can be returned.
   Loading a struct from memory: `lds {1,1,1,1} addr`; storing: `st addr, structval`.
   Shape `4` == `{1,1,1,1}`.
 * Memory: `ld8 e` (byte, zero-extended), `ld32 e`, `lds 1 e` (word, 8-aligned),
@@ -32,16 +37,24 @@ Empirically verified against the prebuilt `cake` (CakeML e8eca63, 2026-08-24).
   must be a LOCAL declared before the `try`.
 * Exceptions: `exception Name : 1;` at top level; `throw Name expr;`;
   `try x = f(a) catch Name => localvar { ... }` (only a single call between try/catch).
-* Reserved words include `in`, `st`, `tick`, `skip`, `true`, `false`.
+  The result variable (including a struct-shaped one) must be declared before the `try`.
+  Throwing from a `catch` handler is valid and translates the exception.
+* `__add_with_carry__(a, b, cin)` treats `cin` as boolean: every nonzero value means
+  one. Use it only as a declaration or assignment RHS.
+* Reserved words include `in`, `st`, `tick`, `skip`, and `true`/`false`; using one as a
+  variable gives a parse error at its first USE, not at the declaration.
 * `@base` is heap start (0xa0100000). Do NOT use `@top` (broken in this build);
   the heap ends at `HEAP_END`. FFI: `@halt(@base,0,@base,0)`, `@trap(...)` (runtime/start.S).
 * `inline fun` exists but a call is still a statement.
+* Forward references and mutual recursion between top-level functions work.
 
 ## Project conventions
 * Bytes = `<ptr, len>` pairs (shape `{1,1}`) pointing into the heap; input bytes live in
   the copied input blob (read-only by convention).
 * Allocation: `alloc(n)` (8-byte aligned bump), `heap_mark()` / `heap_release(m)` for
-  scratch. No free.
+  scratch. No free. A global scratch pointer allocated lazily inside a mark/release
+  region dangles after release and may later be overwritten; allocate such state in an
+  explicit `*_init()` called before the region.
 * Slice arrays: element i is `<ptr,len>` at `arr + i*16` (`SLICE_PTR/SLICE_LEN` macros).
 * U256 = shape `{1,1,1,1}` = 4 little-endian 64-bit limbs (`.0` least significant).
   In memory: 4 words, limb 0 at the lowest address (`lds {1,1,1,1} p` / `st p, v`).
@@ -49,19 +62,23 @@ Empirically verified against the prebuilt `cake` (CakeML e8eca63, 2026-08-24).
 * Errors: one exception per domain (`SszErr`, `RlpErr`, ...), payload = small error code.
 * Every module header names the SpecRef Lean file(s) it ports; keep function names
   aligned with the Lean/Python names.
-* Unit tests: `guest/test/t_*.pnk` (a `main` that reads `input_blob()`, computes, and
-  `output_write`s the result), checked with `tools/unit.py TEST INPUT 'python-expr'`.
+* Word constants >= 2^63 must be written as negative decimals (signed 64-bit). Never
+  hand-compute large constants: generate limb decimals with Python; this avoids wrong
+  system addresses and similar transcription errors.
 
-## More pitfalls (from the library ports)
-* A reserved word used as a variable (`st`, `in`, ...) gives a parse error at its first USE,
-  not at the declaration.
-* Word constants >= 2^63 must be written as negative decimals (signed 64-bit).
-* Forward references and mutual recursion between top-level functions work.
-* `try x = f(...) catch` works with a struct-shaped `x` declared before the `try`.
-* `objdump -d` shows cake's `.text` as `.word` data; to disassemble use
-  `objcopy -O binary -j .text` then `objdump -D -b binary -m riscv:rv64 --adjust-vma=0x80000000`.
-* `output_write(src, n)` writes from output offset 0: accumulate multi-record test output in a
-  heap buffer and write once.
 * Register pressure: ~30 live locals compile but spill; order statements for short live ranges
   in hot loops.
-* `tools/unit.py TEST INPUT @file.py` uses `expected(blob)` from the file as the oracle.
+
+## Tooling
+* Unit tests: `guest/test/t_*.pnk` (a `main` that reads `input_blob()`, computes, and
+  `output_write`s the result), checked with `tools/unit.py TEST INPUT 'python-expr'`.
+  `tools/unit.py TEST INPUT @file.py` uses `expected(blob)` from the file as the oracle.
+* `output_write(src, n)` writes from output offset 0: accumulate multi-record test output in a
+  heap buffer and write once.
+* `uv run --directory DIR ...` resolves relative paths against `DIR`, not the directory
+  from which `uv` was invoked.
+* `@trap` appears as `halted cleanly` in `spike_run`; the only output is marker byte `0xEE`
+  at output offset 32.
+* `objdump -d` shows cake's `.text` as `.word` data; to disassemble use
+  `objcopy -O binary -j .text` then
+  `objdump -D -b binary -m riscv:rv64 --adjust-vma=0x80000000`.
