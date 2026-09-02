@@ -74,6 +74,15 @@ tools/eest-run.py guest/build/guest.elf work/inputs/manifest.tsv --quiet-passes
 tools/eest-run.py guest/build/guest.elf work/inputs/manifest.tsv --ziskemu   # ZisK steps
 ```
 
+## Testing
+
+Run `tools/check_all.sh` for the unit/oracle tests, vector checks, and every
+EEST manifest under `work/inputs*/manifest.tsv`. If `work/inputs/manifest.tsv`
+is absent, it generates a 30-fixture baseline first; set
+`CHECK_ALL_INPUT_COUNT` to choose another size. Each check gets a PASS/FAIL
+line, detailed output is saved under `work/check-all/`, and any failure makes
+the script exit non-zero.
+
 ## Status / plan
 
 See `PLAN.md`.
