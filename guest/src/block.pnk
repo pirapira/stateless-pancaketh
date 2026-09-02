@@ -285,7 +285,7 @@ fun 1 compute_state_root(1 out) {
       var 1 old_root = ws_storage_root_of(addr);
       var 1 mpt = mpt_from_witness(nodedb, old_root, 1);
       var icap = lds 1 (inner + HT_CAP);
-      var 1 vbuf = alloc(40);
+      var 1 vbuf = alloc(96);
       /* insertions/updates first, then deletions */
       var pass = 0;
       while pass < 2 {
