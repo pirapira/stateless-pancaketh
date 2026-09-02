@@ -47,3 +47,8 @@ function by function.
   Profile (spike PC histogram, `tools/spike_prof`): secp256k1 field mul/sqr ~47%, sha256 ~21%
   (before zero-hash precomputation), keccak ~8%. The gist's devnet-7 block 115260 input is not in
   this checkout; `tools/eest-run.py --ziskemu` reports ZisK steps for any manifest.
+
+## Workflow
+Mechanical, well-specified tasks are filed as GitHub issues with the `mechanical` label
+(https://github.com/pirapira/stateless-pancaketh/issues) for other agents; this session keeps the
+spec-porting and semantic-debugging work.
