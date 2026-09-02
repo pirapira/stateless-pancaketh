@@ -1,0 +1,6 @@
+[submodule "evm-asm"]
+	path = evm-asm
+	url = https://github.com/Verified-zkEVM/evm-asm.git
+[submodule "cakeml"]
+	path = cakeml
+	url = https://github.com/CakeML/cakeml.git
