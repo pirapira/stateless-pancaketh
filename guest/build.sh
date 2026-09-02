@@ -10,8 +10,8 @@ CPP="${CPP:-cpp}"
 src="$1"; out="$2"
 b="${out%.elf}"
 # Sources are a cpp translation unit (#include / #define for constants).
-"$CPP" -P -w -nostdinc -I "$HERE/src" -x c "$src" | grep -v '^#' > "$b.pnk"
-"$CAKE" --pancake --target=riscv < "$b.pnk" > "$b.cake.S"
+"$CPP" -P -w -nostdinc -I "$HERE/src" -x c "$src" | grep -v '^#' > "$b.pp.pnk"
+"$CAKE" --pancake --target=riscv < "$b.pp.pnk" > "$b.cake.S"
 # cake's .S uses C-preprocessor macros (cdecl, makesym); run cpp first.
 "$CPP" -P -x assembler-with-cpp "$b.cake.S" > "$b.cake.s"
 "$AS" -march=rv64imac -mno-relax -o "$b.cake.o" "$b.cake.s"
