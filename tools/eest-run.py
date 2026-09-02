@@ -3,6 +3,8 @@
 
 Usage: eest-run.py GUEST.elf MANIFEST.tsv [--jobs N] [--limit N] [--filter S]
                    [--out-dir DIR] [--quiet-passes] [--ziskemu]
+                   [--json FILE] [--from-json FILE --fail-code CLASS/CODE]
+                   [--labels FILE]
 
 Classification mirrors evm-asm/scripts/eest-specref-check.sh:
   root = bytes 0:32, succ = byte 32, tail = bytes 33:69 (69-byte results);
@@ -12,6 +14,7 @@ Also records the consumed instruction count reported by spike_run
 """
 import argparse, os, re, subprocess, sys, json, time
 from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPIKE_RUN = os.environ.get("SPIKE_RUN", os.path.join(ROOT, "evm-asm/scripts/spike/spike_run"))
@@ -62,6 +65,71 @@ def classify(r):
         return "PASS(full)", tag
     return "FAIL", tag
 
+FAIL_CODE_RE = re.compile(r"^\d+/\d+$")
+
+def parse_fail_code(value):
+    if not FAIL_CODE_RE.fullmatch(value):
+        raise argparse.ArgumentTypeError("fail code must be CLASS/CODE, for example 1/99")
+    return value
+
+def debug_value(value):
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+def labels_from_json(path, fail_code=None):
+    try:
+        with open(path, encoding="utf-8") as jf:
+            records = json.load(jf)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read JSON result file {path}: {exc}") from exc
+    if not isinstance(records, list):
+        raise ValueError(f"JSON result file {path} must contain a list")
+    labels = []
+    for number, record in enumerate(records, 1):
+        if not isinstance(record, dict) or not isinstance(record.get("label"), str):
+            raise ValueError(f"JSON result {path} entry {number} has no label")
+        if fail_code is not None:
+            is_failure = str(record.get("class", "")).startswith("FAIL")
+            if not is_failure or debug_value(record.get("dbg", -1)) != fail_code:
+                continue
+        labels.append(record["label"])
+    return labels
+
+def labels_from_file(path):
+    try:
+        with open(path, encoding="utf-8") as lf:
+            return [line.strip() for line in lf
+                    if line.strip() and not line.lstrip().startswith("#")]
+    except OSError as exc:
+        raise ValueError(f"cannot read label file {path}: {exc}") from exc
+
+def select_labels(rows, labels):
+    by_label = {}
+    for row in rows:
+        if row:
+            by_label.setdefault(row[0], row)
+    missing = [label for label in labels if label not in by_label]
+    if missing:
+        shown = ", ".join(missing[:5])
+        if len(missing) > 5:
+            shown += ", ..."
+        raise ValueError(f"labels not found in manifest: {shown}")
+    return [by_label[label] for label in labels]
+
+def print_failure_histogram(results):
+    histogram = Counter(
+        (r.get("regions", ""), debug_value(r.get("dbg", -1)))
+        for r in results
+        if str(r.get("class", "")).startswith("FAIL")
+    )
+    if not histogram:
+        return
+    print(" failure histogram (regions, fail):")
+    for (regions, fail), count in sorted(
+            histogram.items(), key=lambda item: (-item[1], item[0])):
+        print(f"  ({regions or '-'}, {fail}) = {count}")
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("elf"); ap.add_argument("manifest")
@@ -73,8 +141,25 @@ def main():
     ap.add_argument("--quiet-passes", action="store_true")
     ap.add_argument("--ziskemu", action="store_true")
     ap.add_argument("--json", default="")
+    selection = ap.add_mutually_exclusive_group()
+    selection.add_argument("--from-json", default="", metavar="FILE",
+                           help="select labels from a previous --json result file")
+    selection.add_argument("--labels", default="", metavar="FILE",
+                           help="run labels listed one per line in FILE")
+    ap.add_argument("--fail-code", default=None, type=parse_fail_code,
+                    metavar="CLASS/CODE",
+                    help="with --from-json, rerun only matching failing codes")
     a = ap.parse_args()
-    rows = [l.rstrip("\n").split("\t") for l in open(a.manifest) if l.strip()]
+    if a.fail_code is not None and not a.from_json:
+        ap.error("--fail-code requires --from-json")
+    try:
+        rows = [l.rstrip("\n").split("\t") for l in open(a.manifest) if l.strip()]
+        if a.from_json:
+            rows = select_labels(rows, labels_from_json(a.from_json, a.fail_code))
+        elif a.labels:
+            rows = select_labels(rows, labels_from_file(a.labels))
+    except (OSError, ValueError) as exc:
+        ap.error(str(exc))
     if a.filter: rows = [r for r in rows if a.filter in r[0] or (len(r) > 6 and a.filter in r[6])]
     rows = rows[a.skip:]
     if a.limit: rows = rows[:a.limit]
@@ -98,6 +183,7 @@ def main():
     if steps_pass:
         print(f" steps over passing cases: min={min(steps_pass)} max={max(steps_pass)} "
               f"mean={sum(steps_pass)//len(steps_pass)}")
+    print_failure_histogram(results)
     if a.json:
         json.dump(results, open(a.json, "w"), indent=1)
     return 0 if all(r["class"].startswith("PASS") for r in results) else 1
