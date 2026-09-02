@@ -76,4 +76,5 @@ tools/eest-run.py guest/build/guest.elf work/inputs/manifest.tsv --ziskemu   # Z
 
 ## Status / plan
 
-See `PLAN.md`.
+See `PLAN.md`. Deliberate numeric-width and saturation boundaries are
+documented in [docs/ENVELOPE.md](docs/ENVELOPE.md).

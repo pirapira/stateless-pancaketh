@@ -37,6 +37,9 @@ Each Pancake source file names the SpecRef Lean module it ports; function names
 follow the Lean/Python names so the "Pancake ≡ SpecRef" argument can be made
 function by function.
 
+The deliberate numeric-width and saturation boundaries are catalogued in
+[docs/ENVELOPE.md](docs/ENVELOPE.md).
+
 ## Status log
 * 2026-09-02: full pipeline executes blocks; ~20M RISC-V instructions per small fixture block
   (sha256 merkleization ~2M, secp256k1 recovery ~7M per transaction, keccak ~8k/permutation).
