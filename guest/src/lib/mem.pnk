@@ -61,6 +61,14 @@ fun 1 memzero(1 dst, 1 n) {
 /* 1 if the n bytes at a and b are equal. */
 fun 1 memeq(1 a, 1 b, 1 n) {
   var i = 0;
+  if ((a | b) & 7) == 0 {
+    while i + 8 <=+ n {
+      if (lds 1 (a + i)) != (lds 1 (b + i)) {
+        return 0;
+      }
+      i = i + 8;
+    }
+  }
   while i <+ n {
     if (ld8 (a + i)) != (ld8 (b + i)) {
       return 0;
@@ -94,7 +102,18 @@ fun 1 ld_be32(1 p) {
   return LD_BE32(p);
 }
 
+/* Pancake has no byte-swap primitive. Keep the aligned word path in one
+   helper so big-endian conversions can use lds/st instead of byte accesses. */
+fun 1 bswap64(1 x) {
+  x = ((x & 71777214294589695) << 8) | ((x >>> 8) & 71777214294589695);
+  x = ((x & 281470681808895) << 16) | ((x >>> 16) & 281470681808895);
+  return (x << 32) | (x >>> 32);
+}
+
 fun 1 ld_be64(1 p) {
+  if (p & 7) == 0 {
+    return bswap64(lds 1 p);
+  }
   return LD_BE64(p);
 }
 
@@ -121,6 +140,11 @@ fun 1 st_be32(1 p, 1 v) {
 }
 
 fun 1 st_be64(1 p, 1 v) {
+  if (p & 7) == 0 {
+    var 1 w = bswap64(v);
+    st p, w;
+    return 0;
+  }
   st_be32(p, v >>> 32);
   st_be32(p + 4, v);
   return 0;
