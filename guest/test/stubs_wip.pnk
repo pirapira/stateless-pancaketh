@@ -1,0 +1,11 @@
+/* Temporary stubs standing in for mpt.pnk / secp256k1.pnk / tx.pnk so the
+   coordinator's modules can be compile-checked before those land. */
+fun 1 secp256k1_recover(1 h, {1,1,1,1} r, {1,1,1,1} s, 1 recid, 1 out) { return 0; }
+fun 1 secp256k1_ecrecover(1 h, 1 v, {1,1,1,1} r, {1,1,1,1} s, 1 out) { return 0; }
+#define AUTH_CHAIN_ID 0
+#define AUTH_ADDRESS 32
+#define AUTH_NONCE 40
+#define AUTH_Y_PARITY 48
+#define AUTH_R 56
+#define AUTH_S 88
+#define AUTH_SIZE 120

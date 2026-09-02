@@ -1,0 +1,23 @@
+#include "config.h"
+#include "types.h"
+#include "lib/mem.pnk"
+#include "lib/arith.pnk"
+#include "lib/u256.pnk"
+#include "lib/sha256.pnk"
+#include "lib/keccak.pnk"
+#include "lib/rlp.pnk"
+#include "lib/htab.pnk"
+#include "ssz.pnk"
+#include "header.pnk"
+#include "mpt.pnk"
+#include "../test/stubs_wip.pnk"
+#include "state.pnk"
+#include "bal.pnk"
+#include "evm.pnk"
+#include "evm_calls.pnk"
+#include "precompiles.pnk"
+#include "block.pnk"
+fun 1 main() {
+  mem_init();
+  return 0;
+}

@@ -406,11 +406,11 @@ fun 1 decode_stateless_input(1 p, 1 len) {
   var a0 = lds 1 ssz_offs;
   var a1 = lds 1 (ssz_offs + 8);
   var {1,1} bn = ssz_optional_u64(ap + a0, a1 - a0);
-  var {1,1} ts = ssz_optional_u64(ap + a1, alen - a1);
+  var {1,1} tsv = ssz_optional_u64(ap + a1, alen - a1);
   st si + SI_BN_SOME, bn.0;
   st si + SI_BN, bn.1;
-  st si + SI_TS_SOME, ts.0;
-  st si + SI_TS, ts.1;
+  st si + SI_TS_SOME, tsv.0;
+  st si + SI_TS, tsv.1;
   /* public keys: List[ByteVector[65], 2^15] */
   var 1 npk = ssz_fixed_list_count(len - o_pk, PUBKEY_SIZE, MAX_PUBLIC_KEYS);
   st si + SI_PK, p + o_pk;

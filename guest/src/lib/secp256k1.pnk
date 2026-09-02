@@ -20,10 +20,15 @@
    A point lives in memory as 3 U256 (X at +0, Y at +32, Z at +64, little-endian
    limbs); Z == 0 encodes the identity.
 
-   Field multiplication: fp_mul reduces the 512-bit product with two folds by
-   2^32 + 977 (p = 2^256 - 2^32 - 977); compile with -DSECP_SIMPLE_MUL to use
-   u256_mulmod instead (cross-check).  Scalar (mod n) arithmetic uses
-   u256_mulmod / u256_addmod throughout (one inversion per recovery).
+   Field multiplication: fp_mul is a 32-bit-digit comba product whose 512-bit
+   result is reduced by two folds with 2^32 + 977 (p = 2^256 - 2^32 - 977).
+   -DSECP_SIMPLE_MUL selects u256_mulmod instead, -DSECP_FOLD64_MUL the same
+   folds on u256_mul_full 64-bit limbs (both for cross-checking).  Inversion
+   mod p and mod n is the binary extended Euclid (modinv_bin); -DSECP_FERMAT_INV
+   selects the Fermat ladders a^(p-2) / a^(n-2) the Lean spec is written with
+   (same values: Crypto/Fermat.lean).  Scalar (mod n) products use u256_mulmod
+   (two per recovery).  Q = u1*G + u2*R is computed by a joint (Shamir)
+   double-and-add; the same group element as Lean scalarMul + pointAdd.
    Needs lib/mem.pnk, lib/arith.pnk, lib/u256.pnk, lib/keccak.pnk. */
 
 /* p = 2^256 - 2^32 - 977 (limbs as signed decimals: see PANCAKE-NOTES) */
@@ -93,7 +98,8 @@ fun U256 fp_reduce(U256 a) {
 fun U256 fp_mul(U256 a, U256 b) {
   return u256_mulmod(a, b, SECP_P);
 }
-#else
+#endif
+#ifdef SECP_FOLD64_MUL
 /* (a * b) mod p by folding: with t = hi * 2^256 + lo, t == hi * C + lo (mod p)
    where C = 2^32 + 977.  hi * C < 2^289, so u = hi * C + lo < 2^290 = u_hi * 2^256 + u_lo
    with u_hi < 2^34; then v = u_hi * C + u_lo < 2^256 + 2^67.  If v overflows 2^256
@@ -129,6 +135,116 @@ fun U256 fp_mul(U256 a, U256 b) {
   return fp_reduce(r);
 }
 #endif
+#if !defined(SECP_SIMPLE_MUL) && !defined(SECP_FOLD64_MUL)
+/* Comba product on 32-bit digits: column k sums a_i * b_j (i + j = k), each a
+   64-bit product, as L = sum of low halves and H = sum of high halves (both
+   < 2^36); with the incoming carry c, digit k = (L + c) & M32 and the new
+   carry is ((L + c) >>> 32) + H.  Then two digit-level folds by C = 2^32 + 977:
+   t = hi * 2^256 + lo == lo + (hi << 32) + 977 * hi (mod p), with
+   u = that (< 2^290, top part u_hi < 2^34), v = u_lo + (u_hi << 32) + 977 * u_hi
+   (< 2^256 + 2^67); if v overflows 2^256 the result is (v mod 2^256) + C (< p),
+   else one conditional subtraction of p. */
+#define PRD(x, y) p = (x) * (y); L = L + (p & M32); H = H + (p >>> 32);
+#define COL(dk) col = L + c; dk = col & M32; c = (col >>> 32) + H; L = 0; H = 0;
+fun U256 fp_mul(U256 a, U256 b) {
+  var a0 = a.0 & M32;
+  var a1 = a.0 >>> 32;
+  var a2 = a.1 & M32;
+  var a3 = a.1 >>> 32;
+  var a4 = a.2 & M32;
+  var a5 = a.2 >>> 32;
+  var a6 = a.3 & M32;
+  var a7 = a.3 >>> 32;
+  var b0 = b.0 & M32;
+  var b1 = b.0 >>> 32;
+  var b2 = b.1 & M32;
+  var b3 = b.1 >>> 32;
+  var b4 = b.2 & M32;
+  var b5 = b.2 >>> 32;
+  var b6 = b.3 & M32;
+  var b7 = b.3 >>> 32;
+  var p = 0;
+  var L = 0;
+  var H = 0;
+  var c = 0;
+  var col = 0;
+  var d0 = 0; var d1 = 0; var d2 = 0; var d3 = 0;
+  var d4 = 0; var d5 = 0; var d6 = 0; var d7 = 0;
+  var d8 = 0; var d9 = 0; var d10 = 0; var d11 = 0;
+  var d12 = 0; var d13 = 0; var d14 = 0; var d15 = 0;
+  PRD(a0, b0)
+  COL(d0)
+  PRD(a0, b1) PRD(a1, b0)
+  COL(d1)
+  PRD(a0, b2) PRD(a1, b1) PRD(a2, b0)
+  COL(d2)
+  PRD(a0, b3) PRD(a1, b2) PRD(a2, b1) PRD(a3, b0)
+  COL(d3)
+  PRD(a0, b4) PRD(a1, b3) PRD(a2, b2) PRD(a3, b1) PRD(a4, b0)
+  COL(d4)
+  PRD(a0, b5) PRD(a1, b4) PRD(a2, b3) PRD(a3, b2) PRD(a4, b1) PRD(a5, b0)
+  COL(d5)
+  PRD(a0, b6) PRD(a1, b5) PRD(a2, b4) PRD(a3, b3) PRD(a4, b2) PRD(a5, b1) PRD(a6, b0)
+  COL(d6)
+  PRD(a0, b7) PRD(a1, b6) PRD(a2, b5) PRD(a3, b4) PRD(a4, b3) PRD(a5, b2) PRD(a6, b1) PRD(a7, b0)
+  COL(d7)
+  PRD(a1, b7) PRD(a2, b6) PRD(a3, b5) PRD(a4, b4) PRD(a5, b3) PRD(a6, b2) PRD(a7, b1)
+  COL(d8)
+  PRD(a2, b7) PRD(a3, b6) PRD(a4, b5) PRD(a5, b4) PRD(a6, b3) PRD(a7, b2)
+  COL(d9)
+  PRD(a3, b7) PRD(a4, b6) PRD(a5, b5) PRD(a6, b4) PRD(a7, b3)
+  COL(d10)
+  PRD(a4, b7) PRD(a5, b6) PRD(a6, b5) PRD(a7, b4)
+  COL(d11)
+  PRD(a5, b7) PRD(a6, b6) PRD(a7, b5)
+  COL(d12)
+  PRD(a6, b7) PRD(a7, b6)
+  COL(d13)
+  PRD(a7, b7)
+  COL(d14)
+  d15 = c;                                   /* < 2^32: the product is < 2^512 */
+  /* fold 1: u_k = d_k + d_(k+7) + 977 d_(k+8) + carry */
+  col = d0 + 977 * d8;
+  var u0 = col & M32; c = col >>> 32;
+  col = d1 + d8 + 977 * d9 + c;
+  var u1 = col & M32; c = col >>> 32;
+  col = d2 + d9 + 977 * d10 + c;
+  var u2 = col & M32; c = col >>> 32;
+  col = d3 + d10 + 977 * d11 + c;
+  var u3 = col & M32; c = col >>> 32;
+  col = d4 + d11 + 977 * d12 + c;
+  var u4 = col & M32; c = col >>> 32;
+  col = d5 + d12 + 977 * d13 + c;
+  var u5 = col & M32; c = col >>> 32;
+  col = d6 + d13 + 977 * d14 + c;
+  var u6 = col & M32; c = col >>> 32;
+  col = d7 + d14 + 977 * d15 + c;
+  var u7 = col & M32; c = col >>> 32;
+  var uhi = d15 + c;                         /* < 2^34 */
+  /* fold 2: v = u_lo + (uhi << 32) + 977 uhi */
+  col = u0 + 977 * uhi;
+  var v0 = col & M32; c = col >>> 32;
+  col = u1 + (uhi & M32) + c;
+  var v1 = col & M32; c = col >>> 32;
+  col = u2 + (uhi >>> 32) + c;
+  var v2 = col & M32; c = col >>> 32;
+  col = u3 + c;
+  var v3 = col & M32; c = col >>> 32;
+  col = u4 + c;
+  var v4 = col & M32; c = col >>> 32;
+  col = u5 + c;
+  var v5 = col & M32; c = col >>> 32;
+  col = u6 + c;
+  var v6 = col & M32; c = col >>> 32;
+  col = u7 + c;
+  var v7 = col & M32; c = col >>> 32;
+  var U256 r = <v0 | (v1 << 32), v2 | (v3 << 32), v4 | (v5 << 32), v6 | (v7 << 32)>;
+  if c == 1 {
+    return u256_add(r, <SECP_C, 0, 0, 0>);   /* r < 2^67: no carry, result < p */
+  }
+  return fp_reduce(r);
+}
+#endif
 
 fun U256 fp_sqr(U256 a) {
   return fp_mul(a, a);
@@ -153,9 +269,75 @@ fun U256 fp_pow(U256 a, U256 e) {
   return r;
 }
 
-/* a^(p-2) = a^-1 mod p (Fermat; 0 for a == 0). */
-fun U256 fp_inv(U256 a) {
+/* a^(p-2) = a^-1 mod p (Fermat, the Lean form; 0 for a == 0). */
+fun U256 fp_inv_fermat(U256 a) {
   return fp_pow(a, SECP_P_MINUS_2);
+}
+
+/* a^-1 mod m for odd m and 0 < a < m with gcd(a, m) = 1 (binary extended
+   Euclid, HAC Algorithm 14.61 with modular halving); returns 0 for a == 0. */
+fun U256 modinv_bin(U256 a, U256 m) {
+  var 1 az = u256_is_zero(a);
+  if az == 1 {
+    return U256_ZERO;
+  }
+  var U256 u = a;
+  var U256 v = m;
+  var U256 x1 = <1, 0, 0, 0>;
+  var U256 x2 = U256_ZERO;
+  while true {
+    if (u.1 | u.2 | u.3) == 0 {
+      if u.0 == 1 { return x1; }
+    }
+    if (v.1 | v.2 | v.3) == 0 {
+      if v.0 == 1 { return x2; }
+    }
+    while (u.0 & 1) == 0 {
+      u = <(u.0 >>> 1) | (u.1 << 63), (u.1 >>> 1) | (u.2 << 63), (u.2 >>> 1) | (u.3 << 63), u.3 >>> 1>;
+      x1 = mod_half(x1, m);
+    }
+    while (v.0 & 1) == 0 {
+      v = <(v.0 >>> 1) | (v.1 << 63), (v.1 >>> 1) | (v.2 << 63), (v.2 >>> 1) | (v.3 << 63), v.3 >>> 1>;
+      x2 = mod_half(x2, m);
+    }
+    var 1 ult = u256_lt(u, v);
+    if ult == 0 {
+      u = u256_sub(u, v);
+      x1 = mod_sub(x1, x2, m);
+    } else {
+      v = u256_sub(v, u);
+      x2 = mod_sub(x2, x1, m);
+    }
+  }
+  return U256_ZERO;
+}
+
+/* x / 2 mod m for odd m, x < m: x >> 1 if x even, else (x + m) >> 1 (257-bit). */
+fun U256 mod_half(U256 x, U256 m) {
+  if (x.0 & 1) == 0 {
+    return <(x.0 >>> 1) | (x.1 << 63), (x.1 >>> 1) | (x.2 << 63), (x.2 >>> 1) | (x.3 << 63), x.3 >>> 1>;
+  }
+  var {1,1,1,1,1} s = u256_add_carry(x, m);
+  return <(s.0 >>> 1) | (s.1 << 63), (s.1 >>> 1) | (s.2 << 63), (s.2 >>> 1) | (s.3 << 63), (s.3 >>> 1) | (s.4 << 63)>;
+}
+
+/* (x - y) mod m for x, y < m. */
+fun U256 mod_sub(U256 x, U256 y, U256 m) {
+  var 1 lt = u256_lt(x, y);
+  var U256 d = u256_sub(x, y);
+  if lt == 1 {
+    d = u256_add(d, m);
+  }
+  return d;
+}
+
+/* a^-1 mod p (0 for a == 0). */
+fun U256 fp_inv(U256 a) {
+#ifdef SECP_FERMAT_INV
+  return fp_inv_fermat(a);
+#else
+  return modinv_bin(a, SECP_P);
+#endif
 }
 
 /* Square-root candidate a^((p+1)/4) mod p (Lean sqrtCand); the caller checks
@@ -193,9 +375,18 @@ fun U256 fn_pow(U256 a, U256 e) {
   return r;
 }
 
-/* a^(n-2) = a^-1 mod n (Lean Accel.invMod r n). */
-fun U256 fn_inv(U256 a) {
+/* a^(n-2) = a^-1 mod n (Fermat, the Lean Accel.invMod r n form). */
+fun U256 fn_inv_fermat(U256 a) {
   return fn_pow(a, SECP_N_MINUS_2);
+}
+
+/* a^-1 mod n (0 for a == 0). */
+fun U256 fn_inv(U256 a) {
+#ifdef SECP_FERMAT_INV
+  return fn_inv_fermat(a);
+#else
+  return modinv_bin(a, SECP_N);
+#endif
 }
 
 /* ---------- Jacobian point arithmetic (points in memory, see header) ---------- */
@@ -379,6 +570,29 @@ fun 1 ec_mul(1 out, U256 k, U256 ax, U256 ay) {
   return 0;
 }
 
+/* out = k1 * (ax, ay) + k2 * (bx, by) by a joint (Shamir) MSB-first
+   double-and-add: one doubling per bit, then up to two mixed additions.  Same
+   group element as pointAdd (scalarMul k1 A) (scalarMul k2 B) in the Lean. */
+fun 1 ec_mul2(1 out, U256 k1, U256 ax, U256 ay, U256 k2, U256 bx, U256 by) {
+  ec_set_infinity(out);
+  var 1 len1 = u256_bit_length(k1);
+  var 1 len2 = u256_bit_length(k2);
+  var 1 i = max(len1, len2);
+  while i >+ 0 {
+    i = i - 1;
+    ec_double(out);
+    var 1 bit1 = u256_bit(k1, i);
+    if bit1 == 1 {
+      ec_add_affine(out, ax, ay);
+    }
+    var 1 bit2 = u256_bit(k2, i);
+    if bit2 == 1 {
+      ec_add_affine(out, bx, by);
+    }
+  }
+  return 0;
+}
+
 /* Normalise pt to affine (X, Y, 1); returns 0 (and leaves pt) at infinity. */
 fun 1 ec_to_affine(1 pt) {
   var U256 z = lds U256 EC_Z(pt);
@@ -454,8 +668,8 @@ fun 1 secp256k1_recover(1 msg_hash, U256 r, U256 s, 1 recid, 1 out) {
   var 1 slt = u256_lt(s, SECP_N);
   if slt == 0 { return 0; }
   var mark = heap_mark();
-  var pq = alloc(EC_POINT_BYTES);            /* accumulates u1 G, then Q */
-  var pr = alloc(EC_POINT_BYTES);            /* R, then u2 R */
+  var pq = alloc(EC_POINT_BYTES);            /* Q = u1 G + u2 R */
+  var pr = alloc(EC_POINT_BYTES);            /* R */
   var 1 okr = secp256k1_decompress_r(r, recid, pr);
   if okr == 0 {
     heap_release(mark);
@@ -477,9 +691,13 @@ fun 1 secp256k1_recover(1 msg_hash, U256 r, U256 s, 1 recid, 1 out) {
   }
   var U256 u1 = fn_mul(nege, rinv);
   var U256 u2 = fn_mul(s, rinv);
+#ifdef SECP_SEPARATE_MULS
   ec_mul(pq, u1, SECP_GX, SECP_GY);
   ec_mul(pr, u2, rx, ry);
   ec_add(pq, pr);
+#else
+  ec_mul2(pq, u1, SECP_GX, SECP_GY, u2, rx, ry);
+#endif
   var 1 ok = ec_to_affine(pq);
   if ok == 1 {
     var U256 qx = lds U256 EC_X(pq);

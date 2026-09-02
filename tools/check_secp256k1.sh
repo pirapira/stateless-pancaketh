@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# check_secp256k1.sh [--count N] [--seed S] [--simple] [--steps]
+# check_secp256k1.sh [--count N] [--seed S] [--define NAME]... [--steps]
 # Generate secp256k1 recovery vectors (tools/gen_secp_vectors.py, cross-checked
 # against coincurve when the execution-specs uv env is available), build
 # guest/test/t_secp256k1.pnk, run it under spike_run and compare the output
-# byte-for-byte with the Python oracle.  --simple builds with -DSECP_SIMPLE_MUL
-# (u256_mulmod field multiply).  --steps additionally runs the first KAT alone
-# and prints the per-recovery instruction count.
+# byte-for-byte with the Python oracle.  --define NAME builds a variant with the
+# cpp symbol NAME defined (SECP_SIMPLE_MUL / SECP_FOLD64_MUL: alternative field
+# multiplies; SECP_FERMAT_INV: Fermat inversion; SECP_SEPARATE_MULS: two scalar
+# multiplications + ec_add instead of the joint ladder).  --steps additionally
+# runs the first KAT alone and prints the instruction count of one case
+# (= one secp256k1_recover + one secp256k1_ecrecover, i.e. two recoveries).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COUNT=44; SEED=1; SIMPLE=""; STEPS=""
+COUNT=44; SEED=1; DEFS=""; STEPS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --count) COUNT="$2"; shift 2;;
     --seed) SEED="$2"; shift 2;;
-    --simple) SIMPLE=1; shift;;
+    --define) DEFS="$DEFS $2"; shift 2;;
     --steps) STEPS=1; shift;;
     *) echo "unknown arg $1" >&2; exit 2;;
   esac
@@ -26,9 +29,12 @@ if ! uv run --directory "$ROOT/evm-asm/execution-specs" python "$ROOT/tools/gen_
   python3 "$ROOT/tools/gen_secp_vectors.py" --count "$COUNT" --seed "$SEED" "$INP" "$EXP"
 fi
 SRC="$ROOT/guest/test/t_secp256k1.pnk"; ELF="$W/t_secp256k1.elf"
-if [ -n "$SIMPLE" ]; then
-  SRC="$W/t_secp256k1_simple.pnk"; ELF="$W/t_secp256k1_simple.elf"
-  printf '#define SECP_SIMPLE_MUL 1\n#include "%s"\n' "$ROOT/guest/test/t_secp256k1.pnk" > "$SRC"
+if [ -n "$DEFS" ]; then
+  TAG=$(echo "$DEFS" | tr -s ' ' '_')
+  SRC="$W/t_secp256k1$TAG.pnk"; ELF="$W/t_secp256k1$TAG.elf"
+  : > "$SRC"
+  for d in $DEFS; do printf '#define %s 1\n' "$d" >> "$SRC"; done
+  printf '#include "%s"\n' "$ROOT/guest/test/t_secp256k1.pnk" >> "$SRC"
 fi
 "$ROOT/guest/build.sh" "$SRC" "$ELF" > /dev/null
 SPIKE_RUN="${SPIKE_RUN:-$ROOT/evm-asm/scripts/spike/spike_run}"

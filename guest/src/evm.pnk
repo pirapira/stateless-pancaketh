@@ -418,9 +418,7 @@ fun 1 buffer_read(1 buf, 1 buf_len, 1 start, 1 size, 1 out) {
 }
 
 /* Pointer into frame memory at a (gas-covered) offset. */
-fun 1 mem_ptr(1 off) {
-  return (lds 1 (ev + EV_MEM)) + off;
-}
+#define MEM_PTR(off) ((lds 1 (ev + EV_MEM)) + (off))
 
 /* ---- jump destinations (Runtime.lean) ------------------------------------------- */
 
@@ -825,7 +823,7 @@ fun 1 op_keccak() {
   var 1 mark = heap_mark();
   var 1 out = alloc(32);
   var 1 s = sat_word(start);
-  keccak256(mem_ptr(s), n, out);
+  keccak256(MEM_PTR(s), n, out);
   var {1,1,1,1} v = u256_from_be(out, 32);
   heap_release(mark);
   stack_push(v);
@@ -896,7 +894,7 @@ fun 1 op_mstore() {
   var {1,1,1,1} value = stack_pop();
   charge_with_memory(3, start, <32, 0, 0, 0>);
   var 1 s = sat_word(start);
-  u256_to_be32(value, mem_ptr(s));
+  u256_to_be32(value, MEM_PTR(s));
   pc_add(1);
   return 0;
 }
@@ -906,7 +904,7 @@ fun 1 op_mstore8() {
   var {1,1,1,1} value = stack_pop();
   charge_with_memory(3, start, <1, 0, 0, 0>);
   var 1 s = sat_word(start);
-  st8 mem_ptr(s), value.0 & 255;
+  st8 MEM_PTR(s), value.0 & 255;
   pc_add(1);
   return 0;
 }
@@ -915,7 +913,7 @@ fun 1 op_mload() {
   var {1,1,1,1} start = stack_pop();
   charge_with_memory(3, start, <32, 0, 0, 0>);
   var 1 s = sat_word(start);
-  var {1,1,1,1} v = u256_from_be(mem_ptr(s), 32);
+  var {1,1,1,1} v = u256_from_be(MEM_PTR(s), 32);
   stack_push(v);
   pc_add(1);
   return 0;
@@ -943,8 +941,8 @@ fun 1 op_mcopy() {
     var 1 s = sat_word(src);
     var 1 mark = heap_mark();
     var 1 tmp = alloc(n);
-    memcpy(tmp, mem_ptr(s), n);
-    memcpy(mem_ptr(d), tmp, n);
+    memcpy(tmp, MEM_PTR(s), n);
+    memcpy(MEM_PTR(d), tmp, n);
     heap_release(mark);
   }
   pc_add(1);
@@ -1118,7 +1116,7 @@ fun 1 op_log(1 ntopics) {
   st log + LOG_TOPICS_N, ntopics;
   var 1 data = alloc(n + 8);
   var 1 s = sat_word(start);
-  memcpy(data, mem_ptr(s), n);
+  memcpy(data, MEM_PTR(s), n);
   st log + LOG_DATA, data;
   st log + LOG_DATA_N, n;
   log_append(ev, log);
@@ -1318,7 +1316,7 @@ fun 1 copy_from_buffer(1 base, 1 buf, 1 buf_len) {
   if n != 0 {
     var 1 ms = sat_word(mstart);
     var 1 ds = sat_word(dstart);
-    buffer_read(buf, buf_len, ds, n, mem_ptr(ms));
+    buffer_read(buf, buf_len, ds, n, MEM_PTR(ms));
   }
   pc_add(1);
   return 0;
@@ -1385,7 +1383,7 @@ fun 1 op_extcodecopy() {
   if n != 0 {
     var 1 ms = sat_word(mstart);
     var 1 cs = sat_word(cstart);
-    buffer_read(code.0, code.1, cs, n, mem_ptr(ms));
+    buffer_read(code.0, code.1, cs, n, MEM_PTR(ms));
   }
   pc_add(1);
   return 0;
@@ -1415,7 +1413,7 @@ fun 1 op_returndatacopy() {
   extend_memory(x.1);
   if n != 0 {
     var 1 ms = sat_word(mstart);
-    memcpy(mem_ptr(ms), (lds 1 (ev + EV_RETDATA)) + rs, n);
+    memcpy(MEM_PTR(ms), (lds 1 (ev + EV_RETDATA)) + rs, n);
   }
   pc_add(1);
   return 0;
