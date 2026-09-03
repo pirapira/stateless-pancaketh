@@ -1,0 +1,87 @@
+/* t_precompiles.pnk -- exercise the precompile wrappers through a minimal
+   fake EVM frame. Each input record is [idx:u8][gas:u64 LE][len:u32 LE][data].
+   Each output record is [status:u8][gas_used:u64 LE][out_len:u32 LE][out].
+   status 0 is success; an EvmErr code is reported for exceptional halts. */
+#include "config.h"
+#include "types.h"
+#include "lib/mem.pnk"
+#include "lib/arith.pnk"
+#include "lib/u256.pnk"
+#include "lib/sha256.pnk"
+#include "lib/keccak.pnk"
+#include "lib/rlp.pnk"
+#include "lib/htab.pnk"
+#include "lib/secp256k1.pnk"
+#include "ssz.pnk"
+#include "header.pnk"
+#include "mpt.pnk"
+#include "tx.pnk"
+#include "state.pnk"
+#include "bal.pnk"
+#include "evm.pnk"
+#include "evm_calls.pnk"
+#include "precompiles.pnk"
+#include "block.pnk"
+#include "fork.pnk"
+
+fun 1 main() {
+  mem_init();
+  sha256_init();
+  keccak_init();
+  u256_ws_init();
+  ripemd160_init();
+  blake2_init();
+  var {1,1} inp = input_blob();
+  /* Every output is at most a small fixed precompile result or the identity
+     input. This leaves ample room for the per-record framing. */
+  var 1 out = alloc(inp.1 * 2 + 4096);
+  var o = 0;
+  var p = inp.0;
+  var end = inp.0 + inp.1;
+  while p + 13 <=+ end {
+    var idx = ld8 p;
+    var gas = LD_LE64(p + 1);
+    var n = LD_LE32(p + 9);
+    var data = p + 13;
+    var next = data + n;
+    if next >+ end {
+      break;
+    }
+
+    var 1 mark = heap_mark();
+    var 1 msg = msg_new();
+    st msg + MSG_GAS, gas;
+    st msg + MSG_DATA, data;
+    st msg + MSG_DATA_N, n;
+    ev = frame_new(msg);
+    st ev + EV_GAS_LEFT, gas;
+    var status = 0;
+    var err = 0;
+    try run_precompile(idx)
+    catch EvmErr => err {
+      status = err;
+    }
+    var 1 rem = lds 1 (ev + EV_GAS_LEFT);
+    var 1 used = gas - rem;
+    var 1 outp = lds 1 (ev + EV_OUTPUT);
+    var 1 outn = lds 1 (ev + EV_OUTPUT_N);
+    if status != 0 {
+      outn = 0;
+    }
+    st8 out + o, status;
+    o = o + 1;
+    st_le64(out + o, used);
+    o = o + 8;
+    st_le32(out + o, outn);
+    o = o + 4;
+    if outn >+ 0 {
+      memcpy(out + o, outp, outn);
+      o = o + outn;
+    }
+    heap_release(mark);
+    p = next;
+  }
+  output_write(out, o);
+  @halt(@base, 0, @base, 0);
+  return 0;
+}
