@@ -7,10 +7,17 @@
 
 var 1 sha_st = 0;    /* 8-word working state */
 var 1 sha_pad = 0;   /* 128-byte padding scratch */
+#ifdef ZISK_ACCEL
+var 1 sha_accel = 0; /* 16-byte params, 32-byte state, 64-byte block */
+#endif
 
 fun 1 sha256_init() {
   sha_st = alloc(64);
   sha_pad = alloc(128);
+#ifdef ZISK_ACCEL
+  /* alloc() returns an 8-byte aligned pointer. */
+  sha_accel = alloc(112);
+#endif
   return 0;
 }
 
@@ -28,6 +35,35 @@ fun 1 sha256_state_init(1 stp) {
 
 /* One compression of the 64-byte block at blk into the 8-word state at stp. */
 fun 1 sha256_block(1 stp, 1 blk) {
+#ifdef ZISK_ACCEL
+  /* The CSR consumes {state, input}; its state is four packed little-endian
+     u64 words containing the eight big-endian SHA-256 state words. */
+  var 1 blockp = sha_accel + 48;
+  if (blk & 7) != 0 {
+    memcpy(blockp, blk, 64);
+  } else {
+    blockp = blk;
+  }
+  var i = 0;
+  while i < 4 {
+    var lo = lds 1 (stp + i * 16);
+    var hi = lds 1 (stp + i * 16 + 8);
+    st sha_accel + 16 + i * 8, (((lo << 32) >>> 32) | (((hi << 32) >>> 32) << 32));
+    i = i + 1;
+  }
+  st sha_accel + 0, sha_accel + 16;
+  st sha_accel + 8, blockp;
+  @sha256f(sha_accel, 16, sha_accel, 16);
+  i = 0;
+  while i < 4 {
+    var packed = lds 1 (sha_accel + 16 + i * 8);
+    st stp + i * 16, (packed << 32) >>> 32;
+    st stp + i * 16 + 8, packed >>> 32;
+    i = i + 1;
+  }
+#endif
+#ifndef ZISK_ACCEL
+
   var w0 = LD_BE32(blk + 0);
   var w1 = LD_BE32(blk + 4);
   var w2 = LD_BE32(blk + 8);
@@ -301,6 +337,7 @@ fun 1 sha256_block(1 stp, 1 blk) {
   st stp + 40, ((((lds 1 (stp + 40)) + f) << 32) >>> 32);
   st stp + 48, ((((lds 1 (stp + 48)) + g) << 32) >>> 32);
   st stp + 56, ((((lds 1 (stp + 56)) + h) << 32) >>> 32);
+#endif
   return 0;
 }
 
@@ -343,6 +380,21 @@ fun 1 sha256(1 p, 1 len, 1 out) {
    immediates; block 2 is the constant padding block (0x80, zeros, length 512),
    whose whole schedule is folded into the round constants. */
 fun 1 sha256_pair(1 input_a, 1 input_b, 1 out) {
+#ifdef ZISK_ACCEL
+  sha256_state_init(sha_st);
+  /* Copy both inputs first: callers are allowed to alias out with either. */
+  memcpy(sha_accel + 48, input_a, 32);
+  memcpy(sha_accel + 80, input_b, 32);
+  sha256_block(sha_st, sha_accel + 48);
+  /* SHA-256(64 bytes) has a fixed second block: 0x80, zeros, and 512 bits. */
+  memzero(sha_accel + 48, 64);
+  st8 sha_accel + 48, 128;
+  st_be64(sha_accel + 104, 512);
+  sha256_block(sha_st, sha_accel + 48);
+  sha256_finish(sha_st, out);
+#endif
+#ifndef ZISK_ACCEL
+
   var w0 = LD_BE32(input_a + 0);
   var w1 = LD_BE32(input_a + 4);
   var w2 = LD_BE32(input_a + 8);
@@ -856,5 +908,6 @@ fun 1 sha256_pair(1 input_a, 1 input_b, 1 out) {
   st8 out + 29, w7 >>> 16;
   st8 out + 30, w7 >>> 8;
   st8 out + 31, w7;
+#endif
   return 0;
 }
