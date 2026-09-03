@@ -11,6 +11,8 @@
 #include "lib/modexp.pnk"
 #include "precompiles_p256.pnk"
 
+#include "precompiles_bn254.pnk"
+
 fun 1 precompile_index(1 addr) {
   var 1 z = is_zero_bytes(addr, 18);
   if z == 0 {
@@ -228,6 +230,9 @@ fun 1 run_precompile(1 idx) {
   if idx == 2 { pre_sha256(); return 0; }
   if idx == 3 { pre_ripemd160(); return 0; }
   if idx == 4 { pre_identity(); return 0; }
+  if idx == 6 { pre_alt_bn128_add(); return 0; }
+  if idx == 7 { pre_alt_bn128_mul(); return 0; }
+  if idx == 8 { pre_alt_bn128_pairing_check(); return 0; }
   if idx == 5 { pre_modexp(); return 0; }
   if idx == 9 { pre_blake2f(); return 0; }
   if idx == 18 { pre_p256verify(); return 0; }

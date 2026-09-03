@@ -1,0 +1,1194 @@
+/* lib/bn254.pnk -- alt_bn128 (BN254) curve arithmetic and pairing for the
+   ECADD (0x06), ECMUL (0x07) and ECPAIRING (0x08) precompiles.
+   Port of evm-asm/EvmAsm/Stateless/SpecRef/PrecompilesCurve.lean (Bn128
+   namespace: fieldModulus, bytes_to_g1, Weier.add / Weier.mul, ptBytes) and
+   PrecompilesPairing.lean (FQP towers, projective pDouble / pAdd / pMul,
+   twist, castToFq12, linefunc, millerSchedule, miller_loop, pairing,
+   bytes_to_g2, curveOrder); both mirror py_ecc.optimized_bn128
+   (optimized_curve.py, optimized_pairing.py, optimized_field_elements.py),
+   which is what execution-specs alt_bn128.py runs.
+
+   Representations
+   * Fq (= F_p, p the 254-bit BN254 prime): U256 struct values held in
+     MONTGOMERY form (x is stored as x * 2^256 mod p).  fq_mul is a Montgomery
+     product on 32-bit digits (product-scanning / FIPS: one pass computes the
+     column sums of a*b and of m*p and drops the low 256 bits), so every
+     multiply is division free.  Additions, subtractions, comparisons and zero
+     tests are representation independent; small constant factors (2, 3, 4, 8,
+     9, 18, 82) are computed by doubling chains (fq_mul_small).  Inputs enter
+     via fq_to_mont and leave via fq_from_mont.
+   * Fq2 = Fq[i]/(i^2 + 1): 2 U256 in memory (re at +0, im at +32).
+   * Fq12 = Fq[w]/(w^12 - 18 w^6 + 82): 12 U256 in memory (coefficient k at
+     +32k), exactly py_ecc's FQ12 polynomial basis, so coefficients agree with
+     the reference bit for bit.  fq12_mul is the schoolbook product plus the
+     py_ecc modulus-polynomial reduction; fq12_inv is the extended Euclid over
+     Fq[x] (a different but equivalent algorithm to py_ecc's rounded-division
+     Euclid: the inverse is unique).  fq12_frob computes c^p through the tower
+     view w^6 = 9 + i (Fq12 = Fq2[w]/(w^6 - xi)): c^p = sum conj(d_k) gamma^k w^k
+     with gamma = xi^((p-1)/6); this equals py_ecc's `c ** field_modulus`.
+   * Generic field elements `fe_*(fld, ...)`: fld = 1 (Fq), 2 (Fq2), 12
+     (Fq12) select the field, an element occupies fld * 32 bytes; this plays
+     the role of the Lean FieldOps record.
+   * Projective points `ecp_*(fld, ...)`: (X, Y, Z) with x = X/Z, y = Y/Z,
+     Z == 0 the point at infinity ((1, 1, 0) canonical), 3 consecutive field
+     elements.  Formulas are py_ecc optimized_curve.double / add / multiply
+     (LSB-first double-and-add).  ECADD / ECMUL results are normalised to
+     affine, so they equal the Lean's affine Weier.add / Weier.mul.
+
+   Pairing: miller_loop_raw runs py_ecc's Miller loop over the 64-entry
+   pseudo-binary schedule with the linefunc numerators/denominators
+   accumulated separately, then the two Frobenius line steps; the check
+   multiplies the numerators (and denominators) of all pairs, inverts once and
+   exponentiates once by (p^12 - 1) / r: (prod f_i)^e == prod f_i^e, so the
+   boolean equals the reference's `result == FQ12.one()`.  bn254_pairing
+   (per pair, with its own final exponentiation) is kept for tests.
+
+   Needs lib/mem.pnk, lib/arith.pnk, lib/u256.pnk and modinv_bin from
+   lib/secp256k1.pnk (binary extended Euclid, generic in the modulus). */
+
+/* p = 21888242871839275222246405745257275088696311157297823662689037894645226208583 */
+#define BN_P <4332616871279656263, -7529619929231668595, -5165552122434856867, 3486998266802970665>
+/* r = 21888242871839275222246405745257275088548364400416034343698204186575808495617 */
+#define BN_R <4891460686036598785, 2896914383306846353, -5165552122434856867, 3486998266802970665>
+/* Montgomery constants: R = 2^256; FQ_ONE = R mod p, FQ_R2 = R^2 mod p, FQ_R3 = R^3 mod p */
+#define FQ_ONE <-3216340282688729699, 754611498739239741, 7381016538464732716, 1011752739694698287>
+#define FQ_R2 <-924086354343953783, -5339271268858002949, 5164255478447964150, 493319470278259999>
+#define FQ_R3 <-5634726956725096225, 7129779742913871286, -1189219630252946693, 2377177743836652868>
+#define FQ_THREE <8797723225643362519, 2263834496217719225, 3696305541684646532, 3035258219084094862>
+#define FQ_82 <5544790254283102953, -4748271689278134499, 4628036095437277618, 2762764518496934255>
+#define FQ_M18 <-8343894052472685920, -3420494331567672074, 2169086236411634456, 2710440286313254821>
+/* b2 = 3 / (9 + i) (twist coefficient), Montgomery form */
+#define FQ_B2_RE <4321547867055981224, 147241268046680925, 2789960110459671136, 2671978398120978541>
+#define FQ_B2_IM <4100506350182530919, 7345568344173317438, -2933584034067119958, 90557763186888013>
+/* 32-bit digits of p and -p^-1 mod 2^32 */
+#define BN_N0 3632069959
+#define BN_N1 1008765974
+#define BN_N2 1752287885
+#define BN_N3 2541841041
+#define BN_N4 2172737629
+#define BN_N5 3092268470
+#define BN_N6 3778125865
+#define BN_N7 811880050
+#define BN_NINV 3834012553
+/* Miller schedule: bit i set in PLUS / MINUS iff pseudo_binary_encoding[i] is +1 / -1 */
+#define BN_SCHED_PLUS -6809020141716224984
+#define BN_SCHED_MINUS 290499802545784960
+
+#define FE_SZ(fld) ((fld) * 32)
+#define FQ12_BYTES 384
+#define ECP12_BYTES 1152
+
+var 1 bn_gamma = 0;      /* 6 Fq2: gamma^k, k = 0..5 (Montgomery) */
+var 1 bn_expw = 0;       /* 44 words: (p^12 - 1) / r, little-endian */
+#define BN_EXP_WORDS 44
+
+fun 1 bn254_init() {
+  if bn_gamma != 0 {
+    return 0;
+  }
+  bn_gamma = alloc(6 * 64);
+  st bn_gamma, FQ_ONE;
+  st bn_gamma + 32, U256_ZERO;
+  st bn_gamma + 64, <-5792853331649738489, -3860959873505183862, 1278438861261381767, 212598772761311868>;
+  st bn_gamma + 96, <-6763652223730111118, -3454539484322995877, -2580576182942578394, 1200023580730561873>;
+  st bn_gamma + 128, <-5370759089546351824, 3782902503040509012, 8791150885551868305, 1825854335138010348>;
+  st bn_gamma + 160, <7963664994991228759, -6188936077517483711, -5267219463788246470, 2767831111890561987>;
+  st bn_gamma + 192, <-1964733768116292055, -4958197782747563317, 3578621962720924518, 2681173117283399901>;
+  st bn_gamma + 224, <-6784816993305462841, 553939530661941723, 7860678177968807019, 3208568454732775116>;
+  st bn_gamma + 256, <8314163329781907090, -6504557050910731781, -7164066810663394407, 1576150870752482284>;
+  st bn_gamma + 288, <6763840483288992073, 7118829427391486816, 4016233444936635065, 2630958277570195709>;
+  st bn_gamma + 320, <-3931526823012659225, -2143656105628579061, 3656613296917993960, 1345095164996126785>;
+  st bn_gamma + 352, <957117326806663081, 367382125163301975, -3192871766334041867, 3396254757538665050>;
+  bn_expw = alloc(BN_EXP_WORDS * 8);
+  st bn_expw, -8748722329853955808;
+  st bn_expw + 8, 4658111487712502692;
+  st bn_expw + 16, -8971265597305763141;
+  st bn_expw + 24, 3895898136474990872;
+  st bn_expw + 32, -4549055779032362278;
+  st bn_expw + 40, -4754455504552212640;
+  st bn_expw + 48, -2925376262665880705;
+  st bn_expw + 56, -4453893672297686975;
+  st bn_expw + 64, 6609620042336070051;
+  st bn_expw + 72, 9167096575297741460;
+  st bn_expw + 80, 3006977925533509404;
+  st bn_expw + 88, -4647367863351531264;
+  st bn_expw + 96, 7213564696215919148;
+  st bn_expw + 104, -6337773132322255778;
+  st bn_expw + 112, -3646395863510686852;
+  st bn_expw + 120, 5333217130945090002;
+  st bn_expw + 128, -1255413919667261219;
+  st bn_expw + 136, 7728981312468502308;
+  st bn_expw + 144, -4967242502134351995;
+  st bn_expw + 152, 4632319730382815766;
+  st bn_expw + 160, 6183408236485651195;
+  st bn_expw + 168, 2344383644319854215;
+  st bn_expw + 176, -8905236249801705568;
+  st bn_expw + 184, 5234407941292577173;
+  st bn_expw + 192, -1916768274666418666;
+  st bn_expw + 200, -6094987500067175189;
+  st bn_expw + 208, -9020474746014742566;
+  st bn_expw + 216, 7379223421642392714;
+  st bn_expw + 224, 5792417538046516732;
+  st bn_expw + 232, 9162926010144764881;
+  st bn_expw + 240, 8644015420738790472;
+  st bn_expw + 248, -76429169023237202;
+  st bn_expw + 256, -470759139541924152;
+  st bn_expw + 264, 8719923968173632426;
+  st bn_expw + 272, 6379321585415610019;
+  st bn_expw + 280, 1402842025008175984;
+  st bn_expw + 288, 888598832447275954;
+  st bn_expw + 296, 4522688638863333623;
+  st bn_expw + 304, -2670260304000566691;
+  st bn_expw + 312, -2169879103277826368;
+  st bn_expw + 320, 7646110518075161570;
+  st bn_expw + 328, -8922400797465398785;
+  st bn_expw + 336, 2377296829910687932;
+  st bn_expw + 344, 203128949104;
+  return 0;
+}
+
+/* ---------- Fq: field arithmetic mod p, Montgomery form ---------- */
+
+/* (a + b) mod p for a, b < p; p < 2^254 so the sum never carries out. */
+fun U256 fq_add(U256 a, U256 b) {
+  var U256 r = u256_add(a, b);
+  var 1 lt = u256_lt(r, BN_P);
+  if lt == 0 {
+    return u256_sub(r, BN_P);
+  }
+  return r;
+}
+
+fun U256 fq_sub(U256 a, U256 b) {
+  var 1 lt = u256_lt(a, b);
+  var U256 d = u256_sub(a, b);
+  if lt == 1 {
+    d = u256_add(d, BN_P);
+  }
+  return d;
+}
+
+fun U256 fq_neg(U256 a) {
+  var 1 z = u256_is_zero(a);
+  if z == 1 {
+    return U256_ZERO;
+  }
+  return u256_sub(BN_P, a);
+}
+
+/* Montgomery product a * b * 2^-256 mod p on 32-bit digits (product scanning).
+   Column k accumulates the a_i b_j and m_i n_j (i + j = k) as L (sum of low
+   halves) and H (sum of high halves); in the first 8 columns the digit is
+   cancelled by choosing m_k = digit * (-p^-1) mod 2^32 and adding m_k n_0;
+   the last 8 columns emit the result digits.  a, b < p gives a result < 2p,
+   reduced by one conditional subtraction. */
+#define BN_PRD(x, y) pr = (x) * (y); L = L + (pr & M32); H = H + (pr >>> 32);
+#define BN_MCOL(mk) col = L + c; dg = col & M32; mk = (dg * BN_NINV) & M32; pr = mk * BN_N0; col2 = dg + (pr & M32); c = (col >>> 32) + H + (col2 >>> 32) + (pr >>> 32); L = 0; H = 0;
+#define BN_UCOL(uk) col = L + c; uk = col & M32; c = (col >>> 32) + H; L = 0; H = 0;
+fun U256 fq_mul(U256 a, U256 b) {
+  var a0 = a.0 & M32;
+  var a1 = a.0 >>> 32;
+  var a2 = a.1 & M32;
+  var a3 = a.1 >>> 32;
+  var a4 = a.2 & M32;
+  var a5 = a.2 >>> 32;
+  var a6 = a.3 & M32;
+  var a7 = a.3 >>> 32;
+  var b0 = b.0 & M32;
+  var b1 = b.0 >>> 32;
+  var b2 = b.1 & M32;
+  var b3 = b.1 >>> 32;
+  var b4 = b.2 & M32;
+  var b5 = b.2 >>> 32;
+  var b6 = b.3 & M32;
+  var b7 = b.3 >>> 32;
+  var pr = 0;
+  var L = 0;
+  var H = 0;
+  var c = 0;
+  var col = 0;
+  var col2 = 0;
+  var dg = 0;
+  var m0 = 0; var m1 = 0; var m2 = 0; var m3 = 0;
+  var m4 = 0; var m5 = 0; var m6 = 0; var m7 = 0;
+  var u0 = 0; var u1 = 0; var u2 = 0; var u3 = 0;
+  var u4 = 0; var u5 = 0; var u6 = 0;
+  BN_PRD(a0, b0)
+  BN_MCOL(m0)
+  BN_PRD(a0, b1) BN_PRD(a1, b0)
+  BN_PRD(m0, BN_N1)
+  BN_MCOL(m1)
+  BN_PRD(a0, b2) BN_PRD(a1, b1) BN_PRD(a2, b0)
+  BN_PRD(m0, BN_N2) BN_PRD(m1, BN_N1)
+  BN_MCOL(m2)
+  BN_PRD(a0, b3) BN_PRD(a1, b2) BN_PRD(a2, b1) BN_PRD(a3, b0)
+  BN_PRD(m0, BN_N3) BN_PRD(m1, BN_N2) BN_PRD(m2, BN_N1)
+  BN_MCOL(m3)
+  BN_PRD(a0, b4) BN_PRD(a1, b3) BN_PRD(a2, b2) BN_PRD(a3, b1) BN_PRD(a4, b0)
+  BN_PRD(m0, BN_N4) BN_PRD(m1, BN_N3) BN_PRD(m2, BN_N2) BN_PRD(m3, BN_N1)
+  BN_MCOL(m4)
+  BN_PRD(a0, b5) BN_PRD(a1, b4) BN_PRD(a2, b3) BN_PRD(a3, b2) BN_PRD(a4, b1) BN_PRD(a5, b0)
+  BN_PRD(m0, BN_N5) BN_PRD(m1, BN_N4) BN_PRD(m2, BN_N3) BN_PRD(m3, BN_N2) BN_PRD(m4, BN_N1)
+  BN_MCOL(m5)
+  BN_PRD(a0, b6) BN_PRD(a1, b5) BN_PRD(a2, b4) BN_PRD(a3, b3) BN_PRD(a4, b2) BN_PRD(a5, b1) BN_PRD(a6, b0)
+  BN_PRD(m0, BN_N6) BN_PRD(m1, BN_N5) BN_PRD(m2, BN_N4) BN_PRD(m3, BN_N3) BN_PRD(m4, BN_N2) BN_PRD(m5, BN_N1)
+  BN_MCOL(m6)
+  BN_PRD(a0, b7) BN_PRD(a1, b6) BN_PRD(a2, b5) BN_PRD(a3, b4) BN_PRD(a4, b3) BN_PRD(a5, b2) BN_PRD(a6, b1) BN_PRD(a7, b0)
+  BN_PRD(m0, BN_N7) BN_PRD(m1, BN_N6) BN_PRD(m2, BN_N5) BN_PRD(m3, BN_N4) BN_PRD(m4, BN_N3) BN_PRD(m5, BN_N2) BN_PRD(m6, BN_N1)
+  BN_MCOL(m7)
+  BN_PRD(a1, b7) BN_PRD(a2, b6) BN_PRD(a3, b5) BN_PRD(a4, b4) BN_PRD(a5, b3) BN_PRD(a6, b2) BN_PRD(a7, b1)
+  BN_PRD(m1, BN_N7) BN_PRD(m2, BN_N6) BN_PRD(m3, BN_N5) BN_PRD(m4, BN_N4) BN_PRD(m5, BN_N3) BN_PRD(m6, BN_N2) BN_PRD(m7, BN_N1)
+  BN_UCOL(u0)
+  BN_PRD(a2, b7) BN_PRD(a3, b6) BN_PRD(a4, b5) BN_PRD(a5, b4) BN_PRD(a6, b3) BN_PRD(a7, b2)
+  BN_PRD(m2, BN_N7) BN_PRD(m3, BN_N6) BN_PRD(m4, BN_N5) BN_PRD(m5, BN_N4) BN_PRD(m6, BN_N3) BN_PRD(m7, BN_N2)
+  BN_UCOL(u1)
+  BN_PRD(a3, b7) BN_PRD(a4, b6) BN_PRD(a5, b5) BN_PRD(a6, b4) BN_PRD(a7, b3)
+  BN_PRD(m3, BN_N7) BN_PRD(m4, BN_N6) BN_PRD(m5, BN_N5) BN_PRD(m6, BN_N4) BN_PRD(m7, BN_N3)
+  BN_UCOL(u2)
+  BN_PRD(a4, b7) BN_PRD(a5, b6) BN_PRD(a6, b5) BN_PRD(a7, b4)
+  BN_PRD(m4, BN_N7) BN_PRD(m5, BN_N6) BN_PRD(m6, BN_N5) BN_PRD(m7, BN_N4)
+  BN_UCOL(u3)
+  BN_PRD(a5, b7) BN_PRD(a6, b6) BN_PRD(a7, b5)
+  BN_PRD(m5, BN_N7) BN_PRD(m6, BN_N6) BN_PRD(m7, BN_N5)
+  BN_UCOL(u4)
+  BN_PRD(a6, b7) BN_PRD(a7, b6)
+  BN_PRD(m6, BN_N7) BN_PRD(m7, BN_N6)
+  BN_UCOL(u5)
+  BN_PRD(a7, b7)
+  BN_PRD(m7, BN_N7)
+  BN_UCOL(u6)
+  /* the remaining carry is digit 7 (result < 2p < 2^255, so c < 2^31) */
+  var U256 r = <u0 | (u1 << 32), u2 | (u3 << 32), u4 | (u5 << 32), u6 | (c << 32)>;
+  var 1 lt = u256_lt(r, BN_P);
+  if lt == 0 {
+    return u256_sub(r, BN_P);
+  }
+  return r;
+}
+
+/* x (< p) -> Montgomery form x R mod p, and back. */
+fun U256 fq_to_mont(U256 x) {
+  return fq_mul(x, FQ_R2);
+}
+
+fun U256 fq_from_mont(U256 x) {
+  return fq_mul(x, <1, 0, 0, 0>);
+}
+
+/* a^-1 in Montgomery form (0 for 0, like py_ecc prime_field_inv):
+   modinv_bin(aR) = a^-1 R^-1, times R^3 through one Montgomery product. */
+fun U256 fq_inv(U256 a) {
+  var U256 i = modinv_bin(a, BN_P);
+  return fq_mul(i, FQ_R3);
+}
+
+/* k * a for a small constant k (< 2^63) by a doubling chain. */
+fun U256 fq_mul_small(U256 a, 1 k) {
+  var U256 r = U256_ZERO;
+  var 1 i = bit_length64(k);
+  while i >+ 0 {
+    i = i - 1;
+    r = fq_add(r, r);
+    if ((k >>> i) & 1) == 1 {
+      r = fq_add(r, a);
+    }
+  }
+  return r;
+}
+
+/* ---------- Fq2 = Fq[i]/(i^2 + 1), elements in memory (re, im) ---------- */
+
+/* d = a * b (py_ecc FQP degree-2 product: (a0 b0 - a1 b1, a0 b1 + a1 b0)). */
+fun 1 fq2_mul(1 d, 1 a, 1 b) {
+  var U256 a0 = lds U256 a;
+  var U256 a1 = lds U256 (a + 32);
+  var U256 b0 = lds U256 b;
+  var U256 b1 = lds U256 (b + 32);
+  var U256 t0 = fq_mul(a0, b0);
+  var U256 t1 = fq_mul(a1, b1);
+  var U256 t2 = fq_mul(a0, b1);
+  var U256 t3 = fq_mul(a1, b0);
+  var U256 r0 = fq_sub(t0, t1);
+  var U256 r1 = fq_add(t2, t3);
+  st d, r0;
+  st d + 32, r1;
+  return 0;
+}
+
+/* ---------- Fq12 = Fq[w]/(w^12 - 18 w^6 + 82), 12 coefficients in memory ---------- */
+
+/* py_ecc FQP.__mul__ reduction on the 23 product coefficients at t: for exp
+   = 10 down to 0, top = t[exp + 12]; t[exp] -= 82 top; t[exp + 6] += 18 top. */
+fun 1 fq12_reduce(1 t) {
+  var e = 11;
+  while e >+ 0 {
+    e = e - 1;
+    var U256 top = lds U256 (t + (e + 12) * 32);
+    var U256 t82 = fq_mul_small(top, 82);
+    var U256 t18 = fq_mul_small(top, 18);
+    var U256 c0 = lds U256 (t + e * 32);
+    c0 = fq_sub(c0, t82);
+    st t + e * 32, c0;
+    var U256 c6 = lds U256 (t + (e + 6) * 32);
+    c6 = fq_add(c6, t18);
+    st t + (e + 6) * 32, c6;
+  }
+  return 0;
+}
+
+/* d = a * b (d may alias a or b). */
+fun 1 fq12_mul(1 d, 1 a, 1 b) {
+  var mark = heap_mark();
+  var t = alloc(23 * 32);
+  var k = 0;
+  while k <+ 23 {
+    var U256 acc = U256_ZERO;
+    var i = 0;
+    if k >+ 11 {
+      i = k - 11;
+    }
+    var iend = k;
+    if iend >+ 11 {
+      iend = 11;
+    }
+    while i <=+ iend {
+      var U256 ai = lds U256 (a + i * 32);
+      var U256 bj = lds U256 (b + (k - i) * 32);
+      var U256 p = fq_mul(ai, bj);
+      acc = fq_add(acc, p);
+      i = i + 1;
+    }
+    st t + k * 32, acc;
+    k = k + 1;
+  }
+  fq12_reduce(t);
+  memcpy(d, t, FQ12_BYTES);
+  heap_release(mark);
+  return 0;
+}
+
+/* d = a^2: symmetric products once, doubled (same value as fq12_mul(a, a)). */
+fun 1 fq12_sqr(1 d, 1 a) {
+  var mark = heap_mark();
+  var t = alloc(23 * 32);
+  var k = 0;
+  while k <+ 23 {
+    var U256 acc = U256_ZERO;
+    var i = 0;
+    if k >+ 11 {
+      i = k - 11;
+    }
+    while i <+ (k - i) {
+      var U256 ai = lds U256 (a + i * 32);
+      var U256 aj = lds U256 (a + (k - i) * 32);
+      var U256 p = fq_mul(ai, aj);
+      acc = fq_add(acc, p);
+      i = i + 1;
+    }
+    acc = fq_add(acc, acc);
+    if (k & 1) == 0 {
+      var U256 am = lds U256 (a + (k >>> 1) * 32);
+      var U256 sq = fq_mul(am, am);
+      acc = fq_add(acc, sq);
+    }
+    st t + k * 32, acc;
+    k = k + 1;
+  }
+  fq12_reduce(t);
+  memcpy(d, t, FQ12_BYTES);
+  heap_release(mark);
+  return 0;
+}
+
+/* ---------- generic field elements (fld = 1, 2, 12) ---------- */
+
+fun 1 fe_mul(1 fld, 1 d, 1 a, 1 b) {
+  if fld == 1 {
+    var U256 x = lds U256 a;
+    var U256 y = lds U256 b;
+    var U256 r = fq_mul(x, y);
+    st d, r;
+    return 0;
+  }
+  if fld == 2 {
+    fq2_mul(d, a, b);
+    return 0;
+  }
+  fq12_mul(d, a, b);
+  return 0;
+}
+
+fun 1 fe_sqr(1 fld, 1 d, 1 a) {
+  if fld == 12 {
+    fq12_sqr(d, a);
+    return 0;
+  }
+  fe_mul(fld, d, a, a);
+  return 0;
+}
+
+/* Coefficientwise operations (identical for all three fields). */
+fun 1 fe_add(1 fld, 1 d, 1 a, 1 b) {
+  var i = 0;
+  while i <+ fld {
+    var U256 x = lds U256 (a + i * 32);
+    var U256 y = lds U256 (b + i * 32);
+    var U256 r = fq_add(x, y);
+    st d + i * 32, r;
+    i = i + 1;
+  }
+  return 0;
+}
+
+fun 1 fe_sub(1 fld, 1 d, 1 a, 1 b) {
+  var i = 0;
+  while i <+ fld {
+    var U256 x = lds U256 (a + i * 32);
+    var U256 y = lds U256 (b + i * 32);
+    var U256 r = fq_sub(x, y);
+    st d + i * 32, r;
+    i = i + 1;
+  }
+  return 0;
+}
+
+fun 1 fe_neg(1 fld, 1 d, 1 a) {
+  var i = 0;
+  while i <+ fld {
+    var U256 x = lds U256 (a + i * 32);
+    var U256 r = fq_neg(x);
+    st d + i * 32, r;
+    i = i + 1;
+  }
+  return 0;
+}
+
+fun 1 fe_mul_small(1 fld, 1 d, 1 a, 1 k) {
+  var i = 0;
+  while i <+ fld {
+    var U256 x = lds U256 (a + i * 32);
+    var U256 r = fq_mul_small(x, k);
+    st d + i * 32, r;
+    i = i + 1;
+  }
+  return 0;
+}
+
+fun 1 fe_is_zero(1 fld, 1 a) {
+  return is_zero_bytes(a, FE_SZ(fld));
+}
+
+fun 1 fe_eq(1 fld, 1 a, 1 b) {
+  return memeq(a, b, FE_SZ(fld));
+}
+
+fun 1 fe_set_zero(1 fld, 1 d) {
+  memzero(d, FE_SZ(fld));
+  return 0;
+}
+
+fun 1 fe_set_one(1 fld, 1 d) {
+  memzero(d, FE_SZ(fld));
+  st d, FQ_ONE;
+  return 0;
+}
+
+/* ---------- projective points over a generic field ---------- */
+
+fun 1 ecp_set_inf(1 fld, 1 pt) {
+  var esz = FE_SZ(fld);
+  fe_set_one(fld, pt);
+  fe_set_one(fld, pt + esz);
+  fe_set_zero(fld, pt + 2 * esz);
+  return 0;
+}
+
+fun 1 ecp_is_inf(1 fld, 1 pt) {
+  return fe_is_zero(fld, pt + 2 * FE_SZ(fld));
+}
+
+/* out = 2 pt (py_ecc optimized_curve.double); out may alias pt. */
+fun 1 ecp_double(1 fld, 1 out, 1 pt) {
+  var esz = FE_SZ(fld);
+  var mark = heap_mark();
+  var x = pt;
+  var y = pt + esz;
+  var z = pt + 2 * esz;
+  var W = alloc(esz);
+  var S = alloc(esz);
+  var B = alloc(esz);
+  var H = alloc(esz);
+  var S2 = alloc(esz);
+  var T1 = alloc(esz);
+  var T2 = alloc(esz);
+  fe_sqr(fld, T1, x);
+  fe_mul_small(fld, W, T1, 3);            /* W = 3 x^2 */
+  fe_mul(fld, S, y, z);                   /* S = y z */
+  fe_mul(fld, T1, x, y);
+  fe_mul(fld, B, T1, S);                  /* B = x y S */
+  fe_sqr(fld, T1, W);
+  fe_mul_small(fld, T2, B, 8);
+  fe_sub(fld, H, T1, T2);                 /* H = W^2 - 8 B */
+  fe_sqr(fld, S2, S);                     /* S2 = S^2 */
+  fe_mul(fld, T1, H, S);
+  fe_mul_small(fld, T1, T1, 2);           /* newx = 2 H S */
+  fe_mul_small(fld, T2, B, 4);
+  fe_sub(fld, T2, T2, H);
+  fe_mul(fld, T2, W, T2);                 /* W (4 B - H) */
+  fe_sqr(fld, W, y);
+  fe_mul(fld, W, W, S2);
+  fe_mul_small(fld, W, W, 8);             /* 8 y^2 S2 */
+  fe_sub(fld, T2, T2, W);                 /* newy */
+  fe_mul(fld, S, S, S2);
+  fe_mul_small(fld, S, S, 8);             /* newz = 8 S S2 */
+  memcpy(out, T1, esz);
+  memcpy(out + esz, T2, esz);
+  memcpy(out + 2 * esz, S, esz);
+  heap_release(mark);
+  return 0;
+}
+
+/* out = p1 + p2 (py_ecc optimized_curve.add); out may alias p1 or p2. */
+fun 1 ecp_add(1 fld, 1 out, 1 p1, 1 p2) {
+  var esz = FE_SZ(fld);
+  var 1 z1z = fe_is_zero(fld, p1 + 2 * esz);
+  if z1z == 1 {
+    memcpy(out, p2, 3 * esz);
+    return 0;
+  }
+  var 1 z2z = fe_is_zero(fld, p2 + 2 * esz);
+  if z2z == 1 {
+    memcpy(out, p1, 3 * esz);
+    return 0;
+  }
+  var mark = heap_mark();
+  var x1 = p1;
+  var y1 = p1 + esz;
+  var z1 = p1 + 2 * esz;
+  var x2 = p2;
+  var y2 = p2 + esz;
+  var z2 = p2 + 2 * esz;
+  var U1 = alloc(esz);
+  var U2 = alloc(esz);
+  var V1 = alloc(esz);
+  var V2 = alloc(esz);
+  fe_mul(fld, U1, y2, z1);
+  fe_mul(fld, U2, y1, z2);
+  fe_mul(fld, V1, x2, z1);
+  fe_mul(fld, V2, x1, z2);
+  var 1 veq = fe_eq(fld, V1, V2);
+  if veq == 1 {
+    var 1 ueq = fe_eq(fld, U1, U2);
+    heap_release(mark);
+    if ueq == 1 {
+      ecp_double(fld, out, p1);
+      return 0;
+    }
+    ecp_set_inf(fld, out);
+    return 0;
+  }
+  var U = alloc(esz);
+  var V = alloc(esz);
+  var Vsq = alloc(esz);
+  var VsqV2 = alloc(esz);
+  var Vcu = alloc(esz);
+  var W = alloc(esz);
+  var A = alloc(esz);
+  var T = alloc(esz);
+  fe_sub(fld, U, U1, U2);
+  fe_sub(fld, V, V1, V2);
+  fe_sqr(fld, Vsq, V);
+  fe_mul(fld, VsqV2, Vsq, V2);
+  fe_mul(fld, Vcu, V, Vsq);
+  fe_mul(fld, W, z1, z2);
+  fe_sqr(fld, A, U);
+  fe_mul(fld, A, A, W);
+  fe_sub(fld, A, A, Vcu);
+  fe_mul_small(fld, T, VsqV2, 2);
+  fe_sub(fld, A, A, T);                   /* A = U^2 W - V^3 - 2 V^2 V2 */
+  fe_mul(fld, T, V, A);                   /* newx = V A */
+  fe_sub(fld, V, VsqV2, A);
+  fe_mul(fld, V, U, V);
+  fe_mul(fld, U1, Vcu, U2);
+  fe_sub(fld, V, V, U1);                  /* newy = U (V^2 V2 - A) - V^3 U2 */
+  fe_mul(fld, W, Vcu, W);                 /* newz = V^3 W */
+  memcpy(out, T, esz);
+  memcpy(out + esz, V, esz);
+  memcpy(out + 2 * esz, W, esz);
+  heap_release(mark);
+  return 0;
+}
+
+/* out = n pt, LSB-first double-and-add (py_ecc multiply / Lean pMul);
+   n == 0 gives (1, 1, 0). */
+fun 1 ecp_mul(1 fld, 1 out, 1 pt, U256 n) {
+  var psz = 3 * FE_SZ(fld);
+  var mark = heap_mark();
+  var acc = alloc(psz);
+  var base = alloc(psz);
+  ecp_set_inf(fld, acc);
+  memcpy(base, pt, psz);
+  var 1 len = u256_bit_length(n);
+  var i = 0;
+  while i <+ len {
+    var 1 bit = u256_bit(n, i);
+    if bit == 1 {
+      ecp_add(fld, acc, acc, base);
+    }
+    i = i + 1;
+    if i <+ len {
+      ecp_double(fld, base, base);
+    }
+  }
+  memcpy(out, acc, psz);
+  heap_release(mark);
+  return 0;
+}
+
+/* py_ecc linefunc(P1, P2, T) -> (num, den) at num / den (fresh buffers, not
+   aliasing the points).  P1 == P2 (same address) short-cuts m_num = m_den = 0. */
+fun 1 ecp_linefunc(1 fld, 1 num, 1 den, 1 P1, 1 P2, 1 T) {
+  var esz = FE_SZ(fld);
+  var mark = heap_mark();
+  var x1 = P1;
+  var y1 = P1 + esz;
+  var z1 = P1 + 2 * esz;
+  var x2 = P2;
+  var y2 = P2 + esz;
+  var z2 = P2 + 2 * esz;
+  var xt = T;
+  var yt = T + esz;
+  var zt = T + 2 * esz;
+  var mn = alloc(esz);
+  var md = alloc(esz);
+  var t1 = alloc(esz);
+  var t2 = alloc(esz);
+  if P1 == P2 {
+    fe_set_zero(fld, mn);
+    fe_set_zero(fld, md);
+  } else {
+    fe_mul(fld, mn, y2, z1);
+    fe_mul(fld, t1, y1, z2);
+    fe_sub(fld, mn, mn, t1);              /* m_num = y2 z1 - y1 z2 */
+    fe_mul(fld, md, x2, z1);
+    fe_mul(fld, t1, x1, z2);
+    fe_sub(fld, md, md, t1);              /* m_den = x2 z1 - x1 z2 */
+  }
+  var 1 mdz = fe_is_zero(fld, md);
+  if mdz == 1 {
+    var 1 mnz = fe_is_zero(fld, mn);
+    if mnz == 1 {
+      fe_sqr(fld, t1, x1);
+      fe_mul_small(fld, mn, t1, 3);       /* m_num = 3 x1^2 */
+      fe_mul(fld, md, y1, z1);
+      fe_mul_small(fld, md, md, 2);       /* m_den = 2 y1 z1 */
+    } else {
+      fe_mul(fld, num, xt, z1);
+      fe_mul(fld, t1, x1, zt);
+      fe_sub(fld, num, num, t1);          /* xt z1 - x1 zt */
+      fe_mul(fld, den, z1, zt);           /* z1 zt */
+      heap_release(mark);
+      return 0;
+    }
+  }
+  fe_mul(fld, t1, xt, z1);
+  fe_mul(fld, t2, x1, zt);
+  fe_sub(fld, t1, t1, t2);
+  fe_mul(fld, t1, mn, t1);                /* m_num (xt z1 - x1 zt) */
+  fe_mul(fld, t2, yt, z1);
+  fe_mul(fld, num, y1, zt);
+  fe_sub(fld, t2, t2, num);
+  fe_mul(fld, t2, md, t2);                /* m_den (yt z1 - y1 zt) */
+  fe_sub(fld, num, t1, t2);
+  fe_mul(fld, den, md, zt);
+  fe_mul(fld, den, den, z1);              /* m_den zt z1 */
+  heap_release(mark);
+  return 0;
+}
+
+/* ---------- Fq12-specific: twist, cast, Frobenius, inverse, power ---------- */
+
+/* py_ecc twist: E(Fq2) point (3 Fq2 at g2) -> E(Fq12) point at out.
+   emb(c0 + c1 i) = (c0 - 9 c1) w^0 + c1 w^6; x is multiplied by w^2 (slots
+   2, 8), y by w^3 (slots 3, 9), z stays (slots 0, 6). */
+fun 1 fq12_twist(1 out, 1 g2) {
+  memzero(out, ECP12_BYTES);
+  var j = 0;
+  while j <+ 3 {
+    var U256 c0 = lds U256 (g2 + j * 64);
+    var U256 c1 = lds U256 (g2 + j * 64 + 32);
+    var U256 n9 = fq_mul_small(c1, 9);
+    var U256 e0 = fq_sub(c0, n9);
+    var shift = 0;
+    if j == 0 { shift = 2; }
+    if j == 1 { shift = 3; }
+    var base = out + j * FQ12_BYTES;
+    st base + shift * 32, e0;
+    st base + (shift + 6) * 32, c1;
+    j = j + 1;
+  }
+  return 0;
+}
+
+/* py_ecc cast_point_to_fq12: Fq point (3 Fq at g1) -> Fq12 point at out. */
+fun 1 fq12_cast(1 out, 1 g1) {
+  memzero(out, ECP12_BYTES);
+  st out, lds U256 g1;
+  st out + FQ12_BYTES, lds U256 (g1 + 32);
+  st out + 2 * FQ12_BYTES, lds U256 (g1 + 64);
+  return 0;
+}
+
+/* d = a^p (Frobenius; py_ecc `a ** field_modulus`).  Tower view with
+   w^6 = xi = 9 + i: a = sum_k d_k w^k, d_k = (a_k + 9 a_{k+6}) + a_{k+6} i,
+   a^p = sum_k conj(d_k) gamma^k w^k, and back: coefficient k = re - 9 im,
+   coefficient k + 6 = im.  d may alias a. */
+fun 1 fq12_frob(1 d, 1 a) {
+  var k = 0;
+  while k <+ 6 {
+    var U256 ck = lds U256 (a + k * 32);
+    var U256 ck6 = lds U256 (a + (k + 6) * 32);
+    var U256 n9 = fq_mul_small(ck6, 9);
+    var U256 d0 = fq_add(ck, n9);
+    var U256 d1 = fq_neg(ck6);
+    var U256 g0 = lds U256 (bn_gamma + k * 64);
+    var U256 g1 = lds U256 (bn_gamma + k * 64 + 32);
+    var U256 t0 = fq_mul(d0, g0);
+    var U256 t1 = fq_mul(d1, g1);
+    var U256 t2 = fq_mul(d0, g1);
+    var U256 t3 = fq_mul(d1, g0);
+    var U256 u = fq_sub(t0, t1);
+    var U256 v = fq_add(t2, t3);
+    var U256 v9 = fq_mul_small(v, 9);
+    var U256 r0 = fq_sub(u, v9);
+    st d + k * 32, r0;
+    st d + (k + 6) * 32, v;
+    k = k + 1;
+  }
+  return 0;
+}
+
+/* Degree of the polynomial with n coefficient slots at a (-1 for zero). */
+fun 1 fq_poly_deg(1 a, 1 n) {
+  var i = n;
+  while i >+ 0 {
+    i = i - 1;
+    var 1 z = is_zero_bytes(a + i * 32, 32);
+    if z == 0 {
+      return i;
+    }
+  }
+  return 0 - 1;
+}
+
+/* a[s + i] -= q * b[i] for i = 0..db. */
+fun 1 fq_poly_submul(1 a, 1 b, U256 q, 1 s, 1 db) {
+  var i = 0;
+  while i <=+ db {
+    var U256 bi = lds U256 (b + i * 32);
+    var U256 p = fq_mul(q, bi);
+    var U256 ai = lds U256 (a + (s + i) * 32);
+    ai = fq_sub(ai, p);
+    st a + (s + i) * 32, ai;
+    i = i + 1;
+  }
+  return 0;
+}
+
+/* d = a^-1 (py_ecc FQP.inv value) by the extended Euclid over Fq[x] on
+   (modulus polynomial, a) with invariant s_i a == r_i (mod w^12 - 18 w^6 + 82);
+   when r becomes a constant c, a^-1 = s / c.  Zero maps to zero. */
+fun 1 fq12_inv(1 d, 1 a) {
+  var mark = heap_mark();
+  var r0 = alloc(416);
+  var r1 = alloc(416);
+  var s0 = alloc(416);
+  var s1 = alloc(416);
+  var q = alloc(416);
+  var tmp = alloc(416);
+  memzero(r0, 416);
+  st r0, FQ_82;
+  st r0 + 192, FQ_M18;
+  st r0 + 384, FQ_ONE;
+  memzero(r1, 416);
+  memcpy(r1, a, FQ12_BYTES);
+  memzero(s0, 416);
+  memzero(s1, 416);
+  st s1, FQ_ONE;
+  while true {
+    var 1 d1 = fq_poly_deg(r1, 13);
+    if d1 <= 0 {
+      break;
+    }
+    var 1 d0 = fq_poly_deg(r0, 13);
+    memzero(q, 416);
+    var U256 lead = lds U256 (r1 + d1 * 32);
+    var U256 linv = fq_inv(lead);
+    while d0 >= d1 {
+      var U256 top = lds U256 (r0 + d0 * 32);
+      var U256 cf = fq_mul(top, linv);
+      st q + (d0 - d1) * 32, cf;
+      fq_poly_submul(r0, r1, cf, d0 - d1, d1);
+      d0 = fq_poly_deg(r0, 13);
+    }
+    /* tmp = s0 - q s1 */
+    memcpy(tmp, s0, 416);
+    var j = 0;
+    while j <+ 13 {
+      var U256 qj = lds U256 (q + j * 32);
+      var 1 qz = u256_is_zero(qj);
+      if qz == 0 {
+        fq_poly_submul(tmp, s1, qj, j, 12 - j);
+      }
+      j = j + 1;
+    }
+    var t = r0;
+    r0 = r1;
+    r1 = t;
+    t = s0;
+    s0 = s1;
+    s1 = tmp;
+    tmp = t;
+  }
+  var 1 dz = fq_poly_deg(r1, 13);
+  if dz < 0 {
+    memzero(d, FQ12_BYTES);
+    heap_release(mark);
+    return 0;
+  }
+  var U256 c = lds U256 r1;
+  var U256 cinv = fq_inv(c);
+  var i = 0;
+  while i <+ 12 {
+    var U256 si = lds U256 (s1 + i * 32);
+    var U256 ri = fq_mul(si, cinv);
+    st d + i * 32, ri;
+    i = i + 1;
+  }
+  heap_release(mark);
+  return 0;
+}
+
+/* d = a^e for the little-endian exponent words at ew (nw words), MSB-first
+   square-and-multiply; d must not alias a. */
+fun 1 fq12_pow_words(1 d, 1 a, 1 ew, 1 nw) {
+  fe_set_one(12, d);
+  var started = 0;
+  var i = nw * 64;
+  while i >+ 0 {
+    i = i - 1;
+    if started == 1 {
+      fq12_sqr(d, d);
+    }
+    var bit = ((lds 1 (ew + (i >>> 6) * 8)) >>> (i & 63)) & 1;
+    if bit == 1 {
+      fq12_mul(d, d, a);
+      started = 1;
+    }
+  }
+  return 0;
+}
+
+/* ---------- Miller loop and pairing ---------- */
+
+/* py_ecc miller_loop(Q, P) without the final division and exponentiation:
+   fnum / fden = f.  Q, P are E(Fq12) points (twist(Q2), cast(P1)). */
+fun 1 bn254_miller_raw(1 fnum, 1 fden, 1 Q, 1 P) {
+  var mark = heap_mark();
+  var R = alloc(ECP12_BYTES);
+  var nQ = alloc(ECP12_BYTES);
+  var Q1 = alloc(ECP12_BYTES);
+  var nQ2 = alloc(ECP12_BYTES);
+  var n = alloc(FQ12_BYTES);
+  var d = alloc(FQ12_BYTES);
+  memcpy(R, Q, ECP12_BYTES);
+  memcpy(nQ, Q, ECP12_BYTES);
+  fe_neg(12, nQ + FQ12_BYTES, Q + FQ12_BYTES);
+  fe_set_one(12, fnum);
+  fe_set_one(12, fden);
+  var i = 64;
+  while i >+ 0 {
+    i = i - 1;
+    ecp_linefunc(12, n, d, R, R, P);
+    fq12_sqr(fnum, fnum);
+    fq12_mul(fnum, fnum, n);
+    fq12_sqr(fden, fden);
+    fq12_mul(fden, fden, d);
+    ecp_double(12, R, R);
+    if (((BN_SCHED_PLUS) >>> i) & 1) == 1 {
+      ecp_linefunc(12, n, d, R, Q, P);
+      fq12_mul(fnum, fnum, n);
+      fq12_mul(fden, fden, d);
+      ecp_add(12, R, R, Q);
+    }
+    if (((BN_SCHED_MINUS) >>> i) & 1) == 1 {
+      ecp_linefunc(12, n, d, R, nQ, P);
+      fq12_mul(fnum, fnum, n);
+      fq12_mul(fden, fden, d);
+      ecp_add(12, R, R, nQ);
+    }
+  }
+  /* Q1 = Q^p, nQ2 = (Q1.x^p, -(Q1.y^p), Q1.z^p) */
+  fq12_frob(Q1, Q);
+  fq12_frob(Q1 + FQ12_BYTES, Q + FQ12_BYTES);
+  fq12_frob(Q1 + 2 * FQ12_BYTES, Q + 2 * FQ12_BYTES);
+  fq12_frob(nQ2, Q1);
+  fq12_frob(nQ2 + FQ12_BYTES, Q1 + FQ12_BYTES);
+  fe_neg(12, nQ2 + FQ12_BYTES, nQ2 + FQ12_BYTES);
+  fq12_frob(nQ2 + 2 * FQ12_BYTES, Q1 + 2 * FQ12_BYTES);
+  ecp_linefunc(12, n, d, R, Q1, P);
+  fq12_mul(fnum, fnum, n);
+  fq12_mul(fden, fden, d);
+  ecp_add(12, R, R, Q1);
+  ecp_linefunc(12, n, d, R, nQ2, P);
+  fq12_mul(fnum, fnum, n);
+  fq12_mul(fden, fden, d);
+  heap_release(mark);
+  return 0;
+}
+
+/* out (Fq12) = pairing(Q2, P1) for validated points: G2 point (3 Fq2) at q2,
+   G1 point (3 Fq) at p1; infinities pair to one (py_ecc pairing). */
+fun 1 bn254_pairing(1 out, 1 q2, 1 p1) {
+  bn254_init();
+  var 1 qi = ecp_is_inf(2, q2);
+  var 1 pi = ecp_is_inf(1, p1);
+  if (qi | pi) == 1 {
+    fe_set_one(12, out);
+    return 0;
+  }
+  var mark = heap_mark();
+  var Q = alloc(ECP12_BYTES);
+  var P = alloc(ECP12_BYTES);
+  var fnum = alloc(FQ12_BYTES);
+  var fden = alloc(FQ12_BYTES);
+  fq12_twist(Q, q2);
+  fq12_cast(P, p1);
+  bn254_miller_raw(fnum, fden, Q, P);
+  fq12_inv(fden, fden);
+  fq12_mul(fnum, fnum, fden);
+  fq12_pow_words(out, fnum, bn_expw, BN_EXP_WORDS);
+  heap_release(mark);
+  return 0;
+}
+
+/* ---------- input parsing (bytes_to_g1 / bytes_to_g2) ---------- */
+
+/* 64 bytes (BE x || BE y) at data -> projective Fq point at out (3 Fq,
+   Montgomery).  Returns 0, or 1 for "Invalid field element" (coordinate >= p)
+   / "Point is not on curve"; (0, 0) is the point at infinity. */
+fun 1 bn254_parse_g1(1 data, 1 out) {
+  var U256 x = u256_from_be(data, 32);
+  var U256 y = u256_from_be(data + 32, 32);
+  var 1 xl = u256_lt(x, BN_P);
+  if xl == 0 {
+    return 1;
+  }
+  var 1 yl = u256_lt(y, BN_P);
+  if yl == 0 {
+    return 1;
+  }
+  var 1 xz = u256_is_zero(x);
+  var 1 yz = u256_is_zero(y);
+  if (xz & yz) == 1 {
+    ecp_set_inf(1, out);
+    return 0;
+  }
+  x = fq_to_mont(x);
+  y = fq_to_mont(y);
+  var U256 l = fq_mul(y, y);
+  var U256 r = fq_mul(x, x);
+  r = fq_mul(r, x);
+  r = fq_add(r, FQ_THREE);
+  var 1 eq = u256_eq(l, r);
+  if eq == 0 {
+    return 1;
+  }
+  st out, x;
+  st out + 32, y;
+  st out + 64, FQ_ONE;
+  return 0;
+}
+
+/* 128 bytes (BE x_im || x_re || y_im || y_re: imaginary part first on the
+   wire) at data -> projective Fq2 point at out (3 Fq2).  Returns 0, or 1 for
+   a coordinate >= p / not on y^2 = x^3 + b2; all-zero is infinity. */
+fun 1 bn254_parse_g2(1 data, 1 out) {
+  var U256 x1 = u256_from_be(data, 32);
+  var U256 x0 = u256_from_be(data + 32, 32);
+  var U256 y1 = u256_from_be(data + 64, 32);
+  var U256 y0 = u256_from_be(data + 96, 32);
+  var 1 l0 = u256_lt(x0, BN_P);
+  var 1 l1 = u256_lt(x1, BN_P);
+  var 1 l2 = u256_lt(y0, BN_P);
+  var 1 l3 = u256_lt(y1, BN_P);
+  if (l0 & l1 & l2 & l3) == 0 {
+    return 1;
+  }
+  var 1 z = is_zero_bytes(data, 128);
+  if z == 1 {
+    ecp_set_inf(2, out);
+    return 0;
+  }
+  x0 = fq_to_mont(x0);
+  x1 = fq_to_mont(x1);
+  y0 = fq_to_mont(y0);
+  y1 = fq_to_mont(y1);
+  st out, x0;
+  st out + 32, x1;
+  st out + 64, y0;
+  st out + 96, y1;
+  st out + 128, FQ_ONE;
+  st out + 160, U256_ZERO;
+  var mark = heap_mark();
+  var t1 = alloc(64);
+  var t2 = alloc(64);
+  var b2 = alloc(64);
+  st b2, FQ_B2_RE;
+  st b2 + 32, FQ_B2_IM;
+  fq2_mul(t1, out + 64, out + 64);        /* y^2 */
+  fq2_mul(t2, out, out);
+  fq2_mul(t2, t2, out);                   /* x^3 */
+  fe_add(2, t2, t2, b2);                  /* x^3 + b2 */
+  var 1 eq = memeq(t1, t2, 64);
+  heap_release(mark);
+  if eq == 0 {
+    return 1;
+  }
+  return 0;
+}
+
+/* Projective Fq point -> 64-byte affine BE encoding (Lean ptBytes; infinity
+   -> 64 zero bytes, as py_ecc normalize with prime_field_inv(0) = 0). */
+fun 1 bn254_g1_to_bytes(1 pt, 1 out) {
+  var U256 z = lds U256 (pt + 64);
+  var 1 zz = u256_is_zero(z);
+  if zz == 1 {
+    memzero(out, 64);
+    return 0;
+  }
+  var U256 zi = fq_inv(z);
+  var U256 x = lds U256 pt;
+  var U256 y = lds U256 (pt + 32);
+  x = fq_mul(x, zi);
+  y = fq_mul(y, zi);
+  x = fq_from_mont(x);
+  y = fq_from_mont(y);
+  u256_to_be32(x, out);
+  u256_to_be32(y, out + 32);
+  return 0;
+}
+
+/* ---------- precompile-level operations ---------- */
+
+/* ECADD on the 128 input bytes at in128 (two 64-byte points; the caller has
+   already zero-padded the call data): writes the 64-byte sum at out64 and
+   returns 0, or returns 1 (no output) when a point is invalid. */
+fun 1 bn254_g1_add(1 in128, 1 out64) {
+  var mark = heap_mark();
+  var p0 = alloc(96);
+  var p1 = alloc(96);
+  var 1 e0 = bn254_parse_g1(in128, p0);
+  if e0 != 0 {
+    heap_release(mark);
+    return 1;
+  }
+  var 1 e1 = bn254_parse_g1(in128 + 64, p1);
+  if e1 != 0 {
+    heap_release(mark);
+    return 1;
+  }
+  ecp_add(1, p0, p0, p1);
+  bn254_g1_to_bytes(p0, out64);
+  heap_release(mark);
+  return 0;
+}
+
+/* ECMUL on the 96 input bytes at in96 (64-byte point, 32-byte BE scalar, not
+   reduced): writes the 64-byte product at out64 and returns 0, or 1 when the
+   point is invalid. */
+fun 1 bn254_g1_mul(1 in96, 1 out64) {
+  var mark = heap_mark();
+  var p0 = alloc(96);
+  var 1 e0 = bn254_parse_g1(in96, p0);
+  if e0 != 0 {
+    heap_release(mark);
+    return 1;
+  }
+  var U256 n = u256_from_be(in96 + 64, 32);
+  ecp_mul(1, p0, p0, n);
+  bn254_g1_to_bytes(p0, out64);
+  heap_release(mark);
+  return 0;
+}
+
+/* ECPAIRING on n_pairs 192-byte chunks (64-byte G1 || 128-byte G2) at pairs:
+   returns 1 if prod e(P_i, Q_i) == 1, 0 if not, 2 if some point is invalid
+   (field element >= p, not on its curve, or not in the r-torsion subgroup:
+   the Lean's outOfGas cases).  n_pairs == 0 gives 1. */
+fun 1 bn254_pairing_check(1 pairs, 1 n_pairs) {
+  bn254_init();
+  var mark = heap_mark();
+  var g1 = alloc(96);
+  var g2 = alloc(192);
+  var t1 = alloc(96);
+  var t2 = alloc(192);
+  var Q = alloc(ECP12_BYTES);
+  var P = alloc(ECP12_BYTES);
+  var fnum = alloc(FQ12_BYTES);
+  var fden = alloc(FQ12_BYTES);
+  var anum = alloc(FQ12_BYTES);
+  var aden = alloc(FQ12_BYTES);
+  var res = alloc(FQ12_BYTES);
+  fe_set_one(12, anum);
+  fe_set_one(12, aden);
+  var nontrivial = 0;
+  var i = 0;
+  while i <+ n_pairs {
+    var chunk = pairs + i * 192;
+    var 1 e1 = bn254_parse_g1(chunk, g1);
+    if e1 != 0 {
+      heap_release(mark);
+      return 2;
+    }
+    var 1 e2 = bn254_parse_g2(chunk + 64, g2);
+    if e2 != 0 {
+      heap_release(mark);
+      return 2;
+    }
+    ecp_mul(1, t1, g1, BN_R);
+    var 1 i1 = ecp_is_inf(1, t1);
+    if i1 == 0 {
+      heap_release(mark);
+      return 2;
+    }
+    ecp_mul(2, t2, g2, BN_R);
+    var 1 i2 = ecp_is_inf(2, t2);
+    if i2 == 0 {
+      heap_release(mark);
+      return 2;
+    }
+    var 1 pinf = ecp_is_inf(1, g1);
+    var 1 qinf = ecp_is_inf(2, g2);
+    if (pinf | qinf) == 0 {
+      fq12_twist(Q, g2);
+      fq12_cast(P, g1);
+      bn254_miller_raw(fnum, fden, Q, P);
+      fq12_mul(anum, anum, fnum);
+      fq12_mul(aden, aden, fden);
+      nontrivial = 1;
+    }
+    i = i + 1;
+  }
+  var ok = 1;
+  if nontrivial == 1 {
+    fq12_inv(aden, aden);
+    fq12_mul(anum, anum, aden);
+    fq12_pow_words(res, anum, bn_expw, BN_EXP_WORDS);
+    memzero(fnum, FQ12_BYTES);
+    st fnum, FQ_ONE;
+    ok = memeq(res, fnum, FQ12_BYTES);
+  }
+  heap_release(mark);
+  return ok;
+}

@@ -1,0 +1,63 @@
+/* precompiles_bn254.pnk -- ECADD (0x06), ECMUL (0x07), ECPAIRING (0x08):
+   pAltBn128Add / pAltBn128Mul (PrecompilesCurve.lean) and
+   pAltBn128PairingCheck (PrecompilesPairing.lean) on the current frame `ev`.
+   Gas: 150 / 6000 / 45000 + 34000 per 192-byte pair, charged before parsing.
+   Every InvalidParameter of the Python (coordinate >= p, point not on curve,
+   G2 point outside the r-torsion, pairing input length not a multiple of
+   192) is rethrown as OutOfGasError, so here EvmErr E_OUT_OF_GAS.  The curve
+   math is lib/bn254.pnk. */
+#include "lib/bn254.pnk"
+
+fun 1 pre_alt_bn128_add() {
+  var msg = lds 1 (ev + EV_MSG);
+  charge_gas(150);
+  var 1 out = alloc(64);
+  var 1 mark = heap_mark();
+  var 1 buf = alloc(128);
+  buffer_read(lds 1 (msg + MSG_DATA), lds 1 (msg + MSG_DATA_N), 0, 128, buf);
+  var 1 err = bn254_g1_add(buf, out);
+  heap_release(mark);
+  if err != 0 {
+    throw EvmErr E_OUT_OF_GAS;
+  }
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, 64;
+  return 0;
+}
+
+fun 1 pre_alt_bn128_mul() {
+  var msg = lds 1 (ev + EV_MSG);
+  charge_gas(6000);
+  var 1 out = alloc(64);
+  var 1 mark = heap_mark();
+  var 1 buf = alloc(96);
+  buffer_read(lds 1 (msg + MSG_DATA), lds 1 (msg + MSG_DATA_N), 0, 96, buf);
+  var 1 err = bn254_g1_mul(buf, out);
+  heap_release(mark);
+  if err != 0 {
+    throw EvmErr E_OUT_OF_GAS;
+  }
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, 64;
+  return 0;
+}
+
+fun 1 pre_alt_bn128_pairing_check() {
+  var msg = lds 1 (ev + EV_MSG);
+  var n = lds 1 (msg + MSG_DATA_N);
+  var {1,1} qr = udivmod(n, 192);
+  charge_gas(34000 * qr.0 + 45000);
+  if qr.1 != 0 {
+    throw EvmErr E_OUT_OF_GAS;
+  }
+  var 1 res = bn254_pairing_check(lds 1 (msg + MSG_DATA), qr.0);
+  if res == 2 {
+    throw EvmErr E_OUT_OF_GAS;
+  }
+  var 1 out = alloc(32);
+  memzero(out, 32);
+  st8 out + 31, res;
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, 32;
+  return 0;
+}
