@@ -135,6 +135,9 @@ tools/eest-run.py guest/build/guest.elf work/inputs/manifest.tsv --quiet-passes
 tools/eest-run.py guest/build/guest-accel.elf work/inputs/manifest.tsv --quiet-passes
 ```
 
+For a pinned, self-contained full-corpus run through Spike, including the
+recorded commit and result, see [docs/EEST-SPIKE.md](docs/EEST-SPIKE.md).
+
 ## Testing
 
 Run `tools/check_all.sh` for the unit/oracle tests, vector checks, and every
