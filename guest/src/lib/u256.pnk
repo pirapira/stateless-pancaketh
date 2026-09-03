@@ -709,6 +709,17 @@ fun 1 u256_byte(1 i, U256 x) {
 
 /* Big-endian n (<= 32) bytes at p -> U256. */
 fun U256 u256_from_be(1 p, 1 n) {
+  if (n == 32) && ((p & 7) == 0) {
+    var 1 w = lds 1 p;
+    var 1 l3 = bswap64(w);
+    w = lds 1 (p + 8);
+    var 1 l2 = bswap64(w);
+    w = lds 1 (p + 16);
+    var 1 l1 = bswap64(w);
+    w = lds 1 (p + 24);
+    var 1 l0 = bswap64(w);
+    return <l0, l1, l2, l3>;
+  }
   var l0 = 0;
   var l1 = 0;
   var l2 = 0;
@@ -729,6 +740,17 @@ fun U256 u256_from_be(1 p, 1 n) {
 
 /* 32-byte big-endian encoding at out. */
 fun 1 u256_to_be32(U256 a, 1 out) {
+  if (out & 7) == 0 {
+    var 1 w = bswap64(a.3);
+    st out, w;
+    w = bswap64(a.2);
+    st out + 8, w;
+    w = bswap64(a.1);
+    st out + 16, w;
+    w = bswap64(a.0);
+    st out + 24, w;
+    return 0;
+  }
   st_be64(out, a.3);
   st_be64(out + 8, a.2);
   st_be64(out + 16, a.1);

@@ -34,6 +34,82 @@ fun 1 htab_new(1 key_len, 1 cap) {
 /* Hash of key_len bytes at p (byte-wise FNV-1a style mix on words). */
 fun 1 htab_hash(1 p, 1 key_len) {
   var h = 14695981039346656037;
+  var 1 w = 0;
+
+  /* The table's hot key sizes are 20-byte addresses and 32-byte hashes.
+     Unroll them, and use aligned word loads when the key is aligned. */
+  if (p & 7) == 0 {
+    if key_len == 20 {
+      w = lds 1 p;
+      h = (h ^ w) * 1099511628211;
+      h = h ^ (h >>> 29);
+      w = lds 1 (p + 8);
+      h = (h ^ w) * 1099511628211;
+      h = h ^ (h >>> 29);
+      h = (h ^ (ld8 (p + 16))) * 1099511628211;
+      h = h ^ (h >>> 29);
+      h = (h ^ (ld8 (p + 17))) * 1099511628211;
+      h = h ^ (h >>> 29);
+      h = (h ^ (ld8 (p + 18))) * 1099511628211;
+      h = h ^ (h >>> 29);
+      h = (h ^ (ld8 (p + 19))) * 1099511628211;
+      h = h ^ (h >>> 29);
+      h = h ^ (h >>> 32);
+      return h;
+    }
+    if key_len == 32 {
+      w = lds 1 p;
+      h = (h ^ w) * 1099511628211;
+      h = h ^ (h >>> 29);
+      w = lds 1 (p + 8);
+      h = (h ^ w) * 1099511628211;
+      h = h ^ (h >>> 29);
+      w = lds 1 (p + 16);
+      h = (h ^ w) * 1099511628211;
+      h = h ^ (h >>> 29);
+      w = lds 1 (p + 24);
+      h = (h ^ w) * 1099511628211;
+      h = h ^ (h >>> 29);
+      h = h ^ (h >>> 32);
+      return h;
+    }
+  } else {
+    if key_len == 20 {
+      w = LD_LE64(p);
+      h = (h ^ w) * 1099511628211;
+      h = h ^ (h >>> 29);
+      w = LD_LE64(p + 8);
+      h = (h ^ w) * 1099511628211;
+      h = h ^ (h >>> 29);
+      h = (h ^ (ld8 (p + 16))) * 1099511628211;
+      h = h ^ (h >>> 29);
+      h = (h ^ (ld8 (p + 17))) * 1099511628211;
+      h = h ^ (h >>> 29);
+      h = (h ^ (ld8 (p + 18))) * 1099511628211;
+      h = h ^ (h >>> 29);
+      h = (h ^ (ld8 (p + 19))) * 1099511628211;
+      h = h ^ (h >>> 29);
+      h = h ^ (h >>> 32);
+      return h;
+    }
+    if key_len == 32 {
+      w = LD_LE64(p);
+      h = (h ^ w) * 1099511628211;
+      h = h ^ (h >>> 29);
+      w = LD_LE64(p + 8);
+      h = (h ^ w) * 1099511628211;
+      h = h ^ (h >>> 29);
+      w = LD_LE64(p + 16);
+      h = (h ^ w) * 1099511628211;
+      h = h ^ (h >>> 29);
+      w = LD_LE64(p + 24);
+      h = (h ^ w) * 1099511628211;
+      h = h ^ (h >>> 29);
+      h = h ^ (h >>> 32);
+      return h;
+    }
+  }
+
   var i = 0;
   while i + 8 <=+ key_len {
     h = (h ^ LD_LE64(p + i)) * 1099511628211;
