@@ -123,6 +123,9 @@ Mechanical, well-specified tasks are filed as GitHub issues with the `mechanical
 (https://github.com/pirapira/stateless-pancaketh/issues) for other agents; this session keeps the
 spec-porting and semantic-debugging work.
 PR checklist for those issues: read `guest/PANCAKE-NOTES.md`; add every new test to `tools/check_all.sh`;
+EEST checks use `tools/eest-baseline.py` to preserve passed fixtures and
+ratchet allowed failure codes; refresh `tools/eest-baseline.json` only with
+the reviewed `update` command;
 report the `check_all.sh` summary and the 30/30 line of `tools/eest-run.py guest/build/guest.elf
 work/inputs/manifest.tsv --quiet-passes`; performance PRs report before/after instruction counts.
 Unit tests must call the same `*_init()` functions as `guest/src/main.pnk` (scratch buffers are never
