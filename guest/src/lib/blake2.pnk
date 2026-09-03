@@ -7,6 +7,10 @@
 var 1 b2_sigma = 0;  /* 10 schedule rows, 16 nibbles per word */
 var 1 b2_iv = 0;     /* 8 IV words */
 var 1 b2_v = 0;      /* 16-word working vector */
+#ifdef ZISK_ACCEL
+var 1 b2_m = 0;      /* aligned message block for the round CSR */
+var 1 b2_round = 0;  /* {round index, v pointer, m pointer} */
+#endif
 
 #define B2_SIG(row, i) (((lds 1 (b2_sigma + (row) * 8)) >>> ((i) * 4)) & 15)
 #define V(i) (lds 1 (b2_v + (i) * 8))
@@ -18,6 +22,12 @@ fun 1 blake2_init() {
   b2_sigma = alloc(80);
   b2_iv = alloc(64);
   b2_v = alloc(128);
+#ifdef ZISK_ACCEL
+  b2_m = alloc(128);
+  b2_round = alloc(24);
+  st b2_round + 8, b2_v;
+  st b2_round + 16, b2_m;
+#endif
   st b2_sigma + 0, -81985529216486896;
   st b2_sigma + 8, 3853709921291437230;
   st b2_sigma + 16, 5266788149650328715;
@@ -74,6 +84,17 @@ fun 1 blake2b_f(1 rounds, 1 h, 1 m, 1 t0, 1 t1, 1 f) {
   if f != 0 {
     st b2_v + 112, V(14) ^ (0 - 1);
   }
+#ifdef ZISK_ACCEL
+  /* The CSR reads sixteen aligned little-endian u64s.  Copying also makes
+     precompile input safe when the caller's data pointer is unaligned. */
+  memcpy(b2_m, m, 128);
+  var r = 0;
+  while r <+ rounds {
+    st b2_round, r;
+    @blake2bround(b2_round, 0, 0, 0);
+    r = r + 1;
+  }
+#else
   var r = 0;
   var row = 0;
   while r <+ rounds {
@@ -91,6 +112,7 @@ fun 1 blake2b_f(1 rounds, 1 h, 1 m, 1 t0, 1 t1, 1 f) {
       row = 0;
     }
   }
+#endif
   var i = 0;
   while i < 8 {
     st h + i * 8, (lds 1 (h + i * 8)) ^ V(i) ^ V(i + 8);
