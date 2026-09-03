@@ -27,7 +27,7 @@ The recorded run used these revisions:
 
 | Component | Revision / tag |
 | --- | --- |
-| `stateless-pancaketh` | `a2456c6516eb2d804018d4bf1fb75f64d3ce6ecb` |
+| `stateless-pancaketh` | `1489defbef04e9c22be83152ad53af145f2094b8` |
 | `evm-asm` submodule | `f6b685c3d1d26a4850c908480261ac4903afc566` |
 | `cakeml` submodule | `e65826102d9be83d411fa0390e5794a3682d82f4` |
 | `riscv-isa-sim` | `55b4658dbf574ba0b714083ec436ce2cb5be1998` |
@@ -37,7 +37,7 @@ Clone the repository and initialize exactly the submodule revisions recorded
 above:
 
 ```bash
-RESULT_COMMIT=a2456c6516eb2d804018d4bf1fb75f64d3ce6ecb
+RESULT_COMMIT=1489defbef04e9c22be83152ad53af145f2094b8
 git clone --recurse-submodules https://github.com/pirapira/stateless-pancaketh.git
 cd stateless-pancaketh
 git checkout "$RESULT_COMMIT"
@@ -84,7 +84,7 @@ SPIKE_RUN="${SPIKE_RUN:-$REPO_ROOT/evm-asm/scripts/spike/spike_run}"
 JOBS="${EEST_JOBS:-32}"
 RUN_ROOT="$REPO_ROOT/work/eest-spike-$RESULT_COMMIT"
 
-test "$RESULT_COMMIT" = a2456c6516eb2d804018d4bf1fb75f64d3ce6ecb
+test "$RESULT_COMMIT" = 1489defbef04e9c22be83152ad53af145f2094b8
 test -x "$CAKE"
 test -x "$SPIKE_RUN"
 
@@ -123,28 +123,17 @@ inspection and reruns with `--from-json` or `--labels`.
 
 ## Recorded result
 
-Run on the revisions above with 32 Spike workers and the accelerated guest:
+Run on stateless-pancaketh commit
+`1489defbef04e9c22be83152ad53af145f2094b8`, with 32 Spike workers and the
+accelerated guest:
 
 ```text
 records: 26104
-PASS(full): 26091
+PASS(full): 26096
 PASS(malformed): 8
-FAIL: 5
-eest-run exit: 1
+eest-run exit: 0
 ```
 
-The five failures were all `root/----/tail`, `fail=1/112` (state-root
-mismatch):
-
-```text
-14194_test_identity_return_overwrite...CALL
-14195_test_identity_return_overwrite...CALLCODE
-14196_test_identity_return_overwrite...DELEGATECALL
-14197_test_identity_return_overwrite...STATICCALL
-17958_test_mem_copy_self...
-```
-
-The tracked `work/sweep/all.json.gz` predates `a2456c6`; it records an earlier
-source revision and must not be used as the result for this command. The
-commit-qualified run directory and result JSON above are the reproducible
-record for the merged main revision.
+There were no fixture failures. The commit-qualified run directory and result
+JSON are the reproducible record for this passing revision; the tracked
+`work/sweep/all.json.gz` is not used by this command.
