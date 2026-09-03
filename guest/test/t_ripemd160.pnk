@@ -5,6 +5,7 @@
 #include "lib/ripemd160.pnk"
 fun 1 main() {
   mem_init();
+  ripemd160_init();
   var {1,1} inp = input_blob();
   var 1 k = min(inp.1, 150);
   var 1 out = alloc((k + 2) * 20);

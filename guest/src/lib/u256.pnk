@@ -2,7 +2,7 @@
    A U256 is the struct {1,1,1,1}: four little-endian 64-bit limbs, .0 least
    significant.  In memory: 4 words, limb 0 at the lowest address.
    All functions are pure on struct values; division uses a private scratch
-   area (allocated lazily from the heap) for Knuth algorithm D on 32-bit digits.
+   area (allocated by u256_ws_init) for Knuth algorithm D on 32-bit digits.
    Semantics follow the EVM (div/mod by zero give 0; SDIV/SMOD truncate toward
    zero; MIN / -1 = MIN).  Needs lib/mem.pnk and lib/arith.pnk. */
 
@@ -487,7 +487,6 @@ fun U512 u256_divmod(U256 a, U256 b) {
     var {1,1} qr = udivmod(a.0, b.0);
     return <qr.0, 0, 0, 0, qr.1, 0, 0, 0>;
   }
-  u256_ws_init();
   var u = u256_ws + WS_U;
   u256_to_digits(u, a);
   var U256 r = digits_divmod(u, 8, b);
@@ -551,7 +550,6 @@ fun U256 u256_addmod(U256 a, U256 b, U256 m) {
   if s.4 == 0 {
     return u256_mod(sum, m);
   }
-  u256_ws_init();
   var u = u256_ws + WS_U;
   u256_to_digits(u, sum);
   st u + 64, 1;
@@ -564,7 +562,6 @@ fun U256 u256_mulmod(U256 a, U256 b, U256 m) {
   if (m.0 | m.1 | m.2 | m.3) == 0 {
     return U256_ZERO;
   }
-  u256_ws_init();
   var u = u256_ws + WS_U;
   if (a.1 | a.2 | a.3 | b.1 | b.2 | b.3) == 0 {
     var {1,1} p = mul64x64(a.0, b.0);

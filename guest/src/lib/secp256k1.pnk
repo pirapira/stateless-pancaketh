@@ -770,11 +770,8 @@ fun 1 secp256k1_recover(1 msg_hash, U256 r, U256 s, 1 recid, 1 out) {
 }
 
 /* Lean addressOfPoint: keccak256 of the 64-byte point at pub64, last 20 bytes
-   to out20.  Requires keccak_init() (called here if it has not been). */
+   to out20.  Requires keccak_init() before entry. */
 fun 1 secp256k1_address_of_point(1 pub64, 1 out20) {
-  if keccak_st == 0 {
-    keccak_init();
-  }
   var mark = heap_mark();
   var h = alloc(32);
   keccak256(pub64, 64, h);

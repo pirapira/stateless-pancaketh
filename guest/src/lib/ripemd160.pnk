@@ -1,7 +1,7 @@
 /* lib/ripemd160.pnk -- RIPEMD-160 (ISO/IEC 10118-3) on 64-bit words masked
    to 32 bits.  Port of SpecRef PrecompilesHash.lean namespace Ripemd160
    (compressBlock / hash); Python uses hashlib.new("ripemd160").
-   Needs lib/mem.pnk.  Tables are initialised lazily on first use. */
+   Needs lib/mem.pnk.  Call ripemd160_init before hashing. */
 
 /* The permutation / shift tables r, r', s, s' (80 nibbles each) packed 16 per
    word: entry j of table k is nibble (j & 15) of word rmd_tab[5k + (j >> 4)]. */
@@ -132,7 +132,6 @@ fun 1 ripemd160_block(1 hp, 1 blk) {
 
 /* RIPEMD-160 of the n bytes at p, written to the 20 bytes at out. */
 fun 1 ripemd160(1 p, 1 n, 1 out) {
-  ripemd160_init();
   st rmd_h, 1732584193;
   st rmd_h + 8, 4023233417;
   st rmd_h + 16, 2562383102;

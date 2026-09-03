@@ -8,6 +8,7 @@
 #include "lib/modexp.pnk"
 fun 1 main() {
   mem_init();
+  u256_ws_init();
   var {1,1} inp = input_blob();
   var 1 out = alloc(inp.1 + 8);
   var o = 0;

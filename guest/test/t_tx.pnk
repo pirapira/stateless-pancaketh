@@ -19,8 +19,7 @@ fun 1 main() {
   mem_init();
   sha256_init();
   keccak_init();
-  ssz_len_chunk = alloc(32);
-  ssz_offs = alloc(64);
+  u256_ws_init();
   ssz_init();
   var {1,1} inp = input_blob();
   var 1 si = decode_stateless_input(inp.0, inp.1);

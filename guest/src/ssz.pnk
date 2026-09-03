@@ -6,10 +6,17 @@
 exception SszErr : 1;
 
 var 1 zero_hashes = 0;   /* 64 chunks: Z_d = sha256(Z_{d-1} || Z_{d-1}) */
+var 1 ssz_len_chunk = 0; /* scratch for mix_in_length */
+var 1 ssz_offs = 0;      /* scratch for up to 8 container offsets */
 
 /* Z_0 = 0, Z_{d+1} = sha256(Z_d || Z_d): precomputed (generated with
    Python hashlib; equal by definition to the reference recurrence). */
 fun 1 ssz_init() {
+  if zero_hashes != 0 {
+    return 0;
+  }
+  ssz_len_chunk = alloc(32);
+  ssz_offs = alloc(64);
   zero_hashes = alloc(64 * 32);
   st zero_hashes + 0, 0;
   st zero_hashes + 8, 0;
@@ -308,8 +315,6 @@ fun 1 merkleize(1 p, 1 n, 1 limit, 1 out) {
   return 0;
 }
 
-var 1 ssz_len_chunk = 0;
-
 /* mix_in_length(root, len) -> out (may alias root). */
 fun 1 mix_in_length(1 root, 1 len, 1 out) {
   memzero(ssz_len_chunk, 32);
@@ -360,8 +365,6 @@ fun 1 htr_u64_at(1 p, 1 out) {
 }
 
 /* ---- decoding primitives ------------------------------------------- */
-
-var 1 ssz_offs = 0;   /* scratch for up to 8 container offsets */
 
 fun 1 ssz_fail(1 code) {
   throw SszErr code;

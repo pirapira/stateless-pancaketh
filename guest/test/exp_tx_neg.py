@@ -94,7 +94,7 @@ def gen():
            '  if stage == 2 { var 1 rid = 0; try rid = signature_recovery_parameters(tx, 1, scratch) catch TxErr => code { return code; } return 0; }',
            '  if stage == 3 { var {1,1,1} ic = <0, 0, 0>; try ic = validate_transaction(tx, sender) catch TxErr => code { return code; } return 0; }',
            '  return 0;', '}',
-           'fun 1 main() {', '  mem_init();', '  keccak_init();',
+           'fun 1 main() {', '  mem_init();', '  keccak_init();', '  u256_ws_init();',
            '  var 1 out = alloc(%d);' % (8 * len(CASES) + 8),
            '  var 1 sender = alloc(24);', '  memzero(sender, 24);', '  var 1 scratch = alloc(32);',
            '  var 1 buf = 0;', '  var 1 c = 0;']
