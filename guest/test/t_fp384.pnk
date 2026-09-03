@@ -1,0 +1,53 @@
+/* t_fp384.pnk -- exercise lib/fp384.pnk against tools/gen_fp384_vectors.py.
+   Input: N records of 96 bytes: a, b as 6 little-endian 64-bit limbs each
+   (canonical, < p).  Output per record (344 bytes): canonical limbs of
+   a*b, a+b, a-b, a^-1, -a, a^((p+1)/4) (7 x 48 = the last slot is
+   from_mont(to_mont(a))), then one word: sgn0(a) | is_high(a) << 1 | eq(a,b) << 2. */
+#include "config.h"
+#include "lib/mem.pnk"
+#include "lib/arith.pnk"
+#include "lib/u256.pnk"
+#include "lib/bls12381_consts.pnk"
+#include "lib/fp384.pnk"
+
+#define CASE_IN 96
+#define CASE_OUT 344
+
+fun 1 main() {
+  mem_init();
+  bls_consts_init();
+#ifdef ZISK_ACCEL
+  fp_accel_init();
+#endif
+  var {1,1} inp = input_blob();
+  var {1,1} nq = udivmod(inp.1, CASE_IN);
+  var 1 ncase = nq.0;
+  var 1 out = alloc(ncase * CASE_OUT);
+  memzero(out, ncase * CASE_OUT);
+  var c = 0;
+  while c <+ ncase {
+    var p = inp.0 + c * CASE_IN;
+    var o = out + c * CASE_OUT;
+    var FP ac = lds FP p;
+    var FP bc = lds FP (p + 48);
+    var FP a = fp_to_mont(ac);
+    var FP b = fp_to_mont(bc);
+    var FP r = fp_mul(a, b);
+    r = fp_from_mont(r);
+    st o, r;
+    r = fp_add(a, b); r = fp_from_mont(r); st o + 48, r;
+    r = fp_sub(a, b); r = fp_from_mont(r); st o + 96, r;
+    r = fp_inv(a); r = fp_from_mont(r); st o + 144, r;
+    r = fp_neg(a); r = fp_from_mont(r); st o + 192, r;
+    r = fp_pow(a, C_P_PLUS_1_DIV_4, 6); r = fp_from_mont(r); st o + 240, r;
+    r = fp_from_mont(a); st o + 288, r;
+    var 1 s = fp_sgn0(a);
+    var 1 h = fp_is_high(a);
+    var 1 e = fp_eq(a, b);
+    st o + 336, s | (h << 1) | (e << 2);
+    c = c + 1;
+  }
+  output_write(out, ncase * CASE_OUT);
+  @halt(@base, 0, @base, 0);
+  return 0;
+}

@@ -54,3 +54,37 @@ ffitrap:
 ffikeccakf:
     csrrs x0, 0x800, a0
     ret
+
+# FFI: BLS12-381 accelerator calls.  The first argument is the parameter
+# block described by evm-asm/scripts/spike/zisk_accel.cc; each CSR mutates its
+# output operand in place.  Keep these as tiny assembly bridges so the same
+# Pancake source reaches both Spike's extension and ziskemu's implementation.
+.globl ffibls_arith384
+ffibls_arith384:
+    .4byte 0x80b52073             # csrs 0x80B, a0 -> Arith384Mod
+    ret
+
+.globl ffibls_fp2_add
+ffibls_fp2_add:
+    .4byte 0x80e52073             # csrs 0x80E, a0 -> Fp2 add
+    ret
+
+.globl ffibls_fp2_sub
+ffibls_fp2_sub:
+    .4byte 0x80f52073             # csrs 0x80F, a0 -> Fp2 subtract
+    ret
+
+.globl ffibls_fp2_mul
+ffibls_fp2_mul:
+    .4byte 0x81052073             # csrs 0x810, a0 -> Fp2 multiply
+    ret
+
+.globl ffibls_g1_add
+ffibls_g1_add:
+    .4byte 0x80c52073             # csrs 0x80C, a0 -> G1 affine add
+    ret
+
+.globl ffibls_g1_dbl
+ffibls_g1_dbl:
+    .4byte 0x80d52073             # csrs 0x80D, a0 -> G1 affine double
+    ret

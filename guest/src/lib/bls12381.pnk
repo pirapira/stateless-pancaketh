@@ -1,0 +1,1971 @@
+/* lib/bls12381.pnk -- BLS12-381 for the EIP-2537 and EIP-4844 precompiles.
+   Ports evm-asm/EvmAsm/Stateless/SpecRef/PrecompilesBls.lean (decode/encode,
+   G1/G2 group law = py_ecc optimized_curve add/double/multiply, MSM, pairing
+   check), PrecompilesBlsMap.lean (optimized_swu_G1/G2, sqrt_division_FQ/FQ2,
+   iso_map_G1/G2, clear cofactor = multiply by H_EFF) and PrecompilesKzg.lean
+   (decompress_G1, validate_kzg_g1, verify_kzg_proof_impl, pairing_check).
+
+   Representation (everything lives in heap memory; software Fp values are
+   Montgomery and ZISK_ACCEL Fp values are canonical, see lib/fp384.pnk):
+     Fp2   96 bytes: c0 at +0, c1 at +48            (u^2 = -1)
+     Fp6  288 bytes: c0, c1, c2 (Fp2 each)          (v^3 = xi = 1 + u)
+     Fp12 576 bytes: a0, a1 (Fp6 each)              (w^2 = v)
+     G1   144 bytes: X, Y, Z (Fp), homogeneous projective, Z == 0 is infinity
+     G2   288 bytes: X, Y, Z (Fp2), same
+   Functions take result and operand POINTERS (r may alias an operand: every
+   routine finishes reading its inputs before it writes r), and use a bump
+   scratch region (heap_mark / alloc / heap_release).
+
+   Pairing: the Lean/py_ecc pairing is the ate pairing with loop |x|
+   (x = -0xd201000000010000) over py_ecc's flat FQ12 = Fp[w]/(w^12 - 2w^6 + 2)
+   with a generic 63-step Miller loop.  This port uses the standard tower above
+   (isomorphic field), the M-twist y^2 = x^3 + 4(1 + u) that py_ecc's b2 = (4, 4)
+   already is, Jacobian doubling / mixed-addition steps with line coefficients
+   (Costello-Lange-Naehrig, eprint 2010/354 Alg. 26/27) and the cyclotomic
+   final exponentiation (Hayashida-Hayasaka-Teruya hard part).  Both compute a
+   non-degenerate bilinear pairing G1 x G2 -> mu_r, and any two such pairings
+   are fixed powers of one another, so "product of pairings == 1" -- the only
+   thing the PAIRING precompile and the KZG pairing_check output -- agrees
+   exactly with the reference (tools/blsref.py checks this against py_ecc,
+   and is the byte-exact oracle for the tower internals).
+
+   Needs lib/mem.pnk, lib/arith.pnk, lib/u256.pnk, lib/sha256.pnk,
+   lib/bls12381_consts.pnk, lib/fp384.pnk. */
+
+#define FP2_BYTES 96
+#define FP6_BYTES 288
+#define FP12_BYTES 576
+#define G1_BYTES 144
+#define G2_BYTES 288
+
+/* ======================================================================
+   Fp2
+   ====================================================================== */
+
+fun 1 fp2_copy(1 r, 1 a) {
+  memcpy(r, a, FP2_BYTES);
+  return 0;
+}
+
+fun 1 fp2_set_zero(1 r) {
+  memzero(r, FP2_BYTES);
+  return 0;
+}
+
+fun 1 fp2_set_one(1 r) {
+  st r, FP_ONE_MONT;
+  st r + 48, FP_ZERO;
+  return 0;
+}
+
+fun 1 fp2_is_zero(1 a) {
+  var FP a0 = lds FP a;
+  var FP a1 = lds FP (a + 48);
+  if (a0.0 | a0.1 | a0.2 | a0.3 | a0.4 | a0.5 | a1.0 | a1.1 | a1.2 | a1.3 | a1.4 | a1.5) == 0 {
+    return 1;
+  }
+  return 0;
+}
+
+fun 1 fp2_eq(1 a, 1 b) {
+  var FP a0 = lds FP a;
+  var FP b0 = lds FP b;
+  var 1 e0 = fp_eq(a0, b0);
+  if e0 == 0 { return 0; }
+  var FP a1 = lds FP (a + 48);
+  var FP b1 = lds FP (b + 48);
+  return fp_eq(a1, b1);
+}
+
+#ifdef ZISK_ACCEL
+
+/* The Fp2 CSRs mutate their first 96-byte operand in place.  Use a private
+   pair of buffers so all three public helpers remain alias-safe (including
+   r == a and r == b) without allocating in the pairing hot path. */
+var 1 fp2_accel_f1 = 0;
+var 1 fp2_accel_f2 = 0;
+var 1 fp2_accel_params = 0;
+
+fun 1 fp2_accel_init() {
+  if fp2_accel_params != 0 {
+    return 0;
+  }
+  bls_consts_init();
+  fp2_accel_f1 = alloc(FP2_BYTES);
+  fp2_accel_f2 = alloc(FP2_BYTES);
+  fp2_accel_params = alloc(16);
+  st fp2_accel_params, fp2_accel_f1;
+  st fp2_accel_params + 8, fp2_accel_f2;
+  return 0;
+}
+
+#endif
+
+fun 1 fp2_add(1 r, 1 a, 1 b) {
+#ifdef ZISK_ACCEL
+  fp2_accel_init();
+  fp2_copy(fp2_accel_f1, a);
+  fp2_copy(fp2_accel_f2, b);
+  @bls_fp2_add(fp2_accel_params, 0, 0, 0);
+  fp2_copy(r, fp2_accel_f1);
+  return 0;
+#else
+  var FP a0 = lds FP a;
+  var FP a1 = lds FP (a + 48);
+  var FP b0 = lds FP b;
+  var FP b1 = lds FP (b + 48);
+  var FP c0 = fp_add(a0, b0);
+  var FP c1 = fp_add(a1, b1);
+  st r, c0;
+  st r + 48, c1;
+  return 0;
+#endif
+}
+
+fun 1 fp2_sub(1 r, 1 a, 1 b) {
+#ifdef ZISK_ACCEL
+  fp2_accel_init();
+  fp2_copy(fp2_accel_f1, a);
+  fp2_copy(fp2_accel_f2, b);
+  @bls_fp2_sub(fp2_accel_params, 0, 0, 0);
+  fp2_copy(r, fp2_accel_f1);
+  return 0;
+#else
+  var FP a0 = lds FP a;
+  var FP a1 = lds FP (a + 48);
+  var FP b0 = lds FP b;
+  var FP b1 = lds FP (b + 48);
+  var FP c0 = fp_sub(a0, b0);
+  var FP c1 = fp_sub(a1, b1);
+  st r, c0;
+  st r + 48, c1;
+  return 0;
+#endif
+}
+
+fun 1 fp2_neg(1 r, 1 a) {
+  var FP a0 = lds FP a;
+  var FP a1 = lds FP (a + 48);
+  var FP c0 = fp_neg(a0);
+  var FP c1 = fp_neg(a1);
+  st r, c0;
+  st r + 48, c1;
+  return 0;
+}
+
+fun 1 fp2_dbl(1 r, 1 a) {
+  return fp2_add(r, a, a);
+}
+
+/* conjugate: a0 - a1 u */
+fun 1 fp2_conj(1 r, 1 a) {
+  var FP a0 = lds FP a;
+  var FP a1 = lds FP (a + 48);
+  var FP c1 = fp_neg(a1);
+  st r, a0;
+  st r + 48, c1;
+  return 0;
+}
+
+/* (a0 + a1 u)(b0 + b1 u) = (a0 b0 - a1 b1) + ((a0 + a1)(b0 + b1) - a0 b0 - a1 b1) u */
+fun 1 fp2_mul(1 r, 1 a, 1 b) {
+#ifdef ZISK_ACCEL
+  fp2_accel_init();
+  fp2_copy(fp2_accel_f1, a);
+  fp2_copy(fp2_accel_f2, b);
+  @bls_fp2_mul(fp2_accel_params, 0, 0, 0);
+  fp2_copy(r, fp2_accel_f1);
+  return 0;
+#else
+  var FP a0 = lds FP a;
+  var FP a1 = lds FP (a + 48);
+  var FP b0 = lds FP b;
+  var FP b1 = lds FP (b + 48);
+  var FP t0 = fp_mul(a0, b0);
+  var FP t1 = fp_mul(a1, b1);
+  var FP sa = fp_add(a0, a1);
+  var FP sb = fp_add(b0, b1);
+  var FP t2 = fp_mul(sa, sb);
+  var FP c0 = fp_sub(t0, t1);
+  t2 = fp_sub(t2, t0);
+  t2 = fp_sub(t2, t1);
+  st r, c0;
+  st r + 48, t2;
+  return 0;
+#endif
+}
+
+/* (a0 + a1 u)^2 = (a0 + a1)(a0 - a1) + 2 a0 a1 u */
+fun 1 fp2_sqr(1 r, 1 a) {
+  var FP a0 = lds FP a;
+  var FP a1 = lds FP (a + 48);
+  var FP s = fp_add(a0, a1);
+  var FP d = fp_sub(a0, a1);
+  var FP c0 = fp_mul(s, d);
+  var FP c1 = fp_mul(a0, a1);
+  c1 = fp_add(c1, c1);
+  st r, c0;
+  st r + 48, c1;
+  return 0;
+}
+
+/* multiply by xi = 1 + u: (a0 - a1) + (a0 + a1) u */
+fun 1 fp2_mul_xi(1 r, 1 a) {
+  var FP a0 = lds FP a;
+  var FP a1 = lds FP (a + 48);
+  var FP c0 = fp_sub(a0, a1);
+  var FP c1 = fp_add(a0, a1);
+  st r, c0;
+  st r + 48, c1;
+  return 0;
+}
+
+/* multiply both coefficients by the Fp element k */
+fun 1 fp2_scale(1 r, 1 a, FP k) {
+  var FP a0 = lds FP a;
+  var FP a1 = lds FP (a + 48);
+  var FP c0 = fp_mul(a0, k);
+  var FP c1 = fp_mul(a1, k);
+  st r, c0;
+  st r + 48, c1;
+  return 0;
+}
+
+/* (a0 + a1 u)^-1 = (a0 - a1 u) / (a0^2 + a1^2); 0 -> 0 */
+fun 1 fp2_inv(1 r, 1 a) {
+  var FP a0 = lds FP a;
+  var FP a1 = lds FP (a + 48);
+  var FP d0 = fp_sqr(a0);
+  var FP d1 = fp_sqr(a1);
+  var FP d = fp_add(d0, d1);
+  var FP di = fp_inv(d);
+  var FP c0 = fp_mul(a0, di);
+  var FP c1 = fp_mul(a1, di);
+  c1 = fp_neg(c1);
+  st r, c0;
+  st r + 48, c1;
+  return 0;
+}
+
+/* a^e, e = n little-endian words at eptr (MSB-first square-and-multiply). */
+fun 1 fp2_pow(1 r, 1 a, 1 eptr, 1 n) {
+  var mark = heap_mark();
+  var base = alloc(FP2_BYTES);
+  var acc = alloc(FP2_BYTES);
+  fp2_copy(base, a);
+  fp2_set_one(acc);
+  var started = 0;
+  var i = n * 64;
+  while i >+ 0 {
+    i = i - 1;
+    if started == 1 {
+      fp2_sqr(acc, acc);
+    }
+    var bit = ((lds 1 (eptr + (i >>> 6) * 8)) >>> (i & 63)) & 1;
+    if bit == 1 {
+      fp2_mul(acc, acc, base);
+      started = 1;
+    }
+  }
+  fp2_copy(r, acc);
+  heap_release(mark);
+  return 0;
+}
+
+/* sgn0 for m = 2 (hash-to-curve draft 4.1): sign_0 or (zero_0 and sign_1). */
+fun 1 fp2_sgn0(1 a) {
+  var FP a0 = lds FP a;
+  var 1 s0 = fp_sgn0(a0);
+  if s0 == 1 { return 1; }
+  var 1 z0 = fp_is_zero(a0);
+  if z0 == 0 { return 0; }
+  var FP a1 = lds FP (a + 48);
+  return fp_sgn0(a1);
+}
+
+/* ======================================================================
+   Fp6 = Fp2[v] / (v^3 - xi)
+   ====================================================================== */
+
+fun 1 fp6_copy(1 r, 1 a) {
+  memcpy(r, a, FP6_BYTES);
+  return 0;
+}
+
+fun 1 fp6_set_zero(1 r) {
+  memzero(r, FP6_BYTES);
+  return 0;
+}
+
+fun 1 fp6_set_one(1 r) {
+  fp2_set_one(r);
+  fp2_set_zero(r + 96);
+  fp2_set_zero(r + 192);
+  return 0;
+}
+
+fun 1 fp6_add(1 r, 1 a, 1 b) {
+  fp2_add(r, a, b);
+  fp2_add(r + 96, a + 96, b + 96);
+  fp2_add(r + 192, a + 192, b + 192);
+  return 0;
+}
+
+fun 1 fp6_sub(1 r, 1 a, 1 b) {
+  fp2_sub(r, a, b);
+  fp2_sub(r + 96, a + 96, b + 96);
+  fp2_sub(r + 192, a + 192, b + 192);
+  return 0;
+}
+
+fun 1 fp6_neg(1 r, 1 a) {
+  fp2_neg(r, a);
+  fp2_neg(r + 96, a + 96);
+  fp2_neg(r + 192, a + 192);
+  return 0;
+}
+
+/* c0 = a0 b0 + xi (a1 b2 + a2 b1); c1 = a0 b1 + a1 b0 + xi a2 b2;
+   c2 = a0 b2 + a1 b1 + a2 b0. */
+fun 1 fp6_mul(1 r, 1 a, 1 b) {
+  var mark = heap_mark();
+  var t = alloc(FP2_BYTES * 10);
+  fp2_mul(t, a, b);                       /* p00 */
+  fp2_mul(t + 96, a, b + 96);             /* p01 */
+  fp2_mul(t + 192, a, b + 192);           /* p02 */
+  fp2_mul(t + 288, a + 96, b);            /* p10 */
+  fp2_mul(t + 384, a + 96, b + 96);       /* p11 */
+  fp2_mul(t + 480, a + 96, b + 192);      /* p12 */
+  fp2_mul(t + 576, a + 192, b);           /* p20 */
+  fp2_mul(t + 672, a + 192, b + 96);      /* p21 */
+  fp2_mul(t + 768, a + 192, b + 192);     /* p22 */
+  var u = t + 864;
+  fp2_add(u, t + 480, t + 672);
+  fp2_mul_xi(u, u);
+  fp2_add(r, t, u);
+  fp2_mul_xi(u, t + 768);
+  fp2_add(u, u, t + 96);
+  fp2_add(r + 96, u, t + 288);
+  fp2_add(u, t + 192, t + 384);
+  fp2_add(r + 192, u, t + 576);
+  heap_release(mark);
+  return 0;
+}
+
+/* a * v = xi a2 + a0 v + a1 v^2 */
+fun 1 fp6_mul_v(1 r, 1 a) {
+  var mark = heap_mark();
+  var t = alloc(FP2_BYTES);
+  fp2_mul_xi(t, a + 192);
+  fp2_copy(r + 192, a + 96);
+  fp2_copy(r + 96, a);
+  fp2_copy(r, t);
+  heap_release(mark);
+  return 0;
+}
+
+/* inverse (standard: t0 = a0^2 - xi a1 a2, t1 = xi a2^2 - a0 a1,
+   t2 = a1^2 - a0 a2, d = a0 t0 + xi (a2 t1 + a1 t2)); 0 -> 0 */
+fun 1 fp6_inv(1 r, 1 a) {
+  var mark = heap_mark();
+  var t = alloc(FP2_BYTES * 6);
+  var t0 = t;
+  var t1 = t + 96;
+  var t2 = t + 192;
+  var u = t + 288;
+  var d = t + 384;
+  var di = t + 480;
+  fp2_sqr(t0, a);
+  fp2_mul(u, a + 96, a + 192);
+  fp2_mul_xi(u, u);
+  fp2_sub(t0, t0, u);
+  fp2_sqr(t1, a + 192);
+  fp2_mul_xi(t1, t1);
+  fp2_mul(u, a, a + 96);
+  fp2_sub(t1, t1, u);
+  fp2_sqr(t2, a + 96);
+  fp2_mul(u, a, a + 192);
+  fp2_sub(t2, t2, u);
+  fp2_mul(d, a + 192, t1);
+  fp2_mul(u, a + 96, t2);
+  fp2_add(d, d, u);
+  fp2_mul_xi(d, d);
+  fp2_mul(u, a, t0);
+  fp2_add(d, d, u);
+  fp2_inv(di, d);
+  fp2_mul(r, t0, di);
+  fp2_mul(r + 96, t1, di);
+  fp2_mul(r + 192, t2, di);
+  heap_release(mark);
+  return 0;
+}
+
+/* ======================================================================
+   Fp12 = Fp6[w] / (w^2 - v)
+   ====================================================================== */
+
+fun 1 fp12_copy(1 r, 1 a) {
+  memcpy(r, a, FP12_BYTES);
+  return 0;
+}
+
+fun 1 fp12_set_one(1 r) {
+  fp6_set_one(r);
+  fp6_set_zero(r + 288);
+  return 0;
+}
+
+fun 1 fp12_is_one(1 a) {
+  var mark = heap_mark();
+  var one = alloc(FP12_BYTES);
+  fp12_set_one(one);
+  var 1 e = memeq(a, one, FP12_BYTES);
+  heap_release(mark);
+  return e;
+}
+
+/* (a0 + a1 w)(b0 + b1 w) = (a0 b0 + v a1 b1) + ((a0 + a1)(b0 + b1) - a0 b0 - a1 b1) w */
+fun 1 fp12_mul(1 r, 1 a, 1 b) {
+  var mark = heap_mark();
+  var t = alloc(FP6_BYTES * 5);
+  var t0 = t;
+  var t1 = t + 288;
+  var t2 = t + 576;
+  var sa = t + 864;
+  var sb = t + 1152;
+  fp6_mul(t0, a, b);
+  fp6_mul(t1, a + 288, b + 288);
+  fp6_add(sa, a, a + 288);
+  fp6_add(sb, b, b + 288);
+  fp6_mul(t2, sa, sb);
+  fp6_sub(t2, t2, t0);
+  fp6_sub(r + 288, t2, t1);
+  fp6_mul_v(t1, t1);
+  fp6_add(r, t0, t1);
+  heap_release(mark);
+  return 0;
+}
+
+fun 1 fp12_sqr(1 r, 1 a) {
+  return fp12_mul(r, a, a);
+}
+
+/* conjugate a0 - a1 w (= a^(p^6), the inverse on the cyclotomic subgroup) */
+fun 1 fp12_conj(1 r, 1 a) {
+  fp6_copy(r, a);
+  fp6_neg(r + 288, a + 288);
+  return 0;
+}
+
+/* (a0 + a1 w)^-1 = (a0 - a1 w) / (a0^2 - v a1^2) */
+fun 1 fp12_inv(1 r, 1 a) {
+  var mark = heap_mark();
+  var t = alloc(FP6_BYTES * 3);
+  var t0 = t;
+  var t1 = t + 288;
+  var d = t + 576;
+  fp6_mul(t0, a, a);
+  fp6_mul(t1, a + 288, a + 288);
+  fp6_mul_v(t1, t1);
+  fp6_sub(d, t0, t1);
+  fp6_inv(d, d);
+  fp6_mul(r, a, d);
+  fp6_mul(r + 288, a + 288, d);
+  fp6_neg(r + 288, r + 288);
+  heap_release(mark);
+  return 0;
+}
+
+/* Frobenius a^p: conjugate every Fp2 coefficient c_k of w^k and multiply by
+   gamma_k = xi^(k (p - 1) / 6).  Slots: a0.c0 = w^0, a0.c1 = w^2, a0.c2 = w^4,
+   a1.c0 = w^1, a1.c1 = w^3, a1.c2 = w^5. */
+fun 1 fp12_frob(1 r, 1 a) {
+  fp2_conj(r, a);
+  fp2_conj(r + 96, a + 96);
+  fp2_mul(r + 96, r + 96, C_GAMMA2);
+  fp2_conj(r + 192, a + 192);
+  fp2_mul(r + 192, r + 192, C_GAMMA4);
+  fp2_conj(r + 288, a + 288);
+  fp2_mul(r + 288, r + 288, C_GAMMA1);
+  fp2_conj(r + 384, a + 384);
+  fp2_mul(r + 384, r + 384, C_GAMMA3);
+  fp2_conj(r + 480, a + 480);
+  fp2_mul(r + 480, r + 480, C_GAMMA5);
+  return 0;
+}
+
+/* a^|x| (x = -0xd201000000010000), MSB-first over the 64 bits of |x|. */
+fun 1 fp12_pow_absx(1 r, 1 a) {
+  var mark = heap_mark();
+  var base = alloc(FP12_BYTES);
+  var acc = alloc(FP12_BYTES);
+  fp12_copy(base, a);
+  fp12_set_one(acc);
+  var x = lds 1 C_BLS_X;
+  var started = 0;
+  var i = 64;
+  while i >+ 0 {
+    i = i - 1;
+    if started == 1 {
+      fp12_mul(acc, acc, acc);
+    }
+    if ((x >>> i) & 1) == 1 {
+      fp12_mul(acc, acc, base);
+      started = 1;
+    }
+  }
+  fp12_copy(r, acc);
+  heap_release(mark);
+  return 0;
+}
+
+/* a^x for the negative x on the cyclotomic subgroup: conj(a^|x|). */
+fun 1 fp12_exp_x(1 r, 1 a) {
+  fp12_pow_absx(r, a);
+  fp12_conj(r, r);
+  return 0;
+}
+
+/* final_exponentiate: f^((p^12 - 1) / r) up to the fixed power 3 (the hard
+   part computes m^(3 (p^4 - p^2 + 1) / r), harmless for the == 1 test):
+   easy part m = f^((p^6 - 1)(p^2 + 1)), then
+   m^((x - 1)^2 (x + p)(x^2 + p^2 - 1)) * m^3. */
+fun 1 fp12_final_exp(1 r, 1 f) {
+  var mark = heap_mark();
+  var t = alloc(FP12_BYTES * 5);
+  var m = t;
+  var a = t + 576;
+  var b = t + 1152;
+  var c = t + 1728;
+  var u = t + 2304;
+  /* m = f^(p^6 - 1) then ^(p^2 + 1) */
+  fp12_inv(u, f);
+  fp12_conj(m, f);
+  fp12_mul(m, m, u);
+  fp12_frob(u, m);
+  fp12_frob(u, u);
+  fp12_mul(m, m, u);
+  /* a = m^(x - 1), then a = a^(x - 1) */
+  fp12_exp_x(a, m);
+  fp12_conj(u, m);
+  fp12_mul(a, a, u);
+  fp12_exp_x(u, a);
+  fp12_conj(a, a);
+  fp12_mul(a, a, u);
+  /* b = a^(x + p) */
+  fp12_exp_x(b, a);
+  fp12_frob(u, a);
+  fp12_mul(b, b, u);
+  /* c = b^(x^2 + p^2 - 1) */
+  fp12_exp_x(c, b);
+  fp12_exp_x(c, c);
+  fp12_frob(u, b);
+  fp12_frob(u, u);
+  fp12_mul(c, c, u);
+  fp12_conj(u, b);
+  fp12_mul(c, c, u);
+  /* r = c * m^3 */
+  fp12_mul(u, m, m);
+  fp12_mul(u, u, m);
+  fp12_mul(r, c, u);
+  heap_release(mark);
+  return 0;
+}
+
+/* ======================================================================
+   G1 (Fp): py_ecc optimized_curve add / double / multiply
+   ====================================================================== */
+
+#define G1X(p) (p)
+#define G1Y(p) ((p) + 48)
+#define G1Z(p) ((p) + 96)
+
+#ifdef ZISK_ACCEL
+
+/* The curve CSRs operate on affine x || y buffers and mutate p1.  G1's
+   public/projective carrier remains 144 bytes so the reference and
+   accelerator builds share the higher-level API; accelerated group results
+   are written back with Z = 1. */
+var 1 bls_g1_accel_p1 = 0;
+var 1 bls_g1_accel_p2 = 0;
+var 1 bls_g1_accel_params = 0;
+
+fun 1 bls_g1_accel_init() {
+  if bls_g1_accel_params != 0 {
+    return 0;
+  }
+  bls_consts_init();
+  bls_g1_accel_p1 = alloc(96);
+  bls_g1_accel_p2 = alloc(96);
+  bls_g1_accel_params = alloc(16);
+  st bls_g1_accel_params, bls_g1_accel_p1;
+  st bls_g1_accel_params + 8, bls_g1_accel_p2;
+  return 0;
+}
+
+#endif
+
+fun 1 g1_set_inf(1 r) {
+  st G1X(r), FP_ONE_MONT;
+  st G1Y(r), FP_ONE_MONT;
+  st G1Z(r), FP_ZERO;
+  return 0;
+}
+
+fun 1 g1_is_inf(1 p) {
+  var FP z = lds FP G1Z(p);
+  return fp_is_zero(z);
+}
+
+fun 1 g1_copy(1 r, 1 p) {
+  memcpy(r, p, G1_BYTES);
+  return 0;
+}
+
+fun 1 g1_neg(1 r, 1 p) {
+  var FP y = lds FP G1Y(p);
+  var FP ny = fp_neg(y);
+  if r != p {
+    var FP x = lds FP G1X(p);
+    var FP z = lds FP G1Z(p);
+    st G1X(r), x;
+    st G1Z(r), z;
+  }
+  st G1Y(r), ny;
+  return 0;
+}
+
+/* double: W = 3x^2, S = yz, B = xyS, H = W^2 - 8B; (2HS, W(4B - H) - 8y^2 S^2, 8S^3) */
+fun 1 g1_double(1 r, 1 p) {
+  var FP x = lds FP G1X(p);
+  var FP y = lds FP G1Y(p);
+  var FP z = lds FP G1Z(p);
+#ifdef ZISK_ACCEL
+  var 1 zaff = fp_eq(z, FP_ONE_MONT);
+  if zaff == 1 {
+    var 1 yz = fp_is_zero(y);
+    if yz == 1 {
+      g1_set_inf(r);
+      return 0;
+    }
+    bls_g1_accel_init();
+    st bls_g1_accel_p1, x;
+    st bls_g1_accel_p1 + 48, y;
+    @bls_g1_dbl(bls_g1_accel_p1, 0, 0, 0);
+    st G1X(r), lds FP bls_g1_accel_p1;
+    st G1Y(r), lds FP (bls_g1_accel_p1 + 48);
+    st G1Z(r), FP_ONE_MONT;
+    return 0;
+  }
+#endif
+  var FP w = fp_sqr(x);
+  var FP w2 = fp_add(w, w);
+  w = fp_add(w2, w);
+  var FP s = fp_mul(y, z);
+  var FP b = fp_mul(x, y);
+  b = fp_mul(b, s);
+  var FP b4 = fp_add(b, b);
+  b4 = fp_add(b4, b4);
+  var FP b8 = fp_add(b4, b4);
+  var FP h = fp_sqr(w);
+  h = fp_sub(h, b8);
+  var FP s2 = fp_sqr(s);
+  var FP nx = fp_mul(h, s);
+  nx = fp_add(nx, nx);
+  var FP t = fp_sub(b4, h);
+  t = fp_mul(w, t);
+  var FP yy = fp_sqr(y);
+  yy = fp_mul(yy, s2);
+  yy = fp_add(yy, yy);
+  yy = fp_add(yy, yy);
+  yy = fp_add(yy, yy);
+  var FP ny = fp_sub(t, yy);
+  var FP nz = fp_mul(s, s2);
+  nz = fp_add(nz, nz);
+  nz = fp_add(nz, nz);
+  nz = fp_add(nz, nz);
+  st G1X(r), nx;
+  st G1Y(r), ny;
+  st G1Z(r), nz;
+  return 0;
+}
+
+/* add (py_ecc): infinities pass the other point through; U1 = y2 z1,
+   U2 = y1 z2, V1 = x2 z1, V2 = x1 z2; V1 == V2: double if U1 == U2 else
+   infinity; U = U1 - U2, V = V1 - V2, W = z1 z2,
+   A = U^2 W - V^3 - 2 V^2 V2; (V A, U (V^2 V2 - A) - V^3 U2, V^3 W). */
+fun 1 g1_add(1 r, 1 p1, 1 p2) {
+  var FP z1 = lds FP G1Z(p1);
+  var 1 i1 = fp_is_zero(z1);
+  if i1 == 1 {
+    g1_copy(r, p2);
+    return 0;
+  }
+  var FP z2 = lds FP G1Z(p2);
+  var 1 i2 = fp_is_zero(z2);
+  if i2 == 1 {
+    g1_copy(r, p1);
+    return 0;
+  }
+  var FP x1 = lds FP G1X(p1);
+  var FP y1 = lds FP G1Y(p1);
+  var FP x2 = lds FP G1X(p2);
+  var FP y2 = lds FP G1Y(p2);
+#ifdef ZISK_ACCEL
+  var 1 z1aff = fp_eq(z1, FP_ONE_MONT);
+  var 1 z2aff = fp_eq(z2, FP_ONE_MONT);
+  if (z1aff == 1) && (z2aff == 1) {
+    var 1 xeq = fp_eq(x1, x2);
+    if xeq == 1 {
+      var 1 yeq = fp_eq(y1, y2);
+      if yeq == 1 {
+        g1_double(r, p1);
+        return 0;
+      }
+      g1_set_inf(r);
+      return 0;
+    }
+    bls_g1_accel_init();
+    st bls_g1_accel_p1, x1;
+    st bls_g1_accel_p1 + 48, y1;
+    st bls_g1_accel_p2, x2;
+    st bls_g1_accel_p2 + 48, y2;
+    @bls_g1_add(bls_g1_accel_params, 0, 0, 0);
+    st G1X(r), lds FP bls_g1_accel_p1;
+    st G1Y(r), lds FP (bls_g1_accel_p1 + 48);
+    st G1Z(r), FP_ONE_MONT;
+    return 0;
+  }
+#endif
+  var FP u1 = fp_mul(y2, z1);
+  var FP u2 = fp_mul(y1, z2);
+  var FP v1 = fp_mul(x2, z1);
+  var FP v2 = fp_mul(x1, z2);
+  var 1 veq = fp_eq(v1, v2);
+  if veq == 1 {
+    var 1 ueq = fp_eq(u1, u2);
+    if ueq == 1 {
+      g1_double(r, p1);
+      return 0;
+    }
+    g1_set_inf(r);
+    return 0;
+  }
+  var FP u = fp_sub(u1, u2);
+  var FP v = fp_sub(v1, v2);
+  var FP vv = fp_sqr(v);
+  var FP vvv2 = fp_mul(vv, v2);
+  var FP v3 = fp_mul(v, vv);
+  var FP w = fp_mul(z1, z2);
+  var FP a = fp_sqr(u);
+  a = fp_mul(a, w);
+  a = fp_sub(a, v3);
+  var FP t = fp_add(vvv2, vvv2);
+  a = fp_sub(a, t);
+  var FP nx = fp_mul(v, a);
+  var FP ny = fp_sub(vvv2, a);
+  ny = fp_mul(u, ny);
+  t = fp_mul(v3, u2);
+  ny = fp_sub(ny, t);
+  var FP nz = fp_mul(v3, w);
+  st G1X(r), nx;
+  st G1Y(r), ny;
+  st G1Z(r), nz;
+  return 0;
+}
+
+/* r = k * p, k = n little-endian words at kptr (MSB-first double-and-add;
+   the group element py_ecc multiply computes; k == 0 gives infinity). */
+fun 1 g1_mul(1 r, 1 p, 1 kptr, 1 n) {
+  var mark = heap_mark();
+  var acc = alloc(G1_BYTES);
+  var base = alloc(G1_BYTES);
+#ifdef ZISK_ACCEL
+  var 1 pinf = g1_is_inf(p);
+  if pinf == 1 {
+    g1_set_inf(base);
+  } else {
+    var FP pz = lds FP G1Z(p);
+    var 1 pzaff = fp_eq(pz, FP_ONE_MONT);
+    if pzaff == 1 {
+      g1_copy(base, p);
+    } else {
+      var aff = alloc(96);
+      g1_normalize(aff, p);
+      st G1X(base), lds FP aff;
+      st G1Y(base), lds FP (aff + 48);
+      st G1Z(base), FP_ONE_MONT;
+    }
+  }
+#else
+  g1_copy(base, p);
+#endif
+  g1_set_inf(acc);
+  var i = n * 64;
+  var started = 0;
+  while i >+ 0 {
+    i = i - 1;
+    if started == 1 {
+      g1_double(acc, acc);
+    }
+    var bit = ((lds 1 (kptr + (i >>> 6) * 8)) >>> (i & 63)) & 1;
+    if bit == 1 {
+      g1_add(acc, acc, base);
+      started = 1;
+    }
+  }
+  g1_copy(r, acc);
+  heap_release(mark);
+  return 0;
+}
+
+/* Affine (x, y) = (X / Z, Y / Z) written as two Fp at r (96 bytes);
+   infinity gives (0, 0) (inv 0 = 0, as py_ecc normalize).  Returns 1 if
+   the point is not infinity. */
+fun 1 g1_normalize(1 r, 1 p) {
+  var FP z = lds FP G1Z(p);
+  var FP zi = fp_inv(z);
+  var FP x = lds FP G1X(p);
+  var FP y = lds FP G1Y(p);
+  x = fp_mul(x, zi);
+  y = fp_mul(y, zi);
+  st r, x;
+  st r + 48, y;
+  var 1 zz = fp_is_zero(z);
+  return 1 - zz;
+}
+
+/* is_on_curve for affine (x, y): y^2 == x^3 + 4 */
+fun 1 g1_on_curve(FP x, FP y) {
+  var FP l = fp_sqr(y);
+  var FP rr = fp_sqr(x);
+  rr = fp_mul(rr, x);
+  var FP b = lds FP C_B1;
+  rr = fp_add(rr, b);
+  return fp_eq(l, rr);
+}
+
+/* bytes_to_g1 (without the subgroup check): 128 bytes at data -> projective
+   point at r.  Returns 1, or 0 on a bad field element / point not on curve. */
+fun 1 g1_decode(1 data, 1 r) {
+  var 1 okx = fp_decode64(data, G1X(r));
+  if okx == 0 { return 0; }
+  var 1 oky = fp_decode64(data + 64, G1Y(r));
+  if oky == 0 { return 0; }
+  var FP x = lds FP G1X(r);
+  var FP y = lds FP G1Y(r);
+  var 1 xz = fp_is_zero(x);
+  var 1 yz = fp_is_zero(y);
+  if (xz == 1) && (yz == 1) {
+    st G1Z(r), FP_ZERO;
+    return 1;
+  }
+  st G1Z(r), FP_ONE_MONT;
+  return g1_on_curve(x, y);
+}
+
+/* g1_to_bytes: 128 bytes (64-byte big-endian x, y; infinity -> zeros) */
+fun 1 g1_encode(1 p, 1 out) {
+  var mark = heap_mark();
+  var aff = alloc(96);
+  g1_normalize(aff, p);
+  fp_encode64(aff, out);
+  fp_encode64(aff + 48, out + 64);
+  heap_release(mark);
+  return 0;
+}
+
+/* is_inf(multiply(p, curve_order)) */
+fun 1 g1_subgroup_check(1 p) {
+  var mark = heap_mark();
+  var t = alloc(G1_BYTES);
+  g1_mul(t, p, C_ORDER, 4);
+  var 1 inf = g1_is_inf(t);
+  heap_release(mark);
+  return inf;
+}
+
+/* ======================================================================
+   G2 (Fp2): same formulas on pointers
+   ====================================================================== */
+
+#define G2X(p) (p)
+#define G2Y(p) ((p) + 96)
+#define G2Z(p) ((p) + 192)
+
+fun 1 g2_set_inf(1 r) {
+  fp2_set_one(G2X(r));
+  fp2_set_one(G2Y(r));
+  fp2_set_zero(G2Z(r));
+  return 0;
+}
+
+fun 1 g2_is_inf(1 p) {
+  return fp2_is_zero(G2Z(p));
+}
+
+fun 1 g2_copy(1 r, 1 p) {
+  memcpy(r, p, G2_BYTES);
+  return 0;
+}
+
+fun 1 g2_neg(1 r, 1 p) {
+  if r != p {
+    fp2_copy(G2X(r), G2X(p));
+    fp2_copy(G2Z(r), G2Z(p));
+  }
+  fp2_neg(G2Y(r), G2Y(p));
+  return 0;
+}
+
+fun 1 g2_double(1 r, 1 p) {
+  var mark = heap_mark();
+  var t = alloc(FP2_BYTES * 8);
+  var w = t;
+  var s = t + 96;
+  var b = t + 192;
+  var h = t + 288;
+  var s2 = t + 384;
+  var u = t + 480;
+  var nx = t + 576;
+  var ny = t + 672;
+  var x = G2X(p);
+  var y = G2Y(p);
+  var z = G2Z(p);
+  fp2_sqr(w, x);
+  fp2_add(u, w, w);
+  fp2_add(w, u, w);                 /* W = 3 x^2 */
+  fp2_mul(s, y, z);                 /* S = y z */
+  fp2_mul(b, x, y);
+  fp2_mul(b, b, s);                 /* B = x y S */
+  fp2_add(u, b, b);
+  fp2_add(u, u, u);                 /* 4B */
+  fp2_add(h, u, u);                 /* 8B */
+  fp2_sqr(nx, w);
+  fp2_sub(h, nx, h);                /* H = W^2 - 8B */
+  fp2_sqr(s2, s);                   /* S^2 */
+  fp2_mul(nx, h, s);
+  fp2_add(nx, nx, nx);              /* 2 H S */
+  fp2_sub(u, u, h);                 /* 4B - H */
+  fp2_mul(ny, w, u);                /* W (4B - H) */
+  fp2_sqr(u, y);
+  fp2_mul(u, u, s2);
+  fp2_add(u, u, u);
+  fp2_add(u, u, u);
+  fp2_add(u, u, u);                 /* 8 y^2 S^2 */
+  fp2_sub(ny, ny, u);
+  fp2_mul(u, s, s2);
+  fp2_add(u, u, u);
+  fp2_add(u, u, u);
+  fp2_add(u, u, u);                 /* 8 S^3 */
+  fp2_copy(G2X(r), nx);
+  fp2_copy(G2Y(r), ny);
+  fp2_copy(G2Z(r), u);
+  heap_release(mark);
+  return 0;
+}
+
+fun 1 g2_add(1 r, 1 p1, 1 p2) {
+  var 1 i1 = g2_is_inf(p1);
+  if i1 == 1 {
+    g2_copy(r, p2);
+    return 0;
+  }
+  var 1 i2 = g2_is_inf(p2);
+  if i2 == 1 {
+    g2_copy(r, p1);
+    return 0;
+  }
+  var mark = heap_mark();
+  var t = alloc(FP2_BYTES * 12);
+  var u1 = t;
+  var u2 = t + 96;
+  var v1 = t + 192;
+  var v2 = t + 288;
+  var u = t + 384;
+  var v = t + 480;
+  var vv = t + 576;
+  var vvv2 = t + 672;
+  var v3 = t + 768;
+  var w = t + 864;
+  var a = t + 960;
+  var q = t + 1056;
+  fp2_mul(u1, G2Y(p2), G2Z(p1));
+  fp2_mul(u2, G2Y(p1), G2Z(p2));
+  fp2_mul(v1, G2X(p2), G2Z(p1));
+  fp2_mul(v2, G2X(p1), G2Z(p2));
+  var 1 veq = fp2_eq(v1, v2);
+  if veq == 1 {
+    var 1 ueq = fp2_eq(u1, u2);
+    heap_release(mark);
+    if ueq == 1 {
+      g2_double(r, p1);
+      return 0;
+    }
+    g2_set_inf(r);
+    return 0;
+  }
+  fp2_sub(u, u1, u2);
+  fp2_sub(v, v1, v2);
+  fp2_sqr(vv, v);
+  fp2_mul(vvv2, vv, v2);
+  fp2_mul(v3, v, vv);
+  fp2_mul(w, G2Z(p1), G2Z(p2));
+  fp2_sqr(a, u);
+  fp2_mul(a, a, w);
+  fp2_sub(a, a, v3);
+  fp2_add(q, vvv2, vvv2);
+  fp2_sub(a, a, q);                 /* A */
+  fp2_mul(q, v, a);                 /* new X */
+  fp2_sub(u1, vvv2, a);
+  fp2_mul(u1, u, u1);
+  fp2_mul(u2, v3, u2);
+  fp2_sub(u1, u1, u2);              /* new Y */
+  fp2_mul(w, v3, w);                /* new Z */
+  fp2_copy(G2X(r), q);
+  fp2_copy(G2Y(r), u1);
+  fp2_copy(G2Z(r), w);
+  heap_release(mark);
+  return 0;
+}
+
+fun 1 g2_mul(1 r, 1 p, 1 kptr, 1 n) {
+  var mark = heap_mark();
+  var acc = alloc(G2_BYTES);
+  g2_set_inf(acc);
+  var i = n * 64;
+  var started = 0;
+  while i >+ 0 {
+    i = i - 1;
+    if started == 1 {
+      g2_double(acc, acc);
+    }
+    var bit = ((lds 1 (kptr + (i >>> 6) * 8)) >>> (i & 63)) & 1;
+    if bit == 1 {
+      g2_add(acc, acc, p);
+      started = 1;
+    }
+  }
+  g2_copy(r, acc);
+  heap_release(mark);
+  return 0;
+}
+
+/* Affine (X / Z, Y / Z) as two Fp2 at r (192 bytes); infinity -> zeros.
+   Returns 1 if not infinity. */
+fun 1 g2_normalize(1 r, 1 p) {
+  var mark = heap_mark();
+  var zi = alloc(FP2_BYTES);
+  var 1 inf = g2_is_inf(p);
+  if inf == 1 {
+    memzero(r, 192);
+    heap_release(mark);
+    return 0;
+  }
+  fp2_inv(zi, G2Z(p));
+  fp2_mul(r, G2X(p), zi);
+  fp2_mul(r + 96, G2Y(p), zi);
+  heap_release(mark);
+  return 1;
+}
+
+/* affine (x, y) on the twist: y^2 == x^3 + (4 + 4u) */
+fun 1 g2_on_curve(1 x, 1 y) {
+  var mark = heap_mark();
+  var l = alloc(FP2_BYTES);
+  var rr = alloc(FP2_BYTES);
+  fp2_sqr(l, y);
+  fp2_sqr(rr, x);
+  fp2_mul(rr, rr, x);
+  fp2_add(rr, rr, C_B2);
+  var 1 e = fp2_eq(l, rr);
+  heap_release(mark);
+  return e;
+}
+
+/* bytes_to_g2 (without the subgroup check): 256 bytes -> projective point */
+fun 1 g2_decode(1 data, 1 r) {
+  var 1 ok = fp_decode64(data, G2X(r));
+  if ok == 0 { return 0; }
+  ok = fp_decode64(data + 64, G2X(r) + 48);
+  if ok == 0 { return 0; }
+  ok = fp_decode64(data + 128, G2Y(r));
+  if ok == 0 { return 0; }
+  ok = fp_decode64(data + 192, G2Y(r) + 48);
+  if ok == 0 { return 0; }
+  var 1 xz = fp2_is_zero(G2X(r));
+  var 1 yz = fp2_is_zero(G2Y(r));
+  if (xz == 1) && (yz == 1) {
+    fp2_set_zero(G2Z(r));
+    return 1;
+  }
+  fp2_set_one(G2Z(r));
+  return g2_on_curve(G2X(r), G2Y(r));
+}
+
+/* g2_to_bytes: 256 bytes (x.c0, x.c1, y.c0, y.c1 as 64-byte big-endian) */
+fun 1 g2_encode(1 p, 1 out) {
+  var mark = heap_mark();
+  var aff = alloc(192);
+  g2_normalize(aff, p);
+  fp_encode64(aff, out);
+  fp_encode64(aff + 48, out + 64);
+  fp_encode64(aff + 96, out + 128);
+  fp_encode64(aff + 144, out + 192);
+  heap_release(mark);
+  return 0;
+}
+
+fun 1 g2_subgroup_check(1 p) {
+  var mark = heap_mark();
+  var t = alloc(G2_BYTES);
+  g2_mul(t, p, C_ORDER, 4);
+  var 1 inf = g2_is_inf(t);
+  heap_release(mark);
+  return inf;
+}
+
+/* ======================================================================
+   Pairing (see the header)
+   ====================================================================== */
+
+/* Jacobian doubling of R (X, Y, Z Fp2 at rp, in place) on the twist with
+   the line coefficients (c0, c1, c2) at co (3 Fp2): eprint 2010/354 Alg. 26. */
+fun 1 pair_doubling_step(1 rp, 1 co) {
+  var mark = heap_mark();
+  var t = alloc(FP2_BYTES * 9);
+  var tmp0 = t;
+  var tmp1 = t + 96;
+  var tmp2 = t + 192;
+  var tmp3 = t + 288;
+  var tmp4 = t + 384;
+  var tmp5 = t + 480;
+  var tmp6 = t + 576;
+  var zsq = t + 672;
+  var nx = t + 768;
+  var rx = rp;
+  var ry = rp + 96;
+  var rz = rp + 192;
+  fp2_sqr(tmp0, rx);
+  fp2_sqr(tmp1, ry);
+  fp2_sqr(tmp2, tmp1);
+  fp2_add(tmp3, tmp1, rx);
+  fp2_sqr(tmp3, tmp3);
+  fp2_sub(tmp3, tmp3, tmp0);
+  fp2_sub(tmp3, tmp3, tmp2);
+  fp2_add(tmp3, tmp3, tmp3);               /* 4 X Y^2 */
+  fp2_add(tmp4, tmp0, tmp0);
+  fp2_add(tmp4, tmp4, tmp0);               /* 3 X^2 */
+  fp2_add(tmp6, rx, tmp4);
+  fp2_sqr(tmp5, tmp4);
+  fp2_sqr(zsq, rz);
+  fp2_sub(nx, tmp5, tmp3);
+  fp2_sub(nx, nx, tmp3);                   /* X3 */
+  fp2_add(rz, rz, ry);
+  fp2_sqr(rz, rz);
+  fp2_sub(rz, rz, tmp1);
+  fp2_sub(rz, rz, zsq);                    /* Z3 = 2 Y Z */
+  fp2_sub(ry, tmp3, nx);
+  fp2_mul(ry, ry, tmp4);
+  fp2_add(tmp2, tmp2, tmp2);
+  fp2_add(tmp2, tmp2, tmp2);
+  fp2_add(tmp2, tmp2, tmp2);
+  fp2_sub(ry, ry, tmp2);                   /* Y3 */
+  fp2_copy(rx, nx);
+  fp2_mul(tmp3, tmp4, zsq);
+  fp2_add(tmp3, tmp3, tmp3);
+  fp2_neg(co + 96, tmp3);                  /* c1 = -6 X^2 Z^2 */
+  fp2_sqr(tmp6, tmp6);
+  fp2_sub(tmp6, tmp6, tmp0);
+  fp2_sub(tmp6, tmp6, tmp5);
+  fp2_add(tmp1, tmp1, tmp1);
+  fp2_add(tmp1, tmp1, tmp1);
+  fp2_sub(co + 192, tmp6, tmp1);           /* c2 = 6 X^3 - 4 Y^2 */
+  fp2_mul(tmp0, rz, zsq);
+  fp2_add(co, tmp0, tmp0);                 /* c0 = 2 Z3 Z^2 */
+  heap_release(mark);
+  return 0;
+}
+
+/* Jacobian mixed addition R + Q (Q affine Fp2 x, y at qx, qy), in place,
+   with the line coefficients at co: eprint 2010/354 Alg. 27. */
+fun 1 pair_addition_step(1 rp, 1 qx, 1 qy, 1 co) {
+  var mark = heap_mark();
+  var t = alloc(FP2_BYTES * 12);
+  var zsq = t;
+  var ysq = t + 96;
+  var t0 = t + 192;
+  var t1 = t + 288;
+  var t2 = t + 384;
+  var t3 = t + 480;
+  var t4 = t + 576;
+  var t5 = t + 672;
+  var t6 = t + 768;
+  var t7 = t + 864;
+  var t9 = t + 960;
+  var t10 = t + 1056;
+  var rx = rp;
+  var ry = rp + 96;
+  var rz = rp + 192;
+  fp2_sqr(zsq, rz);
+  fp2_sqr(ysq, qy);
+  fp2_mul(t0, zsq, qx);
+  fp2_add(t1, qy, rz);
+  fp2_sqr(t1, t1);
+  fp2_sub(t1, t1, ysq);
+  fp2_sub(t1, t1, zsq);
+  fp2_mul(t1, t1, zsq);
+  fp2_sub(t2, t0, rx);
+  fp2_sqr(t3, t2);
+  fp2_add(t4, t3, t3);
+  fp2_add(t4, t4, t4);
+  fp2_mul(t5, t4, t2);
+  fp2_sub(t6, t1, ry);
+  fp2_sub(t6, t6, ry);
+  fp2_mul(t9, t6, qx);
+  fp2_mul(t7, t4, rx);
+  fp2_sqr(t0, t6);
+  fp2_sub(t0, t0, t5);
+  fp2_sub(t0, t0, t7);
+  fp2_sub(t0, t0, t7);                     /* X3 (in t0) */
+  fp2_add(rz, rz, t2);
+  fp2_sqr(rz, rz);
+  fp2_sub(rz, rz, zsq);
+  fp2_sub(rz, rz, t3);                     /* Z3 */
+  fp2_add(t10, qy, rz);
+  fp2_sub(t7, t7, t0);
+  fp2_mul(t7, t7, t6);                     /* t8 */
+  fp2_mul(t1, ry, t5);
+  fp2_add(t1, t1, t1);
+  fp2_sub(ry, t7, t1);                     /* Y3 */
+  fp2_copy(rx, t0);
+  fp2_sqr(t10, t10);
+  fp2_sub(t10, t10, ysq);
+  fp2_sqr(t1, rz);
+  fp2_sub(t10, t10, t1);
+  fp2_add(t9, t9, t9);
+  fp2_sub(co + 192, t9, t10);              /* c2 */
+  fp2_add(co, rz, rz);                     /* c0 = 2 Z3 */
+  fp2_neg(t6, t6);
+  fp2_add(co + 96, t6, t6);                /* c1 */
+  heap_release(mark);
+  return 0;
+}
+
+/* f *= line: c2 + (c1 px) w^2 + (c0 py) w^3 (Fp6 slots a0.c0, a0.c1, a1.c1) */
+fun 1 pair_ell(1 f, 1 co, FP px, FP py) {
+  var mark = heap_mark();
+  var line = alloc(FP12_BYTES);
+  memzero(line, FP12_BYTES);
+  fp2_copy(line, co + 192);
+  fp2_scale(line + 96, co + 96, px);
+  fp2_scale(line + 384, co, py);
+  fp12_mul(f, f, line);
+  heap_release(mark);
+  return 0;
+}
+
+/* Miller loop for affine P = (px, py) in G1 and affine Q (x at q, y at
+   q + 96) in G2, neither infinity: writes the raw (pre-final-exponentiation)
+   value to f (Fp12). */
+fun 1 pair_miller_loop(1 f, FP px, FP py, 1 q) {
+  var mark = heap_mark();
+  var rp = alloc(G2_BYTES);
+  var co = alloc(FP2_BYTES * 3);
+  fp2_copy(rp, q);
+  fp2_copy(rp + 96, q + 96);
+  fp2_set_one(rp + 192);
+  fp12_set_one(f);
+  var x = lds 1 C_BLS_X;               /* bit 63 set */
+  var i = 63;
+  while i >+ 0 {
+    i = i - 1;
+    fp12_mul(f, f, f);
+    pair_doubling_step(rp, co);
+    pair_ell(f, co, px, py);
+    if ((x >>> i) & 1) == 1 {
+      pair_addition_step(rp, q, q + 96, co);
+      pair_ell(f, co, px, py);
+    }
+  }
+  fp12_conj(f, f);                     /* x < 0 */
+  heap_release(mark);
+  return 0;
+}
+
+/* acc *= raw pairing of the projective points p (G1) and q (G2); infinities
+   contribute one (Lean pairingRaw / pairing). */
+fun 1 pair_accumulate(1 acc, 1 p, 1 q) {
+  var 1 ip = g1_is_inf(p);
+  if ip == 1 { return 0; }
+  var 1 iq = g2_is_inf(q);
+  if iq == 1 { return 0; }
+  var mark = heap_mark();
+  var pa = alloc(96);
+  var qa = alloc(192);
+  var f = alloc(FP12_BYTES);
+  g1_normalize(pa, p);
+  g2_normalize(qa, q);
+  var FP px = lds FP pa;
+  var FP py = lds FP (pa + 48);
+  pair_miller_loop(f, px, py, qa);
+  fp12_mul(acc, acc, f);
+  heap_release(mark);
+  return 0;
+}
+
+/* ======================================================================
+   Map to curve (PrecompilesBlsMap.lean / py_ecc optimized_swu)
+   ====================================================================== */
+
+/* sqrt_division_FQ(u, v): <is_valid_root, result> */
+fun {1,1,1,1,1,1,1} swu_sqrt_division_fp(FP u, FP v) {
+  var FP temp = fp_mul(u, v);
+  var FP v2 = fp_sqr(v);
+  var FP t = fp_mul(temp, v2);
+  t = fp_pow(t, C_P_MINUS_3_DIV_4, 6);
+  var FP result = fp_mul(temp, t);
+  var FP chk = fp_sqr(result);
+  chk = fp_mul(chk, v);
+  chk = fp_sub(chk, u);
+  var 1 ok = fp_is_zero(chk);
+  return <ok, result.0, result.1, result.2, result.3, result.4, result.5>;
+}
+
+/* optimized_swu_G1(t) -> projective (numerator, y, denominator) at r (144 bytes) */
+fun 1 swu_g1(1 r, FP t) {
+  var FP a = lds FP C_ISO_11_A;
+  var FP b = lds FP C_ISO_11_B;
+  var FP zc = lds FP C_ISO_11_Z;
+  var FP t2 = fp_sqr(t);
+  var FP zt2 = fp_mul(zc, t2);
+  var FP temp = fp_sqr(zt2);
+  temp = fp_add(zt2, temp);
+  var FP den = fp_mul(a, temp);
+  den = fp_neg(den);
+  var FP one = FP_ONE_MONT;
+  temp = fp_add(temp, one);
+  var FP num = fp_mul(b, temp);
+  var 1 dz = fp_is_zero(den);
+  if dz == 1 {
+    den = fp_mul(zc, a);
+  }
+  var FP den2 = fp_sqr(den);
+  var FP v = fp_mul(den2, den);
+  var FP u = fp_sqr(num);
+  u = fp_mul(u, num);
+  var FP w = fp_mul(a, num);
+  w = fp_mul(w, den2);
+  u = fp_add(u, w);
+  w = fp_mul(b, v);
+  u = fp_add(u, w);
+  var {1,1,1,1,1,1,1} sq = swu_sqrt_division_fp(u, v);
+  var FP y = <sq.1, sq.2, sq.3, sq.4, sq.5, sq.6>;
+  if sq.0 == 0 {
+    var FP t3 = fp_mul(t2, t);
+    y = fp_mul(y, t3);
+    var FP c = lds FP C_SQRT_MINUS_11_CUBED;
+    y = fp_mul(y, c);
+    num = fp_mul(num, zt2);
+  }
+  var 1 st_ = fp_sgn0(t);
+  var 1 sy = fp_sgn0(y);
+  if st_ != sy {
+    y = fp_neg(y);
+  }
+  y = fp_mul(y, den);
+  st r, num;
+  st r + 48, y;
+  st r + 96, den;
+  return 0;
+}
+
+/* Horner: v = k[n-1]; for j = 0..n-2: v = v x + z^(j+1) k[n-2-j]
+   (k: n Fp coefficients at kp; zp: z^1..z^15 at zp) */
+fun FP iso_horner_fp(1 kp, 1 n, FP x, 1 zp) {
+  var FP v = lds FP (kp + (n - 1) * 48);
+  var j = 0;
+  while j <+ n - 1 {
+    v = fp_mul(v, x);
+    var FP zk = lds FP (zp + j * 48);
+    var FP k = lds FP (kp + (n - 2 - j) * 48);
+    zk = fp_mul(zk, k);
+    v = fp_add(v, zk);
+    j = j + 1;
+  }
+  return v;
+}
+
+/* iso_map_G1(x, y, z) at p (projective 144 bytes) -> projective at r */
+fun 1 iso_map_g1(1 r, 1 p) {
+  var mark = heap_mark();
+  var zp = alloc(48 * 15);
+  var FP x = lds FP p;
+  var FP y = lds FP (p + 48);
+  var FP z = lds FP (p + 96);
+  var FP zk = z;
+  st zp, zk;
+  var j = 1;
+  while j <+ 15 {
+    zk = fp_mul(zk, z);
+    st zp + j * 48, zk;
+    j = j + 1;
+  }
+  var FP m0 = iso_horner_fp(C_ISO11_K0, C_ISO11_N0, x, zp);
+  var FP m1 = iso_horner_fp(C_ISO11_K1, C_ISO11_N1, x, zp);
+  var FP m2 = iso_horner_fp(C_ISO11_K2, C_ISO11_N2, x, zp);
+  var FP m3 = iso_horner_fp(C_ISO11_K3, C_ISO11_N3, x, zp);
+  m1 = fp_mul(m1, z);                /* x-denominator is one order lower */
+  m2 = fp_mul(m2, y);
+  m3 = fp_mul(m3, z);
+  var FP rx = fp_mul(m0, m3);
+  var FP ry = fp_mul(m1, m2);
+  var FP rz = fp_mul(m1, m3);
+  st r, rx;
+  st r + 48, ry;
+  st r + 96, rz;
+  heap_release(mark);
+  return 0;
+}
+
+/* map_to_curve_G1 + clear_cofactor_G1: field element (Montgomery) t -> projective r */
+fun 1 map_fp_to_g1(1 r, FP t) {
+  var mark = heap_mark();
+  var p = alloc(G1_BYTES);
+  swu_g1(p, t);
+  iso_map_g1(p, p);
+  g1_mul(r, p, C_H_EFF_G1, 1);
+  heap_release(mark);
+  return 0;
+}
+
+/* sqrt_division_FQ2(u, v): result at r, returns is_valid_root */
+fun 1 swu_sqrt_division_fp2(1 r, 1 u, 1 v) {
+  var mark = heap_mark();
+  var t = alloc(FP2_BYTES * 6);
+  var v7 = t;
+  var temp1 = t + 96;
+  var temp2 = t + 192;
+  var gamma = t + 288;
+  var cand = t + 384;
+  var chk = t + 480;
+  fp2_copy(v7, v);
+  var i = 0;
+  while i <+ 6 {
+    fp2_mul(v7, v7, v);
+    i = i + 1;
+  }
+  fp2_mul(temp1, u, v7);                 /* u v^7 */
+  fp2_mul(temp2, v7, v);
+  fp2_mul(temp2, temp1, temp2);          /* u v^15 */
+  fp2_pow(gamma, temp2, C_P_MINUS_9_DIV_16, 12);
+  fp2_mul(gamma, gamma, temp1);
+  var valid = 0;
+  fp2_copy(r, gamma);
+  i = 0;
+  while i <+ 4 {
+    fp2_mul(cand, C_ROOTS8 + i * 96, gamma);
+    fp2_sqr(chk, cand);
+    fp2_mul(chk, chk, v);
+    fp2_sub(chk, chk, u);
+    var 1 z = fp2_is_zero(chk);
+    if (z == 1) && (valid == 0) {
+      valid = 1;
+      fp2_copy(r, cand);
+    }
+    i = i + 1;
+  }
+  heap_release(mark);
+  return valid;
+}
+
+/* optimized_swu_G2(t) -> projective (numerator, y, denominator) at r (288 bytes) */
+fun 1 swu_g2(1 r, 1 t) {
+  var mark = heap_mark();
+  var s = alloc(FP2_BYTES * 11);
+  var t2 = s;
+  var zt2 = s + 96;
+  var temp = s + 192;
+  var den = s + 288;
+  var num = s + 384;
+  var v = s + 480;
+  var u = s + 576;
+  var y = s + 672;
+  var cand = s + 768;
+  var w = s + 864;
+  var u1 = s + 960;
+  fp2_sqr(t2, t);
+  fp2_mul(zt2, C_ISO_3_Z, t2);
+  fp2_sqr(temp, zt2);
+  fp2_add(temp, zt2, temp);
+  fp2_mul(den, C_ISO_3_A, temp);
+  fp2_neg(den, den);
+  fp2_set_one(w);
+  fp2_add(temp, temp, w);
+  fp2_mul(num, C_ISO_3_B, temp);
+  var 1 dz = fp2_is_zero(den);
+  if dz == 1 {
+    fp2_mul(den, C_ISO_3_Z, C_ISO_3_A);
+  }
+  fp2_sqr(w, den);
+  fp2_mul(v, w, den);                    /* v = D^3 */
+  fp2_mul(u, C_ISO_3_A, num);
+  fp2_mul(u, u, w);                      /* A N D^2 */
+  fp2_sqr(w, num);
+  fp2_mul(w, w, num);
+  fp2_add(u, u, w);                      /* + N^3 */
+  fp2_mul(w, C_ISO_3_B, v);
+  fp2_add(u, u, w);                      /* + B D^3 */
+  var 1 success = swu_sqrt_division_fp2(y, u, v);
+  /* sqrt_candidate = y * t^3 ; u1 = zt2^3 u */
+  fp2_mul(cand, t2, t);
+  fp2_mul(cand, y, cand);
+  fp2_sqr(w, zt2);
+  fp2_mul(w, w, zt2);
+  fp2_mul(u1, w, u);
+  var success2 = 0;
+  var i = 0;
+  while i <+ 4 {
+    fp2_mul(w, C_ETAS + i * 96, cand);   /* eta * sqrt_candidate */
+    fp2_sqr(temp, w);
+    fp2_mul(temp, temp, v);
+    fp2_sub(temp, temp, u1);
+    var 1 z = fp2_is_zero(temp);
+    if (z == 1) && (success == 0) && (success2 == 0) {
+      fp2_copy(y, w);
+      success2 = 1;
+    }
+    i = i + 1;
+  }
+  if success == 0 {
+    fp2_mul(num, num, zt2);
+  }
+  var 1 st_ = fp2_sgn0(t);
+  var 1 sy = fp2_sgn0(y);
+  if st_ != sy {
+    fp2_neg(y, y);
+  }
+  fp2_mul(y, y, den);
+  fp2_copy(r, num);
+  fp2_copy(r + 96, y);
+  fp2_copy(r + 192, den);
+  heap_release(mark);
+  return 0;
+}
+
+/* Horner over Fp2: v = k[n-1]; for j: v = v x + z^(j+1) k[n-2-j] */
+fun 1 iso_horner_fp2(1 r, 1 kp, 1 n, 1 x, 1 zp) {
+  var mark = heap_mark();
+  var v = alloc(FP2_BYTES);
+  var w = alloc(FP2_BYTES);
+  fp2_copy(v, kp + (n - 1) * 96);
+  var j = 0;
+  while j <+ n - 1 {
+    fp2_mul(v, v, x);
+    fp2_mul(w, zp + j * 96, kp + (n - 2 - j) * 96);
+    fp2_add(v, v, w);
+    j = j + 1;
+  }
+  fp2_copy(r, v);
+  heap_release(mark);
+  return 0;
+}
+
+/* iso_map_G2 on the projective point at p -> r (288 bytes) */
+fun 1 iso_map_g2(1 r, 1 p) {
+  var mark = heap_mark();
+  var zp = alloc(FP2_BYTES * 3);
+  var m = alloc(FP2_BYTES * 4);
+  var x = p;
+  var y = p + 96;
+  var z = p + 192;
+  fp2_copy(zp, z);
+  fp2_sqr(zp + 96, z);
+  fp2_mul(zp + 192, zp + 96, z);
+  iso_horner_fp2(m, C_ISO3_K0, C_ISO3_N0, x, zp);
+  iso_horner_fp2(m + 96, C_ISO3_K1, C_ISO3_N1, x, zp);
+  iso_horner_fp2(m + 192, C_ISO3_K2, C_ISO3_N2, x, zp);
+  iso_horner_fp2(m + 288, C_ISO3_K3, C_ISO3_N3, x, zp);
+  fp2_mul(m + 192, m + 192, y);
+  fp2_mul(m + 288, m + 288, z);
+  fp2_mul(zp, m, m + 288);               /* x = xnum * yden */
+  fp2_mul(zp + 96, m + 96, m + 192);     /* y = xden * ynum */
+  fp2_mul(zp + 192, m + 96, m + 288);    /* z = xden * yden */
+  g2_copy(r, zp);
+  heap_release(mark);
+  return 0;
+}
+
+/* map_to_curve_G2 + clear_cofactor_G2: Fp2 (Montgomery) at t -> projective r */
+fun 1 map_fp2_to_g2(1 r, 1 t) {
+  var mark = heap_mark();
+  var p = alloc(G2_BYTES);
+  swu_g2(p, t);
+  iso_map_g2(p, p);
+  g2_mul(r, p, C_H_EFF_G2, 10);
+  heap_release(mark);
+  return 0;
+}
+
+/* ======================================================================
+   KZG (PrecompilesKzg.lean)
+   ====================================================================== */
+
+/* decompress_G1: 48 bytes at bs -> projective point at r; 1 ok, 0 error. */
+fun 1 kzg_decompress_g1(1 bs, 1 r) {
+  var top = ld8 bs;
+  var c_flag = (top >>> 7) & 1;
+  var b_flag = (top >>> 6) & 1;
+  var a_flag = (top >>> 5) & 1;
+  if c_flag != 1 { return 0; }
+  var mark = heap_mark();
+  var xb = alloc(48);
+  memcpy(xb, bs, 48);
+  st8 xb, top & 31;                       /* x = z mod 2^381 */
+  var FP xc = fp_from_be48(xb);
+  heap_release(mark);
+  if b_flag == 1 {
+    var 1 xz = fp_is_zero(xc);
+    if (xz == 0) || (a_flag == 1) { return 0; }
+    g1_set_inf(r);
+    return 1;
+  }
+  var 1 lt = fp_lt_raw(xc, FP_P_LIT);
+  if lt == 0 { return 0; }
+  var FP x = fp_to_mont(xc);
+  var FP rhs = fp_sqr(x);
+  rhs = fp_mul(rhs, x);
+  var FP b = lds FP C_B1;
+  rhs = fp_add(rhs, b);                   /* x^3 + 4 */
+  var FP y = fp_pow(rhs, C_P_PLUS_1_DIV_4, 6);
+  var FP chk = fp_sqr(y);
+  var 1 sq = fp_eq(chk, rhs);
+  if sq == 0 { return 0; }
+  var 1 hi = fp_is_high(y);
+  if hi != a_flag {
+    y = fp_neg(y);
+  }
+  st G1X(r), x;
+  st G1Y(r), y;
+  st G1Z(r), FP_ONE_MONT;
+  return 1;
+}
+
+/* validate_kzg_g1 + decompress: the exact infinity encoding is accepted;
+   otherwise decompress, reject infinity and non-subgroup points. */
+fun 1 kzg_load_g1(1 bs, 1 r) {
+  if (ld8 bs) == 192 {
+    var 1 z = is_zero_bytes(bs + 1, 47);
+    if z == 1 {
+      g1_set_inf(r);
+      return 1;
+    }
+  }
+  var 1 ok = kzg_decompress_g1(bs, r);
+  if ok == 0 { return 0; }
+  var 1 inf = g1_is_inf(r);
+  if inf == 1 { return 0; }
+  return g1_subgroup_check(r);
+}
+
+/* (BLS_MODULUS - v) mod BLS_MODULUS for the 32-byte big-endian v at p
+   (v < r checked by the caller); 4 little-endian limbs stored at out. */
+fun 1 kzg_neg_scalar(1 p, 1 out) {
+  var U256 v = u256_from_be(p, 32);
+  var U256 r = lds U256 C_ORDER;
+  var 1 z = u256_is_zero(v);
+  if z == 1 {
+    st out, U256_ZERO;
+    return 0;
+  }
+  var U256 d = u256_sub(r, v);
+  st out, d;
+  return 0;
+}
+
+/* verify_kzg_proof_impl on validated inputs: 1 iff
+   e(C - y G1, -G2) * e(proof, KZG_G2_1 - z G2) == 1. */
+fun 1 kzg_verify(1 commitment, 1 zb, 1 yb, 1 proof) {
+  var mark = heap_mark();
+  var k = alloc(32);
+  var g1 = alloc(G1_BYTES);
+  var g2 = alloc(G2_BYTES);
+  var setup = alloc(G2_BYTES);
+  var pmy = alloc(G1_BYTES);
+  var xmz = alloc(G2_BYTES);
+  var acc = alloc(FP12_BYTES);
+  /* X - z = KZG_G2_1 + (r - z) G2 */
+  fp2_copy(G2X(g2), C_G2X);
+  fp2_copy(G2Y(g2), C_G2Y);
+  fp2_set_one(G2Z(g2));
+  kzg_neg_scalar(zb, k);
+  g2_mul(xmz, g2, k, 4);
+  fp2_copy(G2X(setup), C_KZG_G2_1X);
+  fp2_copy(G2Y(setup), C_KZG_G2_1Y);
+  fp2_set_one(G2Z(setup));
+  g2_add(xmz, setup, xmz);
+  /* P - y = C + (r - y) G1 */
+  memcpy(G1X(g1), C_G1X, 48);
+  memcpy(G1Y(g1), C_G1Y, 48);
+  st G1Z(g1), FP_ONE_MONT;
+  kzg_neg_scalar(yb, k);
+  g1_mul(pmy, g1, k, 4);
+  g1_add(pmy, commitment, pmy);
+  /* -G2 */
+  g2_neg(g2, g2);
+  fp12_set_one(acc);
+  pair_accumulate(acc, pmy, g2);
+  pair_accumulate(acc, proof, xmz);
+  fp12_final_exp(acc, acc);
+  var 1 one = fp12_is_one(acc);
+  heap_release(mark);
+  return one;
+}
+
+/* ======================================================================
+   Precompile bodies (after the length check and the gas charge).
+   Each returns 0 on success (output written) or 1 for InvalidParameter /
+   KZGProofError.
+   ====================================================================== */
+
+fun 1 bls_lib_init() {
+  bls_consts_init();
+#ifdef ZISK_ACCEL
+  /* These arenas must be promoted before any caller takes a scratch mark;
+     heap_release restores the mark, so lazy initialization inside a group or
+     pairing operation would leave dangling accelerator pointers. */
+  fp_accel_init();
+  fp2_accel_init();
+  bls_g1_accel_init();
+#endif
+  return 0;
+}
+
+/* bls12_g1_add: 256 bytes -> 128 */
+fun 1 bls_g1_add_exec(1 data, 1 out) {
+  var mark = heap_mark();
+  var p1 = alloc(G1_BYTES);
+  var p2 = alloc(G1_BYTES);
+  var 1 ok = g1_decode(data, p1);
+  if ok == 1 {
+    ok = g1_decode(data + 128, p2);
+  }
+  if ok == 0 {
+    heap_release(mark);
+    return 1;
+  }
+  g1_add(p1, p1, p2);
+  g1_encode(p1, out);
+  heap_release(mark);
+  return 0;
+}
+
+/* bls12_g1_msm: k pairs of 160 bytes -> 128 */
+fun 1 bls_g1_msm_exec(1 data, 1 k, 1 out) {
+  var mark = heap_mark();
+  var acc = alloc(G1_BYTES);
+  var p = alloc(G1_BYTES);
+  var s = alloc(32);
+  var i = 0;
+  while i < k {
+    var d = data + i * 160;
+    var 1 ok = g1_decode(d, p);
+    if ok == 0 {
+      heap_release(mark);
+      return 1;
+    }
+    var 1 sg = g1_subgroup_check(p);
+    if sg == 0 {
+      heap_release(mark);
+      return 1;
+    }
+    var U256 m = u256_from_be(d + 128, 32);
+    st s, m;
+    g1_mul(p, p, s, 4);
+    if i == 0 {
+      g1_copy(acc, p);
+    } else {
+      g1_add(acc, acc, p);
+    }
+    i = i + 1;
+  }
+  g1_encode(acc, out);
+  heap_release(mark);
+  return 0;
+}
+
+/* bls12_g2_add: 512 bytes -> 256 */
+fun 1 bls_g2_add_exec(1 data, 1 out) {
+  var mark = heap_mark();
+  var p1 = alloc(G2_BYTES);
+  var p2 = alloc(G2_BYTES);
+  var 1 ok = g2_decode(data, p1);
+  if ok == 1 {
+    ok = g2_decode(data + 256, p2);
+  }
+  if ok == 0 {
+    heap_release(mark);
+    return 1;
+  }
+  g2_add(p1, p1, p2);
+  g2_encode(p1, out);
+  heap_release(mark);
+  return 0;
+}
+
+/* bls12_g2_msm: k pairs of 288 bytes -> 256 */
+fun 1 bls_g2_msm_exec(1 data, 1 k, 1 out) {
+  var mark = heap_mark();
+  var acc = alloc(G2_BYTES);
+  var p = alloc(G2_BYTES);
+  var s = alloc(32);
+  var i = 0;
+  while i < k {
+    var d = data + i * 288;
+    var 1 ok = g2_decode(d, p);
+    if ok == 0 {
+      heap_release(mark);
+      return 1;
+    }
+    var 1 sg = g2_subgroup_check(p);
+    if sg == 0 {
+      heap_release(mark);
+      return 1;
+    }
+    var U256 m = u256_from_be(d + 256, 32);
+    st s, m;
+    g2_mul(p, p, s, 4);
+    if i == 0 {
+      g2_copy(acc, p);
+    } else {
+      g2_add(acc, acc, p);
+    }
+    i = i + 1;
+  }
+  g2_encode(acc, out);
+  heap_release(mark);
+  return 0;
+}
+
+/* bls12_pairing: k pairs of 384 bytes -> 32 (0/1) */
+fun 1 bls_pairing_exec(1 data, 1 k, 1 out) {
+  var mark = heap_mark();
+  var p = alloc(G1_BYTES);
+  var q = alloc(G2_BYTES);
+  var acc = alloc(FP12_BYTES);
+  fp12_set_one(acc);
+  var i = 0;
+  while i < k {
+    var d = data + i * 384;
+    var 1 ok = g1_decode(d, p);
+    if ok == 0 {
+      heap_release(mark);
+      return 1;
+    }
+    var 1 sg = g1_subgroup_check(p);
+    if sg == 0 {
+      heap_release(mark);
+      return 1;
+    }
+    ok = g2_decode(d + 128, q);
+    if ok == 0 {
+      heap_release(mark);
+      return 1;
+    }
+    sg = g2_subgroup_check(q);
+    if sg == 0 {
+      heap_release(mark);
+      return 1;
+    }
+    pair_accumulate(acc, p, q);
+    i = i + 1;
+  }
+  fp12_final_exp(acc, acc);
+  var 1 one = fp12_is_one(acc);
+  memzero(out, 32);
+  st8 out + 31, one;
+  heap_release(mark);
+  return 0;
+}
+
+/* bls12_map_fp_to_g1: 64 bytes -> 128 */
+fun 1 bls_map_fp_to_g1_exec(1 data, 1 out) {
+  var mark = heap_mark();
+  var t = alloc(48);
+  var p = alloc(G1_BYTES);
+  var 1 ok = fp_decode64(data, t);
+  if ok == 0 {
+    heap_release(mark);
+    return 1;
+  }
+  var FP tv = lds FP t;
+  map_fp_to_g1(p, tv);
+  g1_encode(p, out);
+  heap_release(mark);
+  return 0;
+}
+
+/* bls12_map_fp2_to_g2: 128 bytes -> 256 */
+fun 1 bls_map_fp2_to_g2_exec(1 data, 1 out) {
+  var mark = heap_mark();
+  var t = alloc(FP2_BYTES);
+  var p = alloc(G2_BYTES);
+  var 1 ok = fp_decode64(data, t);
+  if ok == 1 {
+    ok = fp_decode64(data + 64, t + 48);
+  }
+  if ok == 0 {
+    heap_release(mark);
+    return 1;
+  }
+  map_fp2_to_g2(p, t);
+  g2_encode(p, out);
+  heap_release(mark);
+  return 0;
+}
+
+/* point_evaluation body: 192 bytes -> 64 (FIELD_ELEMENTS_PER_BLOB ||
+   BLS_MODULUS, both 32-byte big-endian); 1 on any KZGProofError. */
+fun 1 kzg_point_evaluation_exec(1 data, 1 out) {
+  var mark = heap_mark();
+  var h = alloc(32);
+  var c = alloc(G1_BYTES);
+  var pr = alloc(G1_BYTES);
+  /* kzg_commitment_to_versioned_hash(commitment) == versioned_hash */
+  sha256(data + 96, 48, h);
+  st8 h, 1;
+  var 1 heq = memeq(h, data, 32);
+  if heq == 0 {
+    heap_release(mark);
+    return 1;
+  }
+  var 1 ok = kzg_load_g1(data + 96, c);
+  if ok == 0 {
+    heap_release(mark);
+    return 1;
+  }
+  ok = kzg_load_g1(data + 144, pr);
+  if ok == 0 {
+    heap_release(mark);
+    return 1;
+  }
+  /* bytes_to_bls_field: z, y < BLS_MODULUS */
+  var U256 z = u256_from_be(data + 32, 32);
+  var U256 y = u256_from_be(data + 64, 32);
+  var U256 r = lds U256 C_ORDER;
+  var 1 zlt = u256_lt(z, r);
+  var 1 ylt = u256_lt(y, r);
+  if (zlt == 0) || (ylt == 0) {
+    heap_release(mark);
+    return 1;
+  }
+  var 1 v = kzg_verify(c, data + 32, data + 64, pr);
+  heap_release(mark);
+  if v == 0 {
+    return 1;
+  }
+  memzero(out, 64);
+  st8 out + 30, 16;                  /* 4096 */
+  u256_to_be32(r, out + 32);         /* BLS_MODULUS */
+  return 0;
+}

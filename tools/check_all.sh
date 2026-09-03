@@ -131,6 +131,8 @@ run_check "vector check_rlp" "$ROOT/tools/check_rlp.sh"
 run_check "vector check_mpt" "$ROOT/tools/check_mpt.sh"
 run_check "vector check_secp256k1" "$ROOT/tools/check_secp256k1.sh"
 run_check "vector check_p256" "$ROOT/tools/check_p256.sh"
+run_check "unit t_bls12381 (software/accelerated Spike differential)" \
+  "$ROOT/tools/check_bls12381.sh"
 
 # Run every converted EEST manifest, including sampled manifests such as
 # work/inputs-rand/manifest.tsv when they are present.  Relative input paths
