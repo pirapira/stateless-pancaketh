@@ -95,7 +95,7 @@ ZISK_ACCEL` gives a differential test: both builds must produce identical bytes 
    `ec_add_affine`/`ec_double` via 0x803/0x804 with a wrapper for infinity and p1 = ±p2. Expected
    ~14M → well under 0.5M instr per recovery, i.e. ~4× fewer steps per typical block.
 4. alt_bn128: ECADD/ECMUL on 0x806/0x807; pairing with Fp via arith256_mod and Fp2 via 0x808–0x80a
-   (Fp6/Fp12 towers in Pancake on top). Supersedes the software optimisation in #29.
+   (Fp6/Fp12 towers in Pancake on top). Replaces the software optimisation (#29, closed).
 5. BLS12-381 (#27) and KZG (#28): build the library on 0x80b–0x810 from the start.
 6. blake2f on 0x819 (12 rounds × 1 step).
 7. Tooling: `tools/check_all.sh` and `tools/bench.py` build and run both variants; add a ziskemu parity
@@ -116,7 +116,7 @@ ZISK_ACCEL` gives a differential test: both builds must produce identical bytes 
   check_all.sh, byte-helper/htab speedups, merge sort, scratch-buffer init, docs, eest-run histogram/filters,
   bench --profile) and landed alt_bn128 from the interrupted agents' branch: 30/30 baseline fixtures,
   185/200 random (remaining 15 = BLS12-381/KZG, fail 1/99). Unmerged partial work (BLS12-381 library,
-  sha256 rewrite) is kept on branch `wip/agents-partial`; issues #27–#36 describe how to finish it.
+  sha256 rewrite) is kept on branch `wip/agents-partial`; issues #27–#36 describe how to finish it (#29–#32, software crypto speedups, were closed on 2026-09-03 as superseded by M6).
 
 ## Workflow
 Mechanical, well-specified tasks are filed as GitHub issues with the `mechanical` label
