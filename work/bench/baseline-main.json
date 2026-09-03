@@ -1,0 +1,224 @@
+{
+  "fixtures": [
+    {
+      "label": "00000_test_account_write_authority_is_recipient_fork_Amsterdam-blockchain_test_from_state_test-non-zer",
+      "ok": true,
+      "spike_instr": 21126196,
+      "zisk_cost": 2479141477,
+      "zisk_steps": 21129804
+    },
+    {
+      "label": "00001_test_account_write_authority_is_recipient_fork_Amsterdam-blockchain_test_from_state_test-zero_va",
+      "ok": true,
+      "spike_instr": 21140637,
+      "zisk_cost": 2480094256,
+      "zisk_steps": 21144245
+    },
+    {
+      "label": "00002_test_account_write_authority_is_sender_fork_Amsterdam-blockchain_test_from_state_test__b0",
+      "ok": true,
+      "spike_instr": 21100020,
+      "zisk_cost": 2475833871,
+      "zisk_steps": 21103628
+    },
+    {
+      "label": "00003_test_account_write_first_write_of_authority_fork_Amsterdam-blockchain_test_from_state_test-autho",
+      "ok": true,
+      "spike_instr": 20921824,
+      "zisk_cost": 2457251811,
+      "zisk_steps": 20925432
+    },
+    {
+      "label": "00004_test_account_write_first_write_of_authority_fork_Amsterdam-blockchain_test_from_state_test-autho",
+      "ok": true,
+      "spike_instr": 20725888,
+      "zisk_cost": 2437036910,
+      "zisk_steps": 20729496
+    },
+    {
+      "label": "00005_test_auth_base_net_new_only_fork_Amsterdam-blockchain_test_from_state_test-scenario_multiple_set",
+      "ok": true,
+      "spike_instr": 28422083,
+      "zisk_cost": 3232404454,
+      "zisk_steps": 28425691
+    },
+    {
+      "label": "00006_test_auth_base_net_new_only_fork_Amsterdam-blockchain_test_from_state_test-scenario_pre_tx_deleg",
+      "ok": true,
+      "spike_instr": 28804557,
+      "zisk_cost": 3272335211,
+      "zisk_steps": 28808165
+    },
+    {
+      "label": "00007_test_auth_base_net_new_only_fork_Amsterdam-blockchain_test_from_state_test-scenario_pre_tx_deleg",
+      "ok": true,
+      "spike_instr": 20734939,
+      "zisk_cost": 2438052602,
+      "zisk_steps": 20738547
+    },
+    {
+      "label": "00008_test_auth_base_net_new_only_fork_Amsterdam-blockchain_test_from_state_test-scenario_set_clear_cy",
+      "ok": true,
+      "spike_instr": 44742566,
+      "zisk_cost": 4919309667,
+      "zisk_steps": 44746174
+    },
+    {
+      "label": "00009_test_multi_authorization_intra_tx_state_fork_Amsterdam-blockchain_test_from_state_test-scenario_",
+      "ok": true,
+      "spike_instr": 28521733,
+      "zisk_cost": 3242791328,
+      "zisk_steps": 28525341
+    },
+    {
+      "label": "00010_test_multi_authorization_intra_tx_state_fork_Amsterdam-blockchain_test_from_state_test-scenario_",
+      "ok": true,
+      "spike_instr": 29012270,
+      "zisk_cost": 3294389145,
+      "zisk_steps": 29015878
+    },
+    {
+      "label": "00011_test_multi_authorization_intra_tx_state_fork_Amsterdam-blockchain_test_from_state_test-scenario_",
+      "ok": true,
+      "spike_instr": 28695572,
+      "zisk_cost": 3261216375,
+      "zisk_steps": 28699180
+    },
+    {
+      "label": "00012_test_multi_authorization_intra_tx_state_fork_Amsterdam-blockchain_test_from_state_test-scenario_",
+      "ok": true,
+      "spike_instr": 28422083,
+      "zisk_cost": 3232404454,
+      "zisk_steps": 28425691
+    },
+    {
+      "label": "00013_test_single_authorization_charges_fork_Amsterdam-blockchain_test_from_state_test-clears_delegati",
+      "ok": true,
+      "spike_instr": 20409275,
+      "zisk_cost": 2403827860,
+      "zisk_steps": 20412883
+    },
+    {
+      "label": "00014_test_single_authorization_charges_fork_Amsterdam-blockchain_test_from_state_test-creates_account",
+      "ok": true,
+      "spike_instr": 20725888,
+      "zisk_cost": 2437036910,
+      "zisk_steps": 20729496
+    },
+    {
+      "label": "00015_test_single_authorization_charges_fork_Amsterdam-blockchain_test_from_state_test-invalid__b0",
+      "ok": true,
+      "spike_instr": 20338175,
+      "zisk_cost": 2396501203,
+      "zisk_steps": 20341783
+    },
+    {
+      "label": "00016_test_single_authorization_charges_fork_Amsterdam-blockchain_test_from_state_test-sets_different_",
+      "ok": true,
+      "spike_instr": 20900950,
+      "zisk_cost": 2455081316,
+      "zisk_steps": 20904558
+    },
+    {
+      "label": "00017_test_single_authorization_charges_fork_Amsterdam-blockchain_test_from_state_test-sets_new_delega",
+      "ok": true,
+      "spike_instr": 20921824,
+      "zisk_cost": 2457251811,
+      "zisk_steps": 20925432
+    },
+    {
+      "label": "00018_test_single_authorization_charges_fork_Amsterdam-blockchain_test_from_state_test-sets_same_deleg",
+      "ok": true,
+      "spike_instr": 20947104,
+      "zisk_cost": 2460026393,
+      "zisk_steps": 20950712
+    },
+    {
+      "label": "00019_test_auth_state_charges_survive_dispatch_halt_with_reservoir_fork_Amsterdam-blockchain_test_from",
+      "ok": true,
+      "spike_instr": 21141843,
+      "zisk_cost": 2480457525,
+      "zisk_steps": 21145451
+    },
+    {
+      "label": "00020_test_auth_state_charges_survive_dispatch_revert_fork_Amsterdam-blockchain_test_from_state_test-c",
+      "ok": true,
+      "spike_instr": 21314078,
+      "zisk_cost": 2498312151,
+      "zisk_steps": 21317686
+    },
+    {
+      "label": "00021_test_auth_state_charges_survive_dispatch_revert_fork_Amsterdam-blockchain_test_from_state_test-s",
+      "ok": true,
+      "spike_instr": 20818973,
+      "zisk_cost": 2446544942,
+      "zisk_steps": 20822581
+    },
+    {
+      "label": "00022_test_auth_state_gas_in_header_on_dispatch_revert_fork_Amsterdam-blockchain_test__b0",
+      "ok": true,
+      "spike_instr": 21311560,
+      "zisk_cost": 2498116968,
+      "zisk_steps": 21315168
+    },
+    {
+      "label": "00023_test_delegation_persists_on_execution_oog_fork_Amsterdam-blockchain_test_from_state_test-no_valu",
+      "ok": true,
+      "spike_instr": 29433898,
+      "zisk_cost": 3338171337,
+      "zisk_steps": 29437506
+    },
+    {
+      "label": "00024_test_delegation_persists_on_execution_oog_fork_Amsterdam-blockchain_test_from_state_test-with_va",
+      "ok": true,
+      "spike_instr": 28878491,
+      "zisk_cost": 3280174416,
+      "zisk_steps": 28882099
+    },
+    {
+      "label": "00025_test_dispatched_frame_state_gas_still_refills_on_revert_fork_Amsterdam-blockchain_test_from_stat",
+      "ok": true,
+      "spike_instr": 20938570,
+      "zisk_cost": 2458626396,
+      "zisk_steps": 20942178
+    },
+    {
+      "label": "00026_test_recipient_charge_oog_rolls_back_delegations_fork_Amsterdam-blockchain_test_from_state_test-",
+      "ok": true,
+      "spike_instr": 28907539,
+      "zisk_cost": 3283217396,
+      "zisk_steps": 28911147
+    },
+    {
+      "label": "00027_test_recipient_charge_oog_rolls_back_delegations_fork_Amsterdam-blockchain_test_from_state_test-",
+      "ok": true,
+      "spike_instr": 28768636,
+      "zisk_cost": 3268450435,
+      "zisk_steps": 28772244
+    },
+    {
+      "label": "00028_test_recipient_new_account_refilled_on_dispatch_halt_with_reservoir_fork_Amsterdam-blockchain_te",
+      "ok": true,
+      "spike_instr": 12804766,
+      "zisk_cost": 1618075598,
+      "zisk_steps": 12808374
+    },
+    {
+      "label": "00029_test_set_delegation_oog_charge_point_fork_Amsterdam-blockchain_test_from_state_test-oog_charge_a",
+      "ok": true,
+      "spike_instr": 28900277,
+      "zisk_cost": 3282357480,
+      "zisk_steps": 28903885
+    }
+  ],
+  "guest": "guest/build/guest.elf",
+  "manifest": "work/inputs/manifest.tsv",
+  "totals": {
+    "fixtures": 30,
+    "ok": 30,
+    "spike_instr": 729832215,
+    "zisk_cost": 84284491698,
+    "zisk_steps": 729940455
+  },
+  "version": 1
+}
