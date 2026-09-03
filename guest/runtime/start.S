@@ -37,13 +37,15 @@ cml_exit:
 ffihalt:
     j    cml_exit
 
-# FFI: @trap(...) -- signal an unrecoverable guest error; write a marker
-# byte and halt so the harness sees a deterministic (wrong) output.
+# FFI: @trap(@base, code, @base, 0) -- signal an unrecoverable guest error;
+# write the marker and code bytes and halt so the harness sees a deterministic
+# (wrong) output.  Pancake's trap_with helper writes the additional metadata.
 .globl ffitrap
 ffitrap:
     li   t0, 0xa0010000
     li   t1, 0xEE
     sb   t1, 32(t0)
+    sb   a1, 33(t0)
     j    cml_exit
 
 # ---- ZisK accelerator FFI stubs (ZISK_ACCEL builds) --------------------------

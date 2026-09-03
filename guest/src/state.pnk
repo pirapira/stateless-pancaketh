@@ -55,7 +55,6 @@ var 1 bs = 0;          /* the BlockState */
 var 1 ts = 0;          /* the current TransactionState */
 var 1 sk_buf = 0;      /* 52-byte scratch for addr||key */
 var 1 journal = 0;     /* undo records: <htab, keycopy, had_old, old> (32 bytes each) */
-var 1 journal_n = 0;
 var 1 journal_cap = 0;
 
 /* ---- init ---------------------------------------------------------------- */
@@ -136,7 +135,7 @@ fun 1 state_fresh_tx() {
 fun 1 jset(1 t, 1 key, 1 value) {
   var {1,1} old = htab_get(t, key);
   if journal_n >=+ journal_cap {
-    @trap(@base, 0, @base, 0);
+    trap_with(4);              /* journal full in jset */
   }
   var klen = lds 1 (t + HT_KEYLEN);
   var 1 kc = alloc(klen);
@@ -157,7 +156,7 @@ fun 1 jdel(1 t, 1 key) {
     return 0;
   }
   if journal_n >=+ journal_cap {
-    @trap(@base, 0, @base, 0);
+    trap_with(5);              /* journal full in jdel */
   }
   var klen = lds 1 (t + HT_KEYLEN);
   var 1 kc = alloc(klen);

@@ -53,7 +53,12 @@ RISC-V machine code), so the remaining verification obligation is
 | `guest/PANCAKE-NOTES.md` | Pancake language rules and project conventions (read before editing `.pnk`) |
 
 Debug bytes in the output region (past the 69-byte result, ignored by the harness):
-`[69]` failure class, `[70]` failure code (see `throw` sites in `fork.pnk`), `[100]` last stage marker.
+`[69]` failure class, `[70]` failure code (see `throw` sites in `fork.pnk`), and
+`[100]` the last stage marker. Fatal guest traps use `[32] = 0xEE`, `[33]` as the
+reason code, `[40]` as the heap pointer, and `[48]` as the journal count. Trap
+codes are 1 allocation exhausted, 2 division by zero, 3 base-fee overflow, 4
+`jset` journal full, and 5 `jdel` journal full; `tools/eest-run.py` displays them
+as `trap=<code>`.
 
 ## Toolchain
 
