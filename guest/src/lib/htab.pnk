@@ -413,5 +413,11 @@ fun 1 htab_copy_scratch(1 t) {
   var 1 used = scratch_alloc(cap);
   memcpy(used, lds 1 (t + HT_USED), cap);
   st n + HT_USED, used;
+  var 1 order = scratch_alloc(cap * 8);
+  memcpy(order, lds 1 (t + HT_ORDER), cap * 8);
+  st n + HT_ORDER, order;
+  var 1 order_pos = scratch_alloc(cap * 8);
+  memcpy(order_pos, lds 1 (t + HT_ORDER_POS), cap * 8);
+  st n + HT_ORDER_POS, order_pos;
   return n;
 }

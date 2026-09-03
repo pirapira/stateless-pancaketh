@@ -913,7 +913,10 @@ fun 1 generic_call(1 gas, 1 reservoir, {1,1,1,1} value, 1 caller, 1 to, 1 code_a
   }
   var 1 actual = min(out_size, lds 1 (child + EV_OUTPUT_N));
   if actual != 0 {
-    memcpy(MEM_PTR(out_start), lds 1 (child + EV_OUTPUT), actual);
+    /* The child may return a view of the suspended parent's memory (the
+       identity precompile does this).  Copy from the persistent returndata
+       snapshot so an overlapping output range cannot overwrite its source. */
+    memcpy(MEM_PTR(out_start), lds 1 (ev + EV_RETDATA), actual);
   }
   scratch_release(child_mark);
   frame_mem_release(child_mem_mark);
