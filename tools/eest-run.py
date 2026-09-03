@@ -48,6 +48,7 @@ def run_case(elf, row, out_dir, use_zisk):
         m = re.search(r"steps[=: ]+(\d+)", logtxt)
         if m: steps = int(m.group(1))
     actual = ""; dbg = -1
+    stage_marker = None
     if os.path.exists(out):
         raw = open(out, "rb").read()
         # output region is zero-padded to SPIKE_OUTPUT_LEN; the SSZ result
@@ -56,7 +57,10 @@ def run_case(elf, row, out_dir, use_zisk):
         actual = raw[:n].hex()
         dbg = raw[n] if len(raw) > n else 0   # guest debug bytes: fail class, code
         if len(raw) > n + 1: dbg = f"{dbg}/{raw[n+1]}"
-    return dict(label=label, rc=rc, steps=steps, secs=dt, expected=expected_hex, actual=actual, dbg=dbg)
+        if len(raw) > 100:
+            stage_marker = raw[100]
+    return dict(label=label, rc=rc, steps=steps, secs=dt, expected=expected_hex,
+                actual=actual, dbg=dbg, stage_marker=stage_marker)
 
 def classify(r):
     e, a = r["expected"], r["actual"]
