@@ -46,7 +46,7 @@ RISC-V machine code), so the remaining verification obligation is
 | `guest/src/fork.pnk` | `SeamShell.lean`, `Fork.lean`, `ElExecute.lean` (pre-checks, apply_body, post checks) |
 | `guest/src/main.pnk` | `Guest.lean` `run_stateless_guest` |
 | `guest/runtime/start.S` | bare-metal shim (`_start`, `cml_exit`, FFI `halt`/`trap`) |
-| `guest/build.sh` | `cpp` → `cake --pancake --target=riscv` → `as`/`ld` → ELF |
+| `guest/build.sh`, `tools/build_both.sh` | software or software + `ZISK_ACCEL` builds |
 | `guest/test/`, `tools/check_*.sh`, `tools/gen_*_vectors.py` | unit tests against Python oracles |
 | `tools/eest-run.py` | EEST manifest runner (spike_run or `--ziskemu`), root/succ/tail classification, step counts |
 | `tools/spike_prof/` | spike variant with a PC histogram + per-function aggregation |
@@ -80,6 +80,12 @@ stores. For example:
 DEBUG=1 guest/build.sh guest/src/main.pnk guest/build/guest-debug.elf
 ```
 
+`tools/build_both.sh` builds the two main guests used by differential checks:
+`guest/build/guest.elf` is the software/reference build and
+`guest/build/guest-accel.elf` is built with `ACCEL=1`. The software path remains
+the default implementation; the accelerated path reaches the same precompile
+acceleration points through Spike or ziskemu.
+
 `tools/eest-run.py` uses Spike by default and supports several ways to narrow
 down a failing sweep:
 
@@ -111,6 +117,12 @@ vector checker can run a quick ECADD/ECMUL smoke check with:
 tools/check_bn254.sh --only 1,2
 ```
 
+`check_all.sh` builds and checks both main guests with Spike, compares every
+EEST output file byte-for-byte, and runs the unit/vector checks in both modes.
+Because ziskemu is considerably slower than Spike, its accelerated parity gate
+is opt-in: set `CHECK_ALL_ZISKE_PARITY=1` to run the accelerated guest under
+ziskemu and compare those output files with the accelerated Spike run.
+
 The checker also covers pairing and field-tower records; select those record
 types with `--only` when running the slower software reference cases.
 
@@ -118,9 +130,9 @@ types with `--only` when running the slower software reference cases.
 
 ```bash
 tools/make-inputs.sh 50                       # work/inputs/manifest.tsv
-guest/build.sh guest/src/main.pnk guest/build/guest.elf      # ~1-2 min in cake
+tools/build_both.sh                            # software + accelerated ELFs
 tools/eest-run.py guest/build/guest.elf work/inputs/manifest.tsv --quiet-passes
-tools/eest-run.py guest/build/guest.elf work/inputs/manifest.tsv --ziskemu   # ZisK steps
+tools/eest-run.py guest/build/guest-accel.elf work/inputs/manifest.tsv --quiet-passes
 ```
 
 ## Testing
@@ -137,8 +149,15 @@ reviewing the improvement. Each check gets a PASS/FAIL line, detailed output
 is saved under `work/check-all/`, and regressions make the script exit
 non-zero.
 
-For performance work, make a JSON snapshot and compare it with the main
-baseline:
+For performance work, `bench.py --elf2` prints paired software/accelerated
+columns for Spike instructions, ZisK STEPS, TOTAL cost, and PRECOMPILES cost:
+
+```bash
+tools/bench.py guest/build/guest.elf work/inputs/manifest.tsv \
+  --elf2 guest/build/guest-accel.elf --limit 3
+```
+
+For a single guest, or for performance work that needs a JSON snapshot, use:
 
 ```bash
 tools/bench.py guest/build/guest.elf work/inputs/manifest.tsv --json work/bench/new.json
