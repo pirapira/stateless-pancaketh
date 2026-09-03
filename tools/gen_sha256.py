@@ -84,10 +84,17 @@ w("""/* lib/sha256.pnk -- SHA-256 (FIPS 180-4) on 64-bit words masked to 32 bits
 
 var 1 sha_st = 0;    /* 8-word working state */
 var 1 sha_pad = 0;   /* 128-byte padding scratch */
+#ifdef ZISK_ACCEL
+var 1 sha_accel = 0; /* 16-byte params, 32-byte state, 64-byte block */
+#endif
 
 fun 1 sha256_init() {
   sha_st = alloc(64);
   sha_pad = alloc(128);
+#ifdef ZISK_ACCEL
+  /* alloc() returns an 8-byte aligned pointer. */
+  sha_accel = alloc(112);
+#endif
   return 0;
 }
 
@@ -98,7 +105,36 @@ w("""  return 0;
 }
 
 /* One compression of the 64-byte block at blk into the 8-word state at stp. */
-fun 1 sha256_block(1 stp, 1 blk) {""")
+fun 1 sha256_block(1 stp, 1 blk) {
+#ifdef ZISK_ACCEL
+  /* The CSR consumes {state, input}; its state is four packed little-endian
+     u64 words containing the eight big-endian SHA-256 state words. */
+  var 1 blockp = sha_accel + 48;
+  if (blk & 7) != 0 {
+    memcpy(blockp, blk, 64);
+  } else {
+    blockp = blk;
+  }
+  var i = 0;
+  while i < 4 {
+    var lo = lds 1 (stp + i * 16);
+    var hi = lds 1 (stp + i * 16 + 8);
+    st sha_accel + 16 + i * 8, (((lo << 32) >>> 32) | (((hi << 32) >>> 32) << 32));
+    i = i + 1;
+  }
+  st sha_accel + 0, sha_accel + 16;
+  st sha_accel + 8, blockp;
+  @sha256f(sha_accel, 16, sha_accel, 16);
+  i = 0;
+  while i < 4 {
+    var packed = lds 1 (sha_accel + 16 + i * 8);
+    st stp + i * 16, (packed << 32) >>> 32;
+    st stp + i * 16 + 8, packed >>> 32;
+    i = i + 1;
+  }
+#endif
+#ifndef ZISK_ACCEL
+""")
 for i in range(16):
     w(f"  var w{i} = LD_BE32(blk + {4*i});")
 for i, v in enumerate(SV):
@@ -107,7 +143,8 @@ w("  var t1 = 0;")
 emit_rounds("  ", SV, WV)
 for i, v in enumerate(SV):
     w(f"  st stp + {8*i}, {mask(f'(lds 1 (stp + {8*i})) + {v}')};")
-w("""  return 0;
+w("""#endif
+  return 0;
 }
 
 fun 1 sha256_finish(1 stp, 1 out) {
@@ -148,11 +185,26 @@ fun 1 sha256(1 p, 1 len, 1 out) {
    fully loaded before anything is stored). Block 1 is a ++ b with the IV as
    immediates; block 2 is the constant padding block (0x80, zeros, length 512),
    whose whole schedule is folded into the round constants. */
-fun 1 sha256_pair(1 a, 1 b, 1 out) {""")
+fun 1 sha256_pair(1 input_a, 1 input_b, 1 out) {
+#ifdef ZISK_ACCEL
+  sha256_state_init(sha_st);
+  /* Copy both inputs first: callers are allowed to alias out with either. */
+  memcpy(sha_accel + 48, input_a, 32);
+  memcpy(sha_accel + 80, input_b, 32);
+  sha256_block(sha_st, sha_accel + 48);
+  /* SHA-256(64 bytes) has a fixed second block: 0x80, zeros, and 512 bits. */
+  memzero(sha_accel + 48, 64);
+  st8 sha_accel + 48, 128;
+  st_be64(sha_accel + 104, 512);
+  sha256_block(sha_st, sha_accel + 48);
+  sha256_finish(sha_st, out);
+#endif
+#ifndef ZISK_ACCEL
+""")
 for i in range(8):
-    w(f"  var w{i} = LD_BE32(a + {4*i});")
+    w(f"  var w{i} = LD_BE32(input_a + {4*i});")
 for i in range(8, 16):
-    w(f"  var w{i} = LD_BE32(b + {4*(i-8)});")
+    w(f"  var w{i} = LD_BE32(input_b + {4*(i-8)});")
 for i, v in enumerate(SV):
     w(f"  var {v} = {s32(IV[i])};")
 w("  var t1 = 0;")
@@ -167,7 +219,8 @@ for i, v in enumerate(SV):
     for k in range(4):
         sh = 24 - 8 * k
         w(f"  st8 out + {4*i + k}, " + (f"w{i} >>> {sh};" if sh else f"w{i};"))
-w("""  return 0;
+w("""#endif
+  return 0;
 }""")
 
 # Self-check of the constant folding against hashlib.

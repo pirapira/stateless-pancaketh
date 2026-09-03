@@ -55,6 +55,12 @@ ffikeccakf:
     csrrs x0, 0x800, a0
     ret
 
+# FFI: @sha256f(param, 16, param, 16) -> SHA-256 compression CSR 0x805.
+.globl ffisha256f
+ffisha256f:
+    csrrs x0, 0x805, a0
+    ret
+
 # FFI: BLS12-381 accelerator calls.  The first argument is the parameter
 # block described by evm-asm/scripts/spike/zisk_accel.cc; each CSR mutates its
 # output operand in place.  Keep these as tiny assembly bridges so the same
