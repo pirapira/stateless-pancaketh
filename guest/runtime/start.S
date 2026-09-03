@@ -45,3 +45,12 @@ ffitrap:
     li   t1, 0xEE
     sb   t1, 32(t0)
     j    cml_exit
+
+# ---- ZisK accelerator FFI stubs (ZISK_ACCEL builds) --------------------------
+# Pancake `@keccakf(p, 200, p, 200)` arrives with a0 = p (absolute address of the
+# 25*u64 state).  `csrrs x0, 0x800, a0` is ZisK's Keccak-f[1600] precompile;
+# evm-asm's spike_run implements the same CSR (scripts/spike/zisk_accel.cc).
+.globl ffikeccakf
+ffikeccakf:
+    csrrs x0, 0x800, a0
+    ret
