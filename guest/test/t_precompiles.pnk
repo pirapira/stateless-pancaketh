@@ -34,6 +34,7 @@ fun 1 main() {
   bls_precompiles_init();
   ripemd160_init();
   blake2_init();
+  evm_init();
   var {1,1} inp = input_blob();
   /* Every output is at most a small fixed precompile result or the identity
      input. This leaves ample room for the per-record framing. */
@@ -52,6 +53,8 @@ fun 1 main() {
     }
 
     var 1 mark = heap_mark();
+    var 1 frame_mem_mark0 = frame_mem_mark();
+    var 1 scratch_mark0 = scratch_mark();
     var 1 msg = msg_new();
     st msg + MSG_GAS, gas;
     st msg + MSG_DATA, data;
@@ -82,6 +85,8 @@ fun 1 main() {
       o = o + outn;
     }
     heap_release(mark);
+    scratch_release(scratch_mark0);
+    frame_mem_release(frame_mem_mark0);
     p = next;
   }
   output_write(out, o);

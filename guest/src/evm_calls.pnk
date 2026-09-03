@@ -26,7 +26,9 @@
 #define MCO_STATE_GAS_LEFT 56
 #define MCO_REGULAR_GAS_USED 64
 #define MCO_STATE_GAS_USED 72   /* signed */
-#define MCO_SIZE 80
+#define MCO_SCRATCH_MARK 80
+#define MCO_MEM_MARK 88
+#define MCO_SIZE 96
 
 var 1 transfer_topic = 0;     /* keccak256("Transfer(address,address,uint256)") */
 var 1 vm_system_address = 0;  /* 0xfff...fe */
@@ -54,6 +56,8 @@ fun 1 evm_init() {
   st8 vm_system_address + 19, 254;
   null_address = alloc(24);
   memzero(null_address, 24);
+  evm_empty = alloc(8);
+  memzero(evm_empty, 8);
   return 0;
 }
 
@@ -91,9 +95,10 @@ fun 1 op_return() {
   extend_memory(x.1);
   var 1 n = sat_word(size);
   var 1 s = sat_word(start);
-  var 1 out = alloc(n + 8);
-  memcpy(out, MEM_PTR(s), n);
-  st ev + EV_OUTPUT, out;
+  /* The caller consumes child output before this frame can be reused.  Keep
+     it in frame memory instead of allocating a second n-byte buffer for
+     every RETURN. */
+  st ev + EV_OUTPUT, MEM_PTR(s);
   st ev + EV_OUTPUT_N, n;
   st ev + EV_RUNNING, 0;
   return 0;
@@ -107,9 +112,8 @@ fun 1 op_revert() {
   extend_memory(x.1);
   var 1 n = sat_word(size);
   var 1 s = sat_word(start);
-  var 1 out = alloc(n + 8);
-  memcpy(out, MEM_PTR(s), n);
-  st ev + EV_OUTPUT, out;
+  /* See op_return: returndata is already in this frame's memory. */
+  st ev + EV_OUTPUT, MEM_PTR(s);
   st ev + EV_OUTPUT_N, n;
   throw EvmErr E_REVERT;
   return 0;
@@ -324,12 +328,6 @@ fun 1 set_delegation() {
 /* prepare_dispatch() at depth 0 */
 fun 1 prepare_dispatch() {
   var msg = lds 1 (ev + EV_MSG);
-#ifdef GUEST_DEBUG
-  !stw OUTPUT_ADDR + 192, msg;
-  !stw OUTPUT_ADDR + 200, lds 1 (msg + MSG_TARGET);
-  !stw OUTPUT_ADDR + 208, lds 1 (msg + MSG_CURRENT_TARGET);
-  !stw OUTPUT_ADDR + 216, ev;
-#endif
   if (lds 1 (msg + MSG_TARGET)) == 0 {
     var 1 pre = get_pre_state_account(lds 1 (msg + MSG_CURRENT_TARGET));
     var 1 e = acct_is_empty(pre);
@@ -571,6 +569,8 @@ fun 1 process_message(1 msg) {
     try depth0_prepare()
     catch EvmErr => perr {
       if perr == E_REVERT {
+        scratch_release(lds 1 (child + EV_STACK_MARK));
+        frame_mem_release(lds 1 (child + EV_MEM_MARK));
         ev = parent;
         throw EvmErr perr;
       }
@@ -590,8 +590,7 @@ fun 1 process_message(1 msg) {
     refill_frame_state_gas();
     if err != E_REVERT {
       frame_halt(err);
-      var 1 empty = alloc(8);
-      st ev + EV_OUTPUT, empty;
+      st ev + EV_OUTPUT, evm_empty;
       st ev + EV_OUTPUT_N, 0;
     } else {
       st ev + EV_ERROR, err;
@@ -620,7 +619,9 @@ fun 1 create_finish(1 msg, 1 child) {
   var 1 w = words_of(n);
   charge_gas(G_KECCAK256_PER_WORD * w);
   charge_state_gas(n * SG_COST_PER_STATE_BYTE);
-  set_code(lds 1 (msg + MSG_CURRENT_TARGET), code, n);
+  var 1 stored_code = alloc(n + 8);
+  memcpy(stored_code, code, n);
+  set_code(lds 1 (msg + MSG_CURRENT_TARGET), stored_code, n);
   return 0;
 }
 
@@ -641,8 +642,7 @@ fun 1 process_create_message(1 msg) {
       state_restore(snapshot);
       refill_frame_state_gas();
       frame_halt(err);
-      var 1 empty = alloc(8);
-      st ev + EV_OUTPUT, empty;
+      st ev + EV_OUTPUT, evm_empty;
       st ev + EV_OUTPUT_N, 0;
     }
     ev = parent;
@@ -682,7 +682,7 @@ fun 1 incorporate_child_on_success(1 child) {
 fun 1 child_message(1 caller, 1 target, 1 current_target, 1 gas, 1 reservoir, {1,1,1,1} value,
     1 data, 1 data_n, 1 code_address, 1 code, 1 code_n, 1 transfer, 1 is_static, 1 disable_pre) {
   var pm = lds 1 (ev + EV_MSG);
-  var 1 m = msg_new();
+  var 1 m = msg_new_scratch();
   st m + MSG_BE, lds 1 (pm + MSG_BE);
   st m + MSG_TE, lds 1 (pm + MSG_TE);
   st m + MSG_CALLER, caller;
@@ -703,16 +703,28 @@ fun 1 child_message(1 caller, 1 target, 1 current_target, 1 gas, 1 reservoir, {1
     stat = 1;
   }
   st m + MSG_IS_STATIC, stat;
-  var 1 aa = htab_copy(lds 1 (ev + EV_ACC_ADDRS));
+  var 1 aa = htab_copy_scratch(lds 1 (ev + EV_ACC_ADDRS));
   st m + MSG_ACC_ADDRS, aa;
-  var 1 ak = htab_copy(lds 1 (ev + EV_ACC_KEYS));
+  var 1 ak = htab_copy_scratch(lds 1 (ev + EV_ACC_KEYS));
   st m + MSG_ACC_KEYS, ak;
   st m + MSG_DISABLE_PRECOMPILES, disable_pre;
   return m;
 }
 
 fun 1 set_retdata(1 p, 1 n) {
-  st ev + EV_RETDATA, p;
+  if n == 0 {
+    st ev + EV_RETDATA, evm_empty;
+    st ev + EV_RETDATA_N, 0;
+    return 0;
+  }
+  var cap = lds 1 (ev + EV_RETDATA_CAP);
+  var 1 dst = lds 1 (ev + EV_RETDATA);
+  if cap <+ n {
+    dst = alloc(n + 8);
+    st ev + EV_RETDATA, dst;
+    st ev + EV_RETDATA_CAP, n;
+  }
+  memcpy(dst, p, n);
   st ev + EV_RETDATA_N, n;
   return 0;
 }
@@ -758,9 +770,10 @@ fun 1 generic_create({1,1,1,1} endowment, 1 contract_address, 1 mstart, 1 msize)
   if msize >+ MAX_INIT_CODE_SIZE {
     throw EvmErr E_OUT_OF_GAS;
   }
-  var 1 call_data = alloc(msize + 8);
-  memcpy(call_data, MEM_PTR(mstart), msize);
-  var 1 empty = alloc(8);
+  /* Init code is read-only to the child and the parent is suspended for the
+     duration of CREATE, so borrow the parent's memory directly. */
+  var 1 call_data = MEM_PTR(mstart);
+  var 1 empty = evm_empty;
   set_retdata(empty, 0);
   var msg = lds 1 (ev + EV_MSG);
   var sender_address = lds 1 (msg + MSG_CURRENT_TARGET);
@@ -793,6 +806,8 @@ fun 1 generic_create({1,1,1,1} endowment, 1 contract_address, 1 mstart, 1 msize)
   var reservoir = lds 1 (ev + EV_STATE_GAS_LEFT);
   st ev + EV_STATE_GAS_LEFT, 0;
   increment_nonce(sender_address);
+  var 1 child_mark = scratch_mark();
+  var 1 child_mem_mark = frame_mem_mark();
   var 1 cm = child_message(sender_address, 0, contract_address, create_gas, reservoir, endowment,
       empty, 0, 0, call_data, msize, 1, 0, 0);
   var 1 child = process_create_message(cm);
@@ -809,6 +824,8 @@ fun 1 generic_create({1,1,1,1} endowment, 1 contract_address, 1 mstart, 1 msize)
     var {1,1,1,1} av = address_to_u256(contract_address);
     stack_push(av);
   }
+  scratch_release(child_mark);
+  frame_mem_release(child_mem_mark);
   return 0;
 }
 
@@ -862,7 +879,7 @@ fun 1 op_create2() {
 fun 1 generic_call(1 gas, 1 reservoir, {1,1,1,1} value, 1 caller, 1 to, 1 code_address,
     1 transfer, 1 is_static, 1 in_start, 1 in_size, 1 out_start, 1 out_size,
     1 code, 1 code_n, 1 disable_pre, 1 new_account_charged) {
-  var 1 empty = alloc(8);
+  var 1 empty = evm_empty;
   set_retdata(empty, 0);
   var msg = lds 1 (ev + EV_MSG);
   if (lds 1 (msg + MSG_DEPTH)) + 1 >+ STACK_DEPTH_LIMIT {
@@ -874,8 +891,11 @@ fun 1 generic_call(1 gas, 1 reservoir, {1,1,1,1} value, 1 caller, 1 to, 1 code_a
     stack_push(<0, 0, 0, 0>);
     return 0;
   }
-  var 1 call_data = alloc(in_size + 8);
-  memcpy(call_data, MEM_PTR(in_start), in_size);
+  /* Call data is read-only to the child; borrow the suspended parent's
+     memory instead of copying it into a permanent heap allocation. */
+  var 1 call_data = MEM_PTR(in_start);
+  var 1 child_mark = scratch_mark();
+  var 1 child_mem_mark = frame_mem_mark();
   var 1 cm = child_message(caller, to, to, gas, reservoir, value, call_data, in_size,
       code_address, code, code_n, transfer, is_static, disable_pre);
   var 1 child = process_message(cm);
@@ -895,6 +915,8 @@ fun 1 generic_call(1 gas, 1 reservoir, {1,1,1,1} value, 1 caller, 1 to, 1 code_a
   if actual != 0 {
     memcpy(MEM_PTR(out_start), lds 1 (child + EV_OUTPUT), actual);
   }
+  scratch_release(child_mark);
+  frame_mem_release(child_mem_mark);
   return 0;
 }
 
@@ -980,7 +1002,7 @@ fun 1 op_call() {
   var 1 insufficient = u256_lt(lds {1,1,1,1} (sender + ACCT_BALANCE), value);
   if insufficient != 0 {
     stack_push(<0, 0, 0, 0>);
-    var 1 empty = alloc(8);
+    var 1 empty = evm_empty;
     set_retdata(empty, 0);
     st ev + EV_GAS_LEFT, (lds 1 (ev + EV_GAS_LEFT)) + mcg.1;
     st ev + EV_STATE_GAS_LEFT, (lds 1 (ev + EV_STATE_GAS_LEFT)) + reservoir;
@@ -1048,7 +1070,7 @@ fun 1 op_callcode() {
   var 1 insufficient = u256_lt(lds {1,1,1,1} (sender + ACCT_BALANCE), value);
   if insufficient != 0 {
     stack_push(<0, 0, 0, 0>);
-    var 1 empty = alloc(8);
+    var 1 empty = evm_empty;
     set_retdata(empty, 0);
     st ev + EV_GAS_LEFT, (lds 1 (ev + EV_GAS_LEFT)) + mcg.1;
     st ev + EV_STATE_GAS_LEFT, (lds 1 (ev + EV_STATE_GAS_LEFT)) + reservoir;
@@ -1173,8 +1195,7 @@ fun 1 process_message_call(1 msg) {
       st out + MCO_ERROR, E_ADDRESS_COLLISION;
       st out + MCO_STATE_GAS_LEFT, lds 1 (msg + MSG_RESERVOIR);
       st out + MCO_REGULAR_GAS_USED, lds 1 (msg + MSG_GAS);
-      var 1 empty = alloc(8);
-      st out + MCO_RETDATA, empty;
+      st out + MCO_RETDATA, evm_empty;
       return out;
     }
     frame = process_create_message(msg);
@@ -1198,5 +1219,7 @@ fun 1 process_message_call(1 msg) {
     }
     st out + MCO_REFUND, rc;
   }
+  st out + MCO_SCRATCH_MARK, lds 1 (frame + EV_STACK_MARK);
+  st out + MCO_MEM_MARK, lds 1 (frame + EV_MEM_MARK);
   return out;
 }

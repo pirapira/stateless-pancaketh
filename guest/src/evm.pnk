@@ -109,7 +109,12 @@ exception EvmErr : 1;
 #define EV_REGULAR_GAS_USED 184
 #define EV_STATE_GAS_SPILLED 192
 #define EV_AUTH_STATE_GAS_USED 200   /* signed */
-#define EV_SIZE 208
+#define EV_STACK_MARK 208
+#define EV_RETDATA_CAP 216
+#define EV_MEM_MARK 224
+#define EV_STACK_CAP 232
+#define EV_ADDR_TMP 240        /* 24-byte frame-local address slot */
+#define EV_SIZE 264
 
 /* Log record */
 #define LOG_ADDRESS 0
@@ -148,6 +153,7 @@ exception EvmErr : 1;
 #define G_EXP_PER_BYTE 50
 #define G_SELFDESTRUCT_BASE 5000
 #define G_BLOCKHASH 20
+#define STACK_INIT_CAP 32
 #define SG_COST_PER_STATE_BYTE 1530
 #define SG_STORAGE_SET 97920
 #define SG_NEW_ACCOUNT 183600
@@ -158,6 +164,7 @@ exception EvmErr : 1;
 #define WORD_MAX 18446744073709551615
 
 var 1 ev = 0;          /* current frame */
+var 1 evm_empty = 0;
 
 /* ---- small helpers ---------------------------------------------------- */
 
@@ -192,9 +199,12 @@ fun 1 words_of(1 n) {
   return c >>> 5;
 }
 
-/* to_address_masked: low 20 bytes of a U256 -> fresh 20-byte buffer */
+/* to_address_masked: low 20 bytes of a U256 -> frame-local address slot */
 fun 1 to_address_masked({1,1,1,1} v) {
-  var 1 a = alloc(24);
+  /* One address scratch slot belongs to each frame.  Call opcodes may loop
+     thousands of times, so allocating this short-lived value from the
+     frame arena would otherwise retain every prior iteration until return. */
+  var 1 a = ev + EV_ADDR_TMP;
   st_be32(a, v.2);
   st_be64(a + 4, v.1);
   st_be64(a + 12, v.0);
@@ -292,7 +302,21 @@ fun {1,1,1,1} stack_pop() {
 
 fun 1 stack_push({1,1,1,1} v) {
   var sp = lds 1 (ev + EV_SP);
-  if sp == 1024 {
+  var cap = lds 1 (ev + EV_STACK_CAP);
+  if sp >=+ cap {
+    if cap >=+ STACK_DEPTH_LIMIT {
+      throw EvmErr E_STACK_OVERFLOW;
+    }
+    var ncap = cap * 2;
+    if ncap >+ STACK_DEPTH_LIMIT {
+      ncap = STACK_DEPTH_LIMIT;
+    }
+    var 1 ns = scratch_alloc(ncap * 32);
+    memcpy(ns, lds 1 (ev + EV_STACK), sp * 32);
+    st ev + EV_STACK, ns;
+    st ev + EV_STACK_CAP, ncap;
+  }
+  if sp == STACK_DEPTH_LIMIT {
     throw EvmErr E_STACK_OVERFLOW;
   }
   st (lds 1 (ev + EV_STACK)) + sp * 32, v;
@@ -383,9 +407,8 @@ fun 1 extend_memory(1 expand_by) {
     if ncap <+ nlen {
       ncap = nlen + 1024;
     }
-    var 1 nm = alloc(ncap);
-    memcpy(nm, lds 1 (ev + EV_MEM), len);
-    st ev + EV_MEM, nm;
+    frame_mem_alloc(ncap - cap);
+    memzero((lds 1 (ev + EV_MEM)) + cap, ncap - cap);
     st ev + EV_MEM_CAP, ncap;
   }
   memzero((lds 1 (ev + EV_MEM)) + len, expand_by);
@@ -423,7 +446,7 @@ fun 1 buffer_read(1 buf, 1 buf_len, 1 start, 1 size, 1 out) {
 /* ---- jump destinations (Runtime.lean) ------------------------------------------- */
 
 fun 1 compute_jumpdests(1 code, 1 n) {
-  var 1 bm = alloc(((n + 63) >>> 6) * 8 + 8);
+  var 1 bm = scratch_alloc(((n + 63) >>> 6) * 8 + 8);
   memzero(bm, ((n + 63) >>> 6) * 8 + 8);
   var pc = 0;
   while pc <+ n {
@@ -480,13 +503,24 @@ fun 1 msg_new() {
   return m;
 }
 
+fun 1 msg_new_scratch() {
+  var 1 m = scratch_alloc(MSG_SIZE);
+  memzero(m, MSG_SIZE);
+  return m;
+}
+
 /* A fresh frame for a message (process_message's childEvm). */
 fun 1 frame_new(1 msg) {
-  var 1 e = alloc(EV_SIZE);
+  var 1 stack_mark = scratch_mark();
+  var 1 mem_mark = frame_mem_mark();
+  var 1 e = scratch_alloc(EV_SIZE);
   memzero(e, EV_SIZE);
-  var 1 stk = alloc(1024 * 32);
+  var 1 stk = scratch_alloc(STACK_INIT_CAP * 32);
+  st e + EV_STACK_MARK, stack_mark;
   st e + EV_STACK, stk;
-  var 1 mem = alloc(1024);
+  st e + EV_STACK_CAP, STACK_INIT_CAP;
+  var 1 mem = frame_mem_alloc(1024);
+  st e + EV_MEM_MARK, mem_mark;
   st e + EV_MEM, mem;
   st e + EV_MEM_CAP, 1024;
   st e + EV_CODE, lds 1 (msg + MSG_CODE);
@@ -495,17 +529,17 @@ fun 1 frame_new(1 msg) {
   st e + EV_STATE_GAS_LEFT, lds 1 (msg + MSG_RESERVOIR);
   var 1 jd = compute_jumpdests(lds 1 (msg + MSG_CODE), lds 1 (msg + MSG_CODE_N));
   st e + EV_JUMPDESTS, jd;
-  var 1 logs = lst_new(8, 4);
+  var 1 logs = lst_new_scratch(8, 4);
   st e + EV_LOGS, logs;
   st e + EV_RUNNING, 1;
   st e + EV_MSG, msg;
-  var 1 del = htab_new(20, 4);
+  var 1 del = htab_new_scratch(20, 4);
   st e + EV_DELETE, del;
   st e + EV_ACC_ADDRS, lds 1 (msg + MSG_ACC_ADDRS);
   st e + EV_ACC_KEYS, lds 1 (msg + MSG_ACC_KEYS);
-  var 1 empty = alloc(8);
-  st e + EV_OUTPUT, empty;
-  st e + EV_RETDATA, empty;
+  st e + EV_OUTPUT, evm_empty;
+  st e + EV_RETDATA, evm_empty;
+  st e + EV_RETDATA_CAP, 0;
   return e;
 }
 
@@ -1111,7 +1145,11 @@ fun 1 op_log(1 ntopics) {
   extend_memory(x.1);
   require_not_static();
   var 1 log = alloc(LOG_SIZE);
-  st log + LOG_ADDRESS, lds 1 ((lds 1 (ev + EV_MSG)) + MSG_CURRENT_TARGET);
+  /* The message target can point into a reusable caller address slot.  Logs
+     survive the frame, so give each log its own persistent address copy. */
+  var 1 log_address = alloc(24);
+  memcpy(log_address, lds 1 ((lds 1 (ev + EV_MSG)) + MSG_CURRENT_TARGET), 20);
+  st log + LOG_ADDRESS, log_address;
   st log + LOG_TOPICS, topics;
   st log + LOG_TOPICS_N, ntopics;
   var 1 data = alloc(n + 8);

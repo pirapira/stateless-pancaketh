@@ -70,7 +70,7 @@ run_unit_variant() {
     run_check "$variant unit t_globals" \
       env ACCEL=1 SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
       "$ROOT/guest/test/t_globals.pnk" "$UNIT_INPUT" \
-      "struct.pack('<QQQQQQQQ', 0xa0100000, 0xa0100000, 0xa0100040, 1234, 5678, 0xa0100040, 0xa01f4280, 1234)"
+      "struct.pack('<QQQQQQQQ', 0xa1000000, 0xa1000000, 0xa1000040, 1234, 5678, 0xa1000040, 0xa10f4280, 1234)"
     run_check "$variant unit t_keccak" \
       env ACCEL=1 SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
       "$ROOT/guest/test/t_keccak.pnk" "$UNIT_INPUT" \
@@ -109,7 +109,7 @@ run_unit_variant() {
     run_check "$variant unit t_globals" \
       env -u ACCEL SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
       "$ROOT/guest/test/t_globals.pnk" "$UNIT_INPUT" \
-      "struct.pack('<QQQQQQQQ', 0xa0100000, 0xa0100000, 0xa0100040, 1234, 5678, 0xa0100040, 0xa01f4280, 1234)"
+      "struct.pack('<QQQQQQQQ', 0xa1000000, 0xa1000000, 0xa1000040, 1234, 5678, 0xa1000040, 0xa10f4280, 1234)"
     run_check "$variant unit t_keccak" \
       env -u ACCEL SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
       "$ROOT/guest/test/t_keccak.pnk" "$UNIT_INPUT" \

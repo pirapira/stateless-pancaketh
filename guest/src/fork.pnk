@@ -288,6 +288,19 @@ fun 1 process_unchecked_system_transaction(1 target, 1 data, 1 data_n) {
   var 1 out = process_message_call(m);
   DBG(38);
   incorporate_tx_into_block();
+  var system_mark = lds 1 (out + MCO_SCRATCH_MARK);
+  if system_mark != 0 {
+    /* Requests are consumed after this function returns.  Preserve return
+       data before releasing the child frame arenas. */
+    var system_ret_n = lds 1 (out + MCO_RETDATA_N);
+    if system_ret_n >+ 0 {
+      var 1 system_ret = alloc(system_ret_n + 8);
+      memcpy(system_ret, lds 1 (out + MCO_RETDATA), system_ret_n);
+      st out + MCO_RETDATA, system_ret;
+    }
+    scratch_release(system_mark);
+    frame_mem_release(lds 1 (out + MCO_MEM_MARK));
+  }
   return out;
 }
 
@@ -642,8 +655,23 @@ fun 1 process_transaction(1 tx, 1 index, 1 pubkey) {
     st slot, lds 1 (lp + i * 8);
     i = i + 1;
   }
+  /* BO_RECEIPT_LOGS is consumed after the frame arenas are released.  Keep
+     the log records persistent above, and promote this frame-local list
+     header/pointer array before retaining it in the block output. */
+  var stable_log_cap = nl;
+  if stable_log_cap == 0 {
+    stable_log_cap = 1;
+  }
+  var 1 stable_logs = lst_new(8, stable_log_cap);
+  st stable_logs + LST_N, nl;
+  var 1 stable_lp = lds 1 (stable_logs + LST_PTR);
+  i = 0;
+  while i < nl {
+    st stable_lp + i * 8, lds 1 (lp + i * 8);
+    i = i + 1;
+  }
   var 1 rl = lst_push(lds 1 (bo + BO_RECEIPT_LOGS), 8);
-  st rl, logs;
+  st rl, stable_logs;
   /* accounts to delete */
   var del = lds 1 (out + MCO_DELETE);
   if del != 0 {
@@ -658,6 +686,11 @@ fun 1 process_transaction(1 tx, 1 index, 1 pubkey) {
     }
   }
   incorporate_tx_into_block();
+  var tx_frame_mark = lds 1 (out + MCO_SCRATCH_MARK);
+  if tx_frame_mark != 0 {
+    scratch_release(tx_frame_mark);
+    frame_mem_release(lds 1 (out + MCO_MEM_MARK));
+  }
   return 0;
 }
 

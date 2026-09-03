@@ -4,8 +4,10 @@
 #define INPUT_LEN_ADDR   1073741832   /* 0x40000008 */
 #define INPUT_DATA_ADDR  1073741840   /* 0x40000010 */
 #define OUTPUT_ADDR      2684420096   /* 0xa0010000 */
-#define HEAP_BASE        2685403136   /* 0xa0100000 (= @base) */
+#define HEAP_BASE        2701131776   /* 0xa1000000 (= @base) */
 #define HEAP_END         2952790016   /* 0xb0000000 */
+#define SCRATCH_BASE     2684424192   /* 0xa0011000: after the output/debug prefix */
+#define SCRATCH_END      2701127680   /* 0xa0fff000: below the Pancake heap */
 #define M32              4294967295
 #define WORD             8
 

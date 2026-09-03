@@ -57,7 +57,7 @@ Debug bytes in the output region (past the 69-byte result, ignored by the harnes
 `[100]` the last stage marker. Fatal guest traps use `[32] = 0xEE`, `[33]` as the
 reason code, `[40]` as the heap pointer, and `[48]` as the journal count. Trap
 codes are 1 allocation exhausted, 2 division by zero, 3 base-fee overflow, 4
-`jset` journal full, and 5 `jdel` journal full; `tools/eest-run.py` displays them
+`jset` journal full, and 5 `jdel` journal full, 6 frame-memory arena exhausted, 7 frame-scratch arena exhausted; `tools/eest-run.py` displays them
 as `trap=<code>`.
 
 ## Toolchain
