@@ -15,17 +15,18 @@ Command:
 ```bash
 ACCEL=1 guest/build.sh guest/src/main.pnk guest/build/guest-accel.elf
 tools/eest-run.py guest/build/guest-accel.elf work/sweep/manifest.tsv \
-  --jobs 32 --quiet-passes --json work/sweep/all.json (gunzip work/sweep/all.json.gz) \
+  --jobs 32 --quiet-passes --json work/sweep/all.json \
   --out-dir work/sweep/run-accel
+gzip -c work/sweep/all.json > work/sweep/all.json.gz
 ```
 
 ## Totals
 
 | Result | Count |
 | --- | ---: |
-| `PASS(full)` | 26,090 |
+| `PASS(full)` | 26,096 |
 | `PASS(malformed)` | 8 |
-| `FAIL` | 6 |
+| `FAIL` | 0 |
 | **Total** | **26,104** |
 
 ## Failure histogram
@@ -33,32 +34,29 @@ tools/eest-run.py guest/build/guest-accel.elf work/sweep/manifest.tsv \
 The failure histogram is keyed by result regions and the debug class/code
 bytes recorded after the expected result.
 
-| Regions | Fail class/code | Count |
-| --- | --- | ---: |
-| `----/----/----` | `0/0` | 6 |
+There are no failures in the refreshed result set.
 
-All six failures have `output[100] = 0` (stage marker). They return the
-`@trap` marker at the success byte rather than a normal debug failure code, so
-`0/0` here identifies the trap-shaped result and is not the usual `1/99`
-precompile failure sentinel.
+## Issue #47 resolution
 
-## Follow-up issue
+The six former `0/0` trap-shaped results from [#47](https://github.com/pirapira/stateless-pancaketh/issues/47)
+were rerun after separating persistent heap, frame memory, and frame scratch.
+The fix also gives retained log addresses and receipt-log lists stable
+ownership. All six are now `PASS(full)` on both the software and accelerated
+guest builds under Spike, with byte-identical result payloads across builds.
 
-One follow-up issue, [#47](https://github.com/pirapira/stateless-pancaketh/issues/47), was filed for the distinct non-`1/99` code:
-
-* `0/0`: six failures, stage marker `output[100] = 0`. Representative labels
-  (the report caps this list at five):
-  `15787_test_contract_creation_spam_fork_Amsterdam-blockchain_test_from_state_test__b0`,
-  `18635_test_return50000_fork_Amsterdam-blockchain_test_from_state_test--g1__b0`,
-  `18637_test_return50000_2_fork_Amsterdam-blockchain_test_from_state_test--g1__b0`,
-  `20981_test_static_loop_calls_then_revert_fork_Amsterdam-blockchain_test_from_state_test--g0__b0`,
-  `20982_test_static_loop_calls_then_revert_fork_Amsterdam-blockchain_test_from_state_test--g1__b0`
-  (one additional label is recorded in `all.json`).
-
-Rerun the group after rebuilding the accelerated guest with:
+The targeted accelerated rerun can be reproduced with one numeric fixture
+prefix per invocation:
 
 ```bash
-tools/eest-run.py guest/build/guest-accel.elf work/sweep/manifest.tsv \
-  --from-json work/sweep/all.json (gunzip work/sweep/all.json.gz) --fail-code 0/0 --jobs 32 \
-  --out-dir work/sweep/rerun-0-0
+for fixture in 15787 18635 18637 20981 20982 20992; do
+  SPIKE_RUN=/path/to/evm-asm/scripts/spike/spike_run \
+    tools/eest-run.py guest/build/guest-accel.elf work/sweep/manifest.tsv \
+    --filter "${fixture}_" --jobs 1 --quiet-passes \
+    --out-dir "work/sweep/rerun-${fixture}" \
+    --json "work/sweep/rerun-${fixture}.json"
+done
 ```
+
+Repeat the loop with `guest/build/guest.elf` to run the software build. The
+base and accelerated result JSON files were compared before refreshing
+`all.json.gz`; the checked-in archive is the resulting full-sweep result set.

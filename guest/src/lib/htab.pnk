@@ -31,6 +31,26 @@ fun 1 htab_new(1 key_len, 1 cap) {
   return t;
 }
 
+/* Frame-local table variant.  Its table and backing arrays are released
+   with the child frame; inserted keys are copied into the parent's table
+   when access sets are merged. */
+fun 1 htab_new_scratch(1 key_len, 1 cap) {
+  var 1 t = scratch_alloc(HT_SIZE);
+  var stride = (key_len + 7) & (0 - 8);
+  st t + HT_KEYLEN, key_len;
+  st t + HT_KEYSTRIDE, stride;
+  st t + HT_CAP, cap;
+  st t + HT_COUNT, 0;
+  var 1 keys = scratch_alloc(cap * stride);
+  st t + HT_KEYS, keys;
+  var 1 vals = scratch_alloc(cap * 8);
+  st t + HT_VALS, vals;
+  var 1 used = scratch_alloc(cap);
+  memzero(used, cap);
+  st t + HT_USED, used;
+  return t;
+}
+
 /* Hash of key_len bytes at p (byte-wise FNV-1a style mix on words). */
 fun 1 htab_hash(1 p, 1 key_len) {
   var h = 14695981039346656037;
@@ -126,10 +146,6 @@ fun 1 htab_hash(1 p, 1 key_len) {
 
 /* Slot index of key, or cap if absent. */
 fun 1 htab_find_slot(1 t, 1 key) {
-#ifdef GUEST_DEBUG
-  !stw OUTPUT_ADDR + 104, t;
-  !stw OUTPUT_ADDR + 112, key;
-#endif
   var cap = lds 1 (t + HT_CAP);
   var klen = lds 1 (t + HT_KEYLEN);
   var stride = lds 1 (t + HT_KEYSTRIDE);
@@ -314,6 +330,24 @@ fun 1 htab_copy(1 t) {
   memcpy(vals, lds 1 (t + HT_VALS), cap * 8);
   st n + HT_VALS, vals;
   var 1 used = alloc(cap);
+  memcpy(used, lds 1 (t + HT_USED), cap);
+  st n + HT_USED, used;
+  return n;
+}
+
+/* Shallow copy in frame scratch. */
+fun 1 htab_copy_scratch(1 t) {
+  var cap = lds 1 (t + HT_CAP);
+  var stride = lds 1 (t + HT_KEYSTRIDE);
+  var 1 n = scratch_alloc(HT_SIZE);
+  memcpy(n, t, HT_SIZE);
+  var 1 keys = scratch_alloc(cap * stride);
+  memcpy(keys, lds 1 (t + HT_KEYS), cap * stride);
+  st n + HT_KEYS, keys;
+  var 1 vals = scratch_alloc(cap * 8);
+  memcpy(vals, lds 1 (t + HT_VALS), cap * 8);
+  st n + HT_VALS, vals;
+  var 1 used = scratch_alloc(cap);
   memcpy(used, lds 1 (t + HT_USED), cap);
   st n + HT_USED, used;
   return n;

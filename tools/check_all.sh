@@ -60,7 +60,7 @@ fi
 run_check "unit t_globals" \
   env SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
   "$ROOT/guest/test/t_globals.pnk" "$UNIT_INPUT" \
-  "struct.pack('<QQQQQQQQ', 0xa0100000, 0xa0100000, 0xa0100040, 1234, 5678, 0xa0100040, 0xa01f4280, 1234)"
+  "struct.pack('<QQQQQQQQ', 0xa1000000, 0xa1000000, 0xa1000040, 1234, 5678, 0xa1000040, 0xa10f4280, 1234)"
 
 # t_keccak exercises the full input, empty input, the 200/136/135-byte
 # boundaries, and an unaligned slice.  Keep the expression beside the test

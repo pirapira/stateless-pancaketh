@@ -1,10 +1,15 @@
 /* lib/mem.pnk -- bump allocator over the Pancake heap and byte helpers.
-   The Pancake heap is [@base, HEAP_END); nothing else lives there. */
+   Persistent objects use [@base, HEAP_END); frame memory and scratch use the
+   reserved [SCRATCH_BASE, SCRATCH_END) region before the Pancake heap. */
 
 var 1 heap_ptr = 0;
+var 1 scratch_ptr = 0;
+var 1 frame_mem_ptr = 0;
 
 fun 1 mem_init() {
   heap_ptr = @base;
+  scratch_ptr = SCRATCH_END;
+  frame_mem_ptr = SCRATCH_BASE;
   return 0;
 }
 
@@ -25,6 +30,49 @@ fun 1 heap_mark() {
 
 fun 1 heap_release(1 m) {
   heap_ptr = m;
+  return 0;
+}
+
+/* Upward arena for EVM byte-addressable memory.  It is separate from the
+   downward scratch arena so a frame can grow its memory in place after a
+   child call releases its own arena slice. */
+fun 1 frame_mem_alloc(1 n) {
+  var p = frame_mem_ptr;
+  var q = (p + n + 7) & (0 - 8);
+  if q >+ scratch_ptr {
+    @trap(@base, 0, @base, 0);
+  }
+  frame_mem_ptr = q;
+  return p;
+}
+
+fun 1 frame_mem_mark() {
+  return frame_mem_ptr;
+}
+
+fun 1 frame_mem_release(1 m) {
+  frame_mem_ptr = m;
+  return 0;
+}
+
+/* Allocate from the top of the reserved arena for short-lived frame scratch.
+   A child frame can release its scratch without invalidating state records. */
+fun 1 scratch_alloc(1 n) {
+  var p = scratch_ptr;
+  var q = (p - n) & (0 - 8);
+  if q <+ frame_mem_ptr {
+    @trap(@base, 0, @base, 0);
+  }
+  scratch_ptr = q;
+  return q;
+}
+
+fun 1 scratch_mark() {
+  return scratch_ptr;
+}
+
+fun 1 scratch_release(1 m) {
+  scratch_ptr = m;
   return 0;
 }
 

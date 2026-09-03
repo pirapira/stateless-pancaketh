@@ -146,6 +146,10 @@ ZISK_ACCEL` gives a differential test: both builds must produce identical bytes 
   mean 3.8M steps vs 24.3M. Both builds byte-identical on all fixtures; ziskemu parity holds.
   Lesson: when resolving `start.S` stub conflicts, re-check every stub ends in `ret` (a dropped `ret` made
   sha256f fall through into arith256mod).
+* 2026-09-04: fixed #47 by separating persistent heap, frame byte memory, and downward frame scratch;
+  retained log addresses/receipt-log lists now have stable ownership. The six former sweep failures pass
+  `PASS(full)` on both Spike builds with byte-identical outputs; refreshed `work/sweep/all.json.gz` is
+  26,096 `PASS(full)`, 8 malformed, 0 failures.
 
 ## Workflow
 Mechanical, well-specified tasks are filed as GitHub issues with the `mechanical` label

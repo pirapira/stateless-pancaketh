@@ -43,7 +43,7 @@ Empirically verified against the prebuilt `cake` (CakeML e8eca63, 2026-08-24).
   one. Use it only as a declaration or assignment RHS.
 * Reserved words include `in`, `st`, `tick`, `skip`, and `true`/`false`; using one as a
   variable gives a parse error at its first USE, not at the declaration.
-* `@base` is heap start (0xa0100000). Do NOT use `@top` (broken in this build);
+* `@base` is heap start (0xa1000000). Do NOT use `@top` (broken in this build);
   the heap ends at `HEAP_END`. FFI: `@halt(@base,0,@base,0)`, `@trap(...)` (runtime/start.S).
 * `inline fun` exists but a call is still a statement.
 * Forward references and mutual recursion between top-level functions work.

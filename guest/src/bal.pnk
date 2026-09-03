@@ -38,6 +38,16 @@ fun 1 lst_new(1 esz, 1 cap) {
   return l;
 }
 
+/* Frame-local list variant for EVM log pointer lists. */
+fun 1 lst_new_scratch(1 esz, 1 cap) {
+  var 1 l = scratch_alloc(LST_SIZE);
+  var 1 p = scratch_alloc(esz * cap);
+  st l + LST_PTR, p;
+  st l + LST_N, 0;
+  st l + LST_CAP, cap;
+  return l;
+}
+
 /* Returns the address of a fresh slot for an element of size esz. */
 fun 1 lst_push(1 l, 1 esz) {
   var n = lds 1 (l + LST_N);

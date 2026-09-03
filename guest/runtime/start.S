@@ -15,7 +15,7 @@
 _start:
     li   sp, 0xa00f0000          # small C-style stack for the shim / FFI stubs
     la   t0, cml_heap
-    li   t1, 0xa0100000          # Pancake heap start (@base)
+    li   t1, 0xa1000000          # Pancake heap start (@base)
     sd   t1, 0(t0)
     la   t0, cml_stack
     li   t1, 0xb0000000          # Pancake heap end / stack start
