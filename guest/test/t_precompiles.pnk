@@ -29,6 +29,7 @@ fun 1 main() {
   sha256_init();
   keccak_init();
   u256_ws_init();
+  bn254_init();
   bls_precompiles_init();
   ripemd160_init();
   blake2_init();

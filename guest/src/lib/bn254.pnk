@@ -9,14 +9,16 @@
    which is what execution-specs alt_bn128.py runs.
 
    Representations
-   * Fq (= F_p, p the 254-bit BN254 prime): U256 struct values held in
-     MONTGOMERY form (x is stored as x * 2^256 mod p).  fq_mul is a Montgomery
-     product on 32-bit digits (product-scanning / FIPS: one pass computes the
-     column sums of a*b and of m*p and drops the low 256 bits), so every
-     multiply is division free.  Additions, subtractions, comparisons and zero
-     tests are representation independent; small constant factors (2, 3, 4, 8,
-     9, 18, 82) are computed by doubling chains (fq_mul_small).  Inputs enter
-     via fq_to_mont and leave via fq_from_mont.
+   * Fq (= F_p, p the 254-bit BN254 prime): the software build holds U256
+     values in MONTGOMERY form (x is stored as x * 2^256 mod p).  Its fq_mul
+     is a Montgomery product on 32-bit digits (product-scanning / FIPS: one
+     pass computes the column sums of a*b and of m*p and drops the low 256
+     bits), so every multiply is division free.  ZISK_ACCEL uses canonical
+     residues directly so arith256_mod can be used without a conversion.
+     Additions, subtractions, comparisons and zero tests are representation
+     independent; small constant factors (2, 3, 4, 8, 9, 18, 82) are computed
+     by doubling chains (fq_mul_small).  Inputs enter via fq_to_mont and leave
+     via fq_from_mont, which are identity functions in ZISK_ACCEL.
    * Fq2 = Fq[i]/(i^2 + 1): 2 U256 in memory (re at +0, im at +32).
    * Fq12 = Fq[w]/(w^12 - 18 w^6 + 82): 12 U256 in memory (coefficient k at
      +32k), exactly py_ecc's FQ12 polynomial basis, so coefficients agree with
@@ -43,6 +45,11 @@
    boolean equals the reference's `result == FQ12.one()`.  bn254_pairing
    (per pair, with its own final exponentiation) is kept for tests.
 
+   ZISK_ACCEL reserves persistent arith256, Fp2, and G1 affine parameter
+   arenas in bn254_accel_init before pairing scratch marks are taken.  The
+   arith256 arena is {a,b,c,m,d} pointers followed by five 32-byte operands;
+   the Fp2 and G1 arenas each contain two operands and a two-pointer block.
+
    Needs lib/mem.pnk, lib/arith.pnk, lib/u256.pnk and modinv_bin from
    lib/secp256k1.pnk (binary extended Euclid, generic in the modulus). */
 
@@ -51,15 +58,21 @@
 /* r = 21888242871839275222246405745257275088548364400416034343698204186575808495617 */
 #define BN_R <4891460686036598785, 2896914383306846353, -5165552122434856867, 3486998266802970665>
 /* Montgomery constants: R = 2^256; FQ_ONE = R mod p, FQ_R2 = R^2 mod p, FQ_R3 = R^3 mod p */
-#define FQ_ONE <-3216340282688729699, 754611498739239741, 7381016538464732716, 1011752739694698287>
 #define FQ_R2 <-924086354343953783, -5339271268858002949, 5164255478447964150, 493319470278259999>
 #define FQ_R3 <-5634726956725096225, 7129779742913871286, -1189219630252946693, 2377177743836652868>
+#ifdef ZISK_ACCEL
+#define FQ_ONE <1, 0, 0, 0>
+#define FQ_THREE <3, 0, 0, 0>
+#define FQ_82 <82, 0, 0, 0>
+#else
+#define FQ_ONE <-3216340282688729699, 754611498739239741, 7381016538464732716, 1011752739694698287>
 #define FQ_THREE <8797723225643362519, 2263834496217719225, 3696305541684646532, 3035258219084094862>
 #define FQ_82 <5544790254283102953, -4748271689278134499, 4628036095437277618, 2762764518496934255>
 #define FQ_M18 <-8343894052472685920, -3420494331567672074, 2169086236411634456, 2710440286313254821>
 /* b2 = 3 / (9 + i) (twist coefficient), Montgomery form */
 #define FQ_B2_RE <4321547867055981224, 147241268046680925, 2789960110459671136, 2671978398120978541>
 #define FQ_B2_IM <4100506350182530919, 7345568344173317438, -2933584034067119958, 90557763186888013>
+#endif
 /* 32-bit digits of p and -p^-1 mod 2^32 */
 #define BN_N0 3632069959
 #define BN_N1 1008765974
@@ -78,17 +91,146 @@
 #define FQ12_BYTES 384
 #define ECP12_BYTES 1152
 
-var 1 bn_gamma = 0;      /* 6 Fq2: gamma^k, k = 0..5 (Montgomery) */
+var 1 bn_gamma = 0;      /* 6 Fq2: gamma^k, k = 0..5 */
 var 1 bn_expw = 0;       /* 44 words: (p^12 - 1) / r, little-endian */
 #define BN_EXP_WORDS 44
+
+#ifdef ZISK_ACCEL
+/* The 0x802 and 0x808-0x80a CSRs consume canonical residues and mutate their
+   first operand.  These buffers are allocated once, before any caller takes a
+   heap mark. */
+var 1 bn_accel_a = 0;
+var 1 bn_accel_b = 0;
+var 1 bn_accel_zero = 0;
+var 1 bn_accel_m = 0;
+var 1 bn_accel_d = 0;
+var 1 bn_accel_params = 0;
+var 1 bn_accel_fp2_f1 = 0;
+var 1 bn_accel_fp2_f2 = 0;
+var 1 bn_accel_fp2_params = 0;
+var 1 bn_accel_g1_p1 = 0;
+var 1 bn_accel_g1_p2 = 0;
+var 1 bn_accel_g1_params = 0;
+var 1 bn_b2 = 0;
+
+fun 1 bn254_accel_init() {
+  if bn_accel_params != 0 {
+    return 0;
+  }
+  bn_accel_a = alloc(32);
+  bn_accel_b = alloc(32);
+  bn_accel_zero = alloc(32);
+  bn_accel_m = alloc(32);
+  bn_accel_d = alloc(32);
+  bn_accel_params = alloc(40);
+  st bn_accel_zero, U256_ZERO;
+  st bn_accel_m, BN_P;
+  st bn_accel_params, bn_accel_a;
+  st bn_accel_params + 8, bn_accel_b;
+  st bn_accel_params + 16, bn_accel_zero;
+  st bn_accel_params + 24, bn_accel_m;
+  st bn_accel_params + 32, bn_accel_d;
+
+  bn_accel_fp2_f1 = alloc(64);
+  bn_accel_fp2_f2 = alloc(64);
+  bn_accel_fp2_params = alloc(16);
+  st bn_accel_fp2_params, bn_accel_fp2_f1;
+  st bn_accel_fp2_params + 8, bn_accel_fp2_f2;
+
+  bn_accel_g1_p1 = alloc(64);
+  bn_accel_g1_p2 = alloc(64);
+  bn_accel_g1_params = alloc(16);
+  st bn_accel_g1_params, bn_accel_g1_p1;
+  st bn_accel_g1_params + 8, bn_accel_g1_p2;
+  return 0;
+}
+
+fun U256 bn254_accel_modmul(U256 a, U256 b) {
+  bn254_accel_init();
+  st bn_accel_a, a;
+  st bn_accel_b, b;
+  @bn_arith256(bn_accel_params, 0, 0, 0);
+  return lds U256 bn_accel_d;
+}
+
+fun 1 bn254_accel_fp2_add(1 d, 1 a, 1 b) {
+  bn254_accel_init();
+  memcpy(bn_accel_fp2_f1, a, 64);
+  memcpy(bn_accel_fp2_f2, b, 64);
+  @bn_fp2_add(bn_accel_fp2_params, 0, 0, 0);
+  memcpy(d, bn_accel_fp2_f1, 64);
+  return 0;
+}
+
+fun 1 bn254_accel_fp2_sub(1 d, 1 a, 1 b) {
+  bn254_accel_init();
+  memcpy(bn_accel_fp2_f1, a, 64);
+  memcpy(bn_accel_fp2_f2, b, 64);
+  @bn_fp2_sub(bn_accel_fp2_params, 0, 0, 0);
+  memcpy(d, bn_accel_fp2_f1, 64);
+  return 0;
+}
+
+fun 1 bn254_accel_fp2_mul(1 d, 1 a, 1 b) {
+  bn254_accel_init();
+  memcpy(bn_accel_fp2_f1, a, 64);
+  memcpy(bn_accel_fp2_f2, b, 64);
+  @bn_fp2_mul(bn_accel_fp2_params, 0, 0, 0);
+  memcpy(d, bn_accel_fp2_f1, 64);
+  return 0;
+}
+
+/* gamma = (9 + i)^((p - 1) / 6), then gamma^0 .. gamma^5.  Computing these
+   five constants once keeps the accelerated source free of hand-transcribed
+   Montgomery literals while leaving the software constants unchanged. */
+fun 1 bn254_accel_fill_gamma(1 dst) {
+  var 1 base = alloc(64);
+  var 1 acc = alloc(64);
+  st base, <9, 0, 0, 0>;
+  st base + 32, <1, 0, 0, 0>;
+  st acc, FQ_ONE;
+  st acc + 32, U256_ZERO;
+  var U256 pm1 = u256_sub(BN_P, <1, 0, 0, 0>);
+  var U256 exp = u256_div(pm1, <6, 0, 0, 0>);
+  var started = 0;
+  var i = 256;
+  while i >+ 0 {
+    i = i - 1;
+    if started == 1 {
+      fq2_mul(acc, acc, acc);
+    }
+    var 1 bit = u256_bit(exp, i);
+    if bit == 1 {
+      fq2_mul(acc, acc, base);
+      started = 1;
+    }
+  }
+  st dst, FQ_ONE;
+  st dst + 32, U256_ZERO;
+  var k = 1;
+  while k <+ 6 {
+    fq2_mul(dst + k * 64, dst + (k - 1) * 64, acc);
+    k = k + 1;
+  }
+  return 0;
+}
+#endif
 
 fun 1 bn254_init() {
   if bn_gamma != 0 {
     return 0;
   }
+#ifdef ZISK_ACCEL
+  bn254_accel_init();
+#endif
   bn_gamma = alloc(6 * 64);
   st bn_gamma, FQ_ONE;
   st bn_gamma + 32, U256_ZERO;
+#ifdef ZISK_ACCEL
+  var 1 gamma_mark = heap_mark();
+  bn254_accel_fill_gamma(bn_gamma);
+  heap_release(gamma_mark);
+#else
   st bn_gamma + 64, <-5792853331649738489, -3860959873505183862, 1278438861261381767, 212598772761311868>;
   st bn_gamma + 96, <-6763652223730111118, -3454539484322995877, -2580576182942578394, 1200023580730561873>;
   st bn_gamma + 128, <-5370759089546351824, 3782902503040509012, 8791150885551868305, 1825854335138010348>;
@@ -99,6 +241,16 @@ fun 1 bn254_init() {
   st bn_gamma + 288, <6763840483288992073, 7118829427391486816, 4016233444936635065, 2630958277570195709>;
   st bn_gamma + 320, <-3931526823012659225, -2143656105628579061, 3656613296917993960, 1345095164996126785>;
   st bn_gamma + 352, <957117326806663081, 367382125163301975, -3192871766334041867, 3396254757538665050>;
+#endif
+#ifdef ZISK_ACCEL
+  bn_b2 = alloc(64);
+  var U256 inv82 = fq_inv(<82, 0, 0, 0>);
+  var U256 b2r = fq_mul(<27, 0, 0, 0>, inv82);
+  var U256 b2i0 = fq_mul(<3, 0, 0, 0>, inv82);
+  var U256 b2i = fq_neg(b2i0);
+  st bn_b2, b2r;
+  st bn_b2 + 32, b2i;
+#endif
   bn_expw = alloc(BN_EXP_WORDS * 8);
   st bn_expw, -8748722329853955808;
   st bn_expw + 8, 4658111487712502692;
@@ -147,7 +299,7 @@ fun 1 bn254_init() {
   return 0;
 }
 
-/* ---------- Fq: field arithmetic mod p, Montgomery form ---------- */
+/* ---------- Fq: field arithmetic mod p ---------- */
 
 /* (a + b) mod p for a, b < p; p < 2^254 so the sum never carries out. */
 fun U256 fq_add(U256 a, U256 b) {
@@ -175,6 +327,16 @@ fun U256 fq_neg(U256 a) {
   }
   return u256_sub(BN_P, a);
 }
+
+#ifdef ZISK_ACCEL
+
+/* The accelerator build stores canonical residues, so arith256_mod is the
+   field product directly. */
+fun U256 fq_mul(U256 a, U256 b) {
+  return bn254_accel_modmul(a, b);
+}
+
+#else
 
 /* Montgomery product a * b * 2^-256 mod p on 32-bit digits (product scanning).
    Column k accumulates the a_i b_j and m_i n_j (i + j = k) as L (sum of low
@@ -266,20 +428,35 @@ fun U256 fq_mul(U256 a, U256 b) {
   return r;
 }
 
-/* x (< p) -> Montgomery form x R mod p, and back. */
+#endif
+
+/* x (< p) -> the internal Fq representation, and back. */
 fun U256 fq_to_mont(U256 x) {
+#ifdef ZISK_ACCEL
+  return x;
+#else
   return fq_mul(x, FQ_R2);
+#endif
 }
 
 fun U256 fq_from_mont(U256 x) {
+#ifdef ZISK_ACCEL
+  return x;
+#else
   return fq_mul(x, <1, 0, 0, 0>);
+#endif
 }
 
-/* a^-1 in Montgomery form (0 for 0, like py_ecc prime_field_inv):
-   modinv_bin(aR) = a^-1 R^-1, times R^3 through one Montgomery product. */
+/* a^-1 in the internal representation (0 for 0, like py_ecc
+   prime_field_inv).  The software representation needs the final Montgomery
+   conversion; the accelerator representation does not. */
 fun U256 fq_inv(U256 a) {
+#ifdef ZISK_ACCEL
+  return modinv_bin(a, BN_P);
+#else
   var U256 i = modinv_bin(a, BN_P);
   return fq_mul(i, FQ_R3);
+#endif
 }
 
 /* k * a for a small constant k (< 2^63) by a doubling chain. */
@@ -300,6 +477,10 @@ fun U256 fq_mul_small(U256 a, 1 k) {
 
 /* d = a * b (py_ecc FQP degree-2 product: (a0 b0 - a1 b1, a0 b1 + a1 b0)). */
 fun 1 fq2_mul(1 d, 1 a, 1 b) {
+#ifdef ZISK_ACCEL
+  bn254_accel_fp2_mul(d, a, b);
+  return 0;
+#else
   var U256 a0 = lds U256 a;
   var U256 a1 = lds U256 (a + 32);
   var U256 b0 = lds U256 b;
@@ -313,6 +494,7 @@ fun 1 fq2_mul(1 d, 1 a, 1 b) {
   st d, r0;
   st d + 32, r1;
   return 0;
+#endif
 }
 
 /* ---------- Fq12 = Fq[w]/(w^12 - 18 w^6 + 82), 12 coefficients in memory ---------- */
@@ -429,6 +611,12 @@ fun 1 fe_sqr(1 fld, 1 d, 1 a) {
 
 /* Coefficientwise operations (identical for all three fields). */
 fun 1 fe_add(1 fld, 1 d, 1 a, 1 b) {
+#ifdef ZISK_ACCEL
+  if fld == 2 {
+    bn254_accel_fp2_add(d, a, b);
+    return 0;
+  }
+#endif
   var i = 0;
   while i <+ fld {
     var U256 x = lds U256 (a + i * 32);
@@ -441,6 +629,12 @@ fun 1 fe_add(1 fld, 1 d, 1 a, 1 b) {
 }
 
 fun 1 fe_sub(1 fld, 1 d, 1 a, 1 b) {
+#ifdef ZISK_ACCEL
+  if fld == 2 {
+    bn254_accel_fp2_sub(d, a, b);
+    return 0;
+  }
+#endif
   var i = 0;
   while i <+ fld {
     var U256 x = lds U256 (a + i * 32);
@@ -507,9 +701,64 @@ fun 1 ecp_is_inf(1 fld, 1 pt) {
   return fe_is_zero(fld, pt + 2 * FE_SZ(fld));
 }
 
+#ifdef ZISK_ACCEL
+fun 1 bn254_accel_g1_double(1 out, U256 x, U256 y) {
+  bn254_accel_init();
+  st bn_accel_g1_p1, x;
+  st bn_accel_g1_p1 + 32, y;
+  @bn_g1_dbl(bn_accel_g1_p1, 0, 0, 0);
+  var U256 xr = lds U256 bn_accel_g1_p1;
+  var U256 yr = lds U256 (bn_accel_g1_p1 + 32);
+  st out, xr;
+  st out + 32, yr;
+  st out + 64, FQ_ONE;
+  return 0;
+}
+
+fun 1 bn254_accel_g1_add(1 out, U256 x1, U256 y1, U256 x2, U256 y2) {
+  bn254_accel_init();
+  st bn_accel_g1_p1, x1;
+  st bn_accel_g1_p1 + 32, y1;
+  st bn_accel_g1_p2, x2;
+  st bn_accel_g1_p2 + 32, y2;
+  @bn_g1_add(bn_accel_g1_params, 0, 0, 0);
+  var U256 xr = lds U256 bn_accel_g1_p1;
+  var U256 yr = lds U256 (bn_accel_g1_p1 + 32);
+  st out, xr;
+  st out + 32, yr;
+  st out + 64, FQ_ONE;
+  return 0;
+}
+#endif
+
 /* out = 2 pt (py_ecc optimized_curve.double); out may alias pt. */
 fun 1 ecp_double(1 fld, 1 out, 1 pt) {
   var esz = FE_SZ(fld);
+#ifdef ZISK_ACCEL
+  if fld == 1 {
+    var U256 z1 = lds U256 (pt + 64);
+    var 1 z1z = u256_is_zero(z1);
+    if z1z == 1 {
+      ecp_set_inf(fld, out);
+      return 0;
+    }
+    var U256 x1 = lds U256 pt;
+    var U256 y1 = lds U256 (pt + 32);
+    var 1 z1aff = u256_eq(z1, FQ_ONE);
+    if z1aff == 0 {
+      var U256 zi = fq_inv(z1);
+      x1 = fq_mul(x1, zi);
+      y1 = fq_mul(y1, zi);
+    }
+    var 1 yz = u256_is_zero(y1);
+    if yz == 1 {
+      ecp_set_inf(fld, out);
+      return 0;
+    }
+    bn254_accel_g1_double(out, x1, y1);
+    return 0;
+  }
+#endif
   var mark = heap_mark();
   var x = pt;
   var y = pt + esz;
@@ -550,6 +799,51 @@ fun 1 ecp_double(1 fld, 1 out, 1 pt) {
 
 /* out = p1 + p2 (py_ecc optimized_curve.add); out may alias p1 or p2. */
 fun 1 ecp_add(1 fld, 1 out, 1 p1, 1 p2) {
+#ifdef ZISK_ACCEL
+  if fld == 1 {
+    var U256 z1 = lds U256 (p1 + 64);
+    var 1 z1z = u256_is_zero(z1);
+    if z1z == 1 {
+      memcpy(out, p2, 96);
+      return 0;
+    }
+    var U256 z2 = lds U256 (p2 + 64);
+    var 1 z2z = u256_is_zero(z2);
+    if z2z == 1 {
+      memcpy(out, p1, 96);
+      return 0;
+    }
+    var U256 x1 = lds U256 p1;
+    var U256 y1 = lds U256 (p1 + 32);
+    var U256 x2 = lds U256 p2;
+    var U256 y2 = lds U256 (p2 + 32);
+    var 1 z1aff = u256_eq(z1, FQ_ONE);
+    if z1aff == 0 {
+      var U256 zi1 = fq_inv(z1);
+      x1 = fq_mul(x1, zi1);
+      y1 = fq_mul(y1, zi1);
+    }
+    var 1 z2aff = u256_eq(z2, FQ_ONE);
+    if z2aff == 0 {
+      var U256 zi2 = fq_inv(z2);
+      x2 = fq_mul(x2, zi2);
+      y2 = fq_mul(y2, zi2);
+    }
+    var 1 samex = u256_eq(x1, x2);
+    if samex == 1 {
+      var U256 ysum = fq_add(y1, y2);
+      var 1 yzero = u256_is_zero(ysum);
+      if yzero == 1 {
+        ecp_set_inf(fld, out);
+        return 0;
+      }
+      bn254_accel_g1_double(out, x1, y1);
+      return 0;
+    }
+    bn254_accel_g1_add(out, x1, y1, x2, y2);
+    return 0;
+  }
+#endif
   var esz = FE_SZ(fld);
   var 1 z1z = fe_is_zero(fld, p1 + 2 * esz);
   if z1z == 1 {
@@ -808,7 +1102,12 @@ fun 1 fq12_inv(1 d, 1 a) {
   var tmp = alloc(416);
   memzero(r0, 416);
   st r0, FQ_82;
+#ifdef ZISK_ACCEL
+  var U256 m18 = fq_neg(<18, 0, 0, 0>);
+  st r0 + 192, m18;
+#else
   st r0 + 192, FQ_M18;
+#endif
   st r0 + 384, FQ_ONE;
   memzero(r1, 416);
   memcpy(r1, a, FQ12_BYTES);
@@ -974,8 +1273,8 @@ fun 1 bn254_pairing(1 out, 1 q2, 1 p1) {
 
 /* ---------- input parsing (bytes_to_g1 / bytes_to_g2) ---------- */
 
-/* 64 bytes (BE x || BE y) at data -> projective Fq point at out (3 Fq,
-   Montgomery).  Returns 0, or 1 for "Invalid field element" (coordinate >= p)
+/* 64 bytes (BE x || BE y) at data -> projective Fq point at out (3 Fq, in the
+   internal representation).  Returns 0, or 1 for "Invalid field element" (coordinate >= p)
    / "Point is not on curve"; (0, 0) is the point at infinity. */
 fun 1 bn254_parse_g1(1 data, 1 out) {
   var U256 x = u256_from_be(data, 32);
@@ -1044,8 +1343,12 @@ fun 1 bn254_parse_g2(1 data, 1 out) {
   var t1 = alloc(64);
   var t2 = alloc(64);
   var b2 = alloc(64);
+#ifdef ZISK_ACCEL
+  memcpy(b2, bn_b2, 64);
+#else
   st b2, FQ_B2_RE;
   st b2 + 32, FQ_B2_IM;
+#endif
   fq2_mul(t1, out + 64, out + 64);        /* y^2 */
   fq2_mul(t2, out, out);
   fq2_mul(t2, t2, out);                   /* x^3 */
