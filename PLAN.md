@@ -12,8 +12,8 @@ Milestones (each is measured with `tools/eest-run.py` on EEST fixtures):
 - [x] **M3 execution** (2026-09-02: 173/200 random fixtures PASS(full); all remaining failures are unimplemented precompiles): transactions (RLP, typed txs, secp256k1 recovery), EVM interpreter,
       gas, state tracker, block access list, receipts/bloom, post-state root
       (incremental MPT writes). `succ` starts matching on plain-transfer / simple-opcode fixtures.
-- [ ] **M4 precompiles** (done: ecrecover, sha256, identity): ecrecover, sha256, ripemd160, identity, modexp, bn254, blake2f,
-      KZG point evaluation, BLS12-381.
+- [ ] **M4 precompiles** (done: ecrecover, sha256, ripemd160, identity, modexp, alt_bn128 add/mul/pairing,
+      blake2f, p256verify; open: BLS12-381 #27, KZG point evaluation #28; alt_bn128 is correct but slow #29).
 - [ ] **M5 performance**: instruction counts vs evm-asm codegen guest / reth
       (spike minstret and ziskemu steps), profile hot spots.
 
@@ -51,7 +51,18 @@ The deliberate numeric-width and saturation boundaries are catalogued in
   (before zero-hash precomputation), keccak ~8%. The gist's devnet-7 block 115260 input is not in
   this checkout; `tools/eest-run.py --ziskemu` reports ZisK steps for any manifest.
 
+* 2026-09-03: merged the 13 codex PRs for issues #1–#13 (debug gating, shadowing, manifest paths, tests,
+  check_all.sh, byte-helper/htab speedups, merge sort, scratch-buffer init, docs, eest-run histogram/filters,
+  bench --profile) and landed alt_bn128 from the interrupted agents' branch: 30/30 baseline fixtures,
+  185/200 random (remaining 15 = BLS12-381/KZG, fail 1/99). Unmerged partial work (BLS12-381 library,
+  sha256 rewrite) is kept on branch `wip/agents-partial`; issues #27–#36 describe how to finish it.
+
 ## Workflow
 Mechanical, well-specified tasks are filed as GitHub issues with the `mechanical` label
 (https://github.com/pirapira/stateless-pancaketh/issues) for other agents; this session keeps the
 spec-porting and semantic-debugging work.
+PR checklist for those issues: read `guest/PANCAKE-NOTES.md`; add every new test to `tools/check_all.sh`;
+report the `check_all.sh` summary and the 30/30 line of `tools/eest-run.py guest/build/guest.elf
+work/inputs/manifest.tsv --quiet-passes`; performance PRs report before/after instruction counts.
+Unit tests must call the same `*_init()` functions as `guest/src/main.pnk` (scratch buffers are never
+allocated lazily).
