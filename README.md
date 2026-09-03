@@ -83,6 +83,21 @@ is absent, it generates a 30-fixture baseline first; set
 line, detailed output is saved under `work/check-all/`, and any failure makes
 the script exit non-zero.
 
+For performance work, make a JSON snapshot and compare it with the main
+baseline:
+
+```bash
+tools/bench.py guest/build/guest.elf work/inputs/manifest.tsv --json work/bench/new.json
+tools/bench_compare.py work/bench/baseline-main.json work/bench/new.json
+```
+
+The comparator prints per-fixture and total Spike instruction, ZisK step, and
+ZisK cost deltas, and exits non-zero for an `ok` regression or more than 2%
+Spike instruction growth (override with `--max-regress`). After reviewing a
+new main baseline, regenerate it with the same `bench.py` command using
+`work/bench/baseline-main.json`, force-add that ignored file with
+`git add -f`, and paste the comparator output into the performance PR.
+
 ## Status / plan
 
 See `PLAN.md`. Deliberate numeric-width and saturation boundaries are

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""bench.py GUEST.elf MANIFEST [--limit N] [--filter S] [--profile]
+"""bench.py GUEST.elf MANIFEST [--limit N] [--filter S] [--profile] [--json FILE]
 Gist-style benchmark: for each fixture, run spike_run (instruction count) and
 ziskemu -X (steps, total cost, cost distribution) and print a table plus totals.
 Only fixtures whose 69-byte output matches the expected bytes are counted as OK.
+
+With --json, the same per-fixture metrics and totals are written to FILE for
+tools/bench_compare.py.
 
 With --profile, the histogram-enabled tools/spike_prof/spike_prof runner is
 used in place of spike_run and a top-15 per-function table is printed for each
@@ -11,6 +14,7 @@ and each function's share of profiled Spike instructions.
 """
 import argparse
 import csv
+import json
 import os
 import re
 import subprocess
@@ -66,6 +70,8 @@ def main():
     ap.add_argument("--filter", default="")
     ap.add_argument("--profile", action="store_true",
                     help="profile each fixture and print its top 15 functions")
+    ap.add_argument("--json", metavar="FILE",
+                    help="write per-fixture and total metrics as JSON")
     a = ap.parse_args()
 
     if a.profile and not os.path.isfile(SPIKE_PROF):
@@ -84,6 +90,7 @@ def main():
     out_dir = os.path.join(ROOT, "work/bench")
     os.makedirs(out_dir, exist_ok=True)
     tot = dict(spike=0, steps=0, cost=0, ok=0, n=0)
+    fixtures = []
     print(f"{'fixture':60s} {'ok':>3s} {'spike_instr':>12s} {'zisk_steps':>11s} "
           f"{'zisk_cost':>14s} {'main%':>6s} {'prec%':>6s} {'mem%':>5s}")
     for index, (label, inp, expected_hex, *_) in enumerate(rows):
@@ -121,6 +128,13 @@ def main():
         print(f"{label[:60]:60s} {('y' if ok else 'n'):>3s} {spike:12d} "
               f"{steps:11d} {cost:14d} {pct('MAIN'):>6s} "
               f"{pct('PRECOMPILES'):>6s} {pct('MEMORY'):>5s}")
+        fixtures.append({
+            "label": label,
+            "ok": ok,
+            "spike_instr": spike,
+            "zisk_steps": steps,
+            "zisk_cost": cost,
+        })
         if a.profile:
             try:
                 profile_rows = read_profile(a.elf, hist)
@@ -137,6 +151,25 @@ def main():
           f"zisk_steps={tot['steps']}  zisk_cost={tot['cost']}"
           + (f"  cost/step={tot['cost'] / max(tot['steps'], 1):.1f}"
              if tot["steps"] else ""))
+    if a.json:
+        json_path = os.path.abspath(a.json)
+        os.makedirs(os.path.dirname(json_path), exist_ok=True)
+        snapshot = {
+            "version": 1,
+            "guest": os.path.relpath(os.path.abspath(a.elf), ROOT),
+            "manifest": os.path.relpath(manifest_path, ROOT),
+            "fixtures": fixtures,
+            "totals": {
+                "fixtures": tot["n"],
+                "ok": tot["ok"],
+                "spike_instr": tot["spike"],
+                "zisk_steps": tot["steps"],
+                "zisk_cost": tot["cost"],
+            },
+        }
+        with open(json_path, "w") as output:
+            json.dump(snapshot, output, indent=2, sort_keys=True)
+            output.write("\n")
 
 
 if __name__ == "__main__":
