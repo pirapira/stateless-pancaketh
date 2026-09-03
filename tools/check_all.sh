@@ -136,6 +136,25 @@ run_check "unit t_bls12381 (software/accelerated Spike differential)" \
 run_check "unit t_kzg (software/accelerated Spike differential)" \
   "$ROOT/tools/check_kzg.sh"
 
+run_eest_with_baseline() {
+  local manifest="$1"
+  local json="$2"
+  shift 2
+  local runner_rc=0
+  "$ROOT/tools/eest-run.py" "$LOG_DIR/guest.elf" "$manifest" "$@" \
+    --json "$json" || runner_rc=$?
+  # eest-run returns 1 when a fixture has an expected baseline failure.  The
+  # baseline checker decides whether that failure is still allowed; setup and
+  # runner errors (2+) remain hard failures.
+  if (( runner_rc > 1 )); then
+    return "$runner_rc"
+  fi
+  if [[ ! -s "$json" ]]; then
+    return 1
+  fi
+  "$ROOT/tools/eest-baseline.py" check "$manifest" "$json"
+}
+
 # Run every converted EEST manifest, including sampled manifests such as
 # work/inputs-rand/manifest.tsv when they are present.  Relative input paths
 # in the manifests are valid because the script changed to the repository
@@ -149,9 +168,9 @@ for manifest in "$ROOT"/work/inputs*/manifest.tsv; do
   if [[ -n "${CHECK_ALL_EEST_JOBS:-}" ]]; then
     eest_args+=(--jobs "$CHECK_ALL_EEST_JOBS")
   fi
+  eest_json="$LOG_DIR/eest-$manifest_name.json"
   run_check "EEST $manifest_name" \
-    "$ROOT/tools/eest-run.py" "$LOG_DIR/guest.elf" "$manifest" \
-    "${eest_args[@]}"
+    run_eest_with_baseline "$manifest" "$eest_json" "${eest_args[@]}"
 done
 if [[ "$manifest_found" -eq 0 ]]; then
   run_check "EEST manifests available" false
