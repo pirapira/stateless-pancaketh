@@ -64,6 +64,8 @@
 #define FQ_ONE <1, 0, 0, 0>
 #define FQ_THREE <3, 0, 0, 0>
 #define FQ_82 <82, 0, 0, 0>
+/* 82^-1 mod BN_P; avoids a one-time binary-Euclid walk during init. */
+#define BN_INV82 <2101474240800967975, -6528550383122280258, -6649978986918917939, 1148157965898539121>
 #else
 #define FQ_ONE <-3216340282688729699, 754611498739239741, 7381016538464732716, 1011752739694698287>
 #define FQ_THREE <8797723225643362519, 2263834496217719225, 3696305541684646532, 3035258219084094862>
@@ -155,28 +157,37 @@ fun U256 bn254_accel_modmul(U256 a, U256 b) {
 
 fun 1 bn254_accel_fp2_add(1 d, 1 a, 1 b) {
   bn254_accel_init();
-  memcpy(bn_accel_fp2_f1, a, 64);
-  memcpy(bn_accel_fp2_f2, b, 64);
+  st bn_accel_fp2_f1, lds U256 a;
+  st bn_accel_fp2_f1 + 32, lds U256 (a + 32);
+  st bn_accel_fp2_f2, lds U256 b;
+  st bn_accel_fp2_f2 + 32, lds U256 (b + 32);
   @bn_fp2_add(bn_accel_fp2_params, 0, 0, 0);
-  memcpy(d, bn_accel_fp2_f1, 64);
+  st d, lds U256 bn_accel_fp2_f1;
+  st d + 32, lds U256 (bn_accel_fp2_f1 + 32);
   return 0;
 }
 
 fun 1 bn254_accel_fp2_sub(1 d, 1 a, 1 b) {
   bn254_accel_init();
-  memcpy(bn_accel_fp2_f1, a, 64);
-  memcpy(bn_accel_fp2_f2, b, 64);
+  st bn_accel_fp2_f1, lds U256 a;
+  st bn_accel_fp2_f1 + 32, lds U256 (a + 32);
+  st bn_accel_fp2_f2, lds U256 b;
+  st bn_accel_fp2_f2 + 32, lds U256 (b + 32);
   @bn_fp2_sub(bn_accel_fp2_params, 0, 0, 0);
-  memcpy(d, bn_accel_fp2_f1, 64);
+  st d, lds U256 bn_accel_fp2_f1;
+  st d + 32, lds U256 (bn_accel_fp2_f1 + 32);
   return 0;
 }
 
 fun 1 bn254_accel_fp2_mul(1 d, 1 a, 1 b) {
   bn254_accel_init();
-  memcpy(bn_accel_fp2_f1, a, 64);
-  memcpy(bn_accel_fp2_f2, b, 64);
+  st bn_accel_fp2_f1, lds U256 a;
+  st bn_accel_fp2_f1 + 32, lds U256 (a + 32);
+  st bn_accel_fp2_f2, lds U256 b;
+  st bn_accel_fp2_f2 + 32, lds U256 (b + 32);
   @bn_fp2_mul(bn_accel_fp2_params, 0, 0, 0);
-  memcpy(d, bn_accel_fp2_f1, 64);
+  st d, lds U256 bn_accel_fp2_f1;
+  st d + 32, lds U256 (bn_accel_fp2_f1 + 32);
   return 0;
 }
 
@@ -227,9 +238,17 @@ fun 1 bn254_init() {
   st bn_gamma, FQ_ONE;
   st bn_gamma + 32, U256_ZERO;
 #ifdef ZISK_ACCEL
-  var 1 gamma_mark = heap_mark();
-  bn254_accel_fill_gamma(bn_gamma);
-  heap_release(gamma_mark);
+  /* Canonical gamma^1..gamma^5; generated once from (9+i)^((p-1)/6). */
+  st bn_gamma + 64, <-3023263510725794704, 6652412619979170166, -1677133612687389856, 1334392721173227487>;
+  st bn_gamma + 96, <-3864950087214734676, 8392900422778406885, -6470972283911074930, 2623794231377586150>;
+  st bn_gamma + 128, <-7357873164905392835, -5220583391274781940, 5479733118184829251, 3437169660107756023>;
+  st bn_gamma + 160, <1613930359396748194, 3651902652079185358, 5450706350010664852, 1642095672556236320>;
+  st bn_gamma + 192, <-2570428085256055974, -2618032922002105960, -2567396378348947015, 449501266848708060>;
+  st bn_gamma + 224, <-9019725564874608413, 2414067704922266578, 505728791003885355, 558513134835401882>;
+  st bn_gamma + 256, <-8896263661532829854, -3228124393165755278, -9154761723791008124, 411322207813150721>;
+  st bn_gamma + 288, <-4522943258981334746, 3928778152882390883, -6973119578636608366, 3176267935786044142>;
+  st bn_gamma + 320, <3360468246954731823, 4781773437820083155, -1640939321228443660, 109144015201994313>;
+  st bn_gamma + 352, <2650008764942134347, -5728354866287465792, -6737470500459339907, 1345717340070545013>;
 #else
   st bn_gamma + 64, <-5792853331649738489, -3860959873505183862, 1278438861261381767, 212598772761311868>;
   st bn_gamma + 96, <-6763652223730111118, -3454539484322995877, -2580576182942578394, 1200023580730561873>;
@@ -244,7 +263,7 @@ fun 1 bn254_init() {
 #endif
 #ifdef ZISK_ACCEL
   bn_b2 = alloc(64);
-  var U256 inv82 = fq_inv(<82, 0, 0, 0>);
+  var U256 inv82 = BN_INV82;
   var U256 b2r = fq_mul(<27, 0, 0, 0>, inv82);
   var U256 b2i0 = fq_mul(<3, 0, 0, 0>, inv82);
   var U256 b2i = fq_neg(b2i0);
@@ -804,13 +823,17 @@ fun 1 ecp_add(1 fld, 1 out, 1 p1, 1 p2) {
     var U256 z1 = lds U256 (p1 + 64);
     var 1 z1z = u256_is_zero(z1);
     if z1z == 1 {
-      memcpy(out, p2, 96);
+      st out, lds U256 p2;
+      st out + 32, lds U256 (p2 + 32);
+      st out + 64, lds U256 (p2 + 64);
       return 0;
     }
     var U256 z2 = lds U256 (p2 + 64);
     var 1 z2z = u256_is_zero(z2);
     if z2z == 1 {
-      memcpy(out, p1, 96);
+      st out, lds U256 p1;
+      st out + 32, lds U256 (p1 + 32);
+      st out + 64, lds U256 (p1 + 64);
       return 0;
     }
     var U256 x1 = lds U256 p1;

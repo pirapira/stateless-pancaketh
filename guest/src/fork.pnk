@@ -647,10 +647,10 @@ fun 1 process_transaction(1 tx, 1 index, 1 pubkey) {
   /* accounts to delete */
   var del = lds 1 (out + MCO_DELETE);
   if del != 0 {
-    var dcap = lds 1 (del + HT_CAP);
+    var dcap = lds 1 (del + HT_COUNT);
     i = 0;
     while i < dcap {
-      var {1,1,1} s = htab_slot(del, i);
+      var {1,1,1} s = htab_item(del, i);
       if s.0 != 0 {
         clear_account_preserving_balance(s.1);
       }
