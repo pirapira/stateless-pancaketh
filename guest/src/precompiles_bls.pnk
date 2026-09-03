@@ -1,0 +1,499 @@
+/* precompiles_bls.pnk -- EIP-2537 BLS12-381 precompiles.
+   Length errors are InvalidParameter before gas; malformed coordinates and
+   subgroup failures are InvalidParameter after the gas charge, matching the
+   Amsterdam execution-spec reference. */
+#include "lib/bls12381_consts.pnk"
+
+/* secp256k1 is already part of the main guest and owns the generic fp_*
+   symbols.  Keep the BLS Fp implementation private when both libraries are
+   included in one translation unit; the standalone BLS tests use the source
+   names directly. */
+#define fp_is_zero bls_fp_is_zero
+#define fp_eq bls_fp_eq
+#define fp_lt_raw bls_fp_lt_raw
+#define fp_add_raw bls_fp_add_raw
+#define fp_sub_raw bls_fp_sub_raw
+#define fp_add bls_fp_add
+#define fp_sub bls_fp_sub
+#define fp_neg bls_fp_neg
+#define fp_dbl bls_fp_dbl
+#define fp_mul bls_fp_mul
+#define fp_sqr bls_fp_sqr
+#define fp_to_mont bls_fp_to_mont
+#define fp_from_mont bls_fp_from_mont
+#define fp_shr1 bls_fp_shr1
+#define fp_half_can bls_fp_half_can
+#define fp_inv_raw bls_fp_inv_raw
+#define fp_inv bls_fp_inv
+#define fp_pow bls_fp_pow
+#define fp_sgn0 bls_fp_sgn0
+#define fp_is_high bls_fp_is_high
+#define fp_from_be48 bls_fp_from_be48
+#define fp_to_be48 bls_fp_to_be48
+#define fp_decode64 bls_fp_decode64
+#define fp_encode64 bls_fp_encode64
+#include "lib/fp384.pnk"
+#include "lib/bls12381.pnk"
+#undef fp_is_zero
+#undef fp_eq
+#undef fp_lt_raw
+#undef fp_add_raw
+#undef fp_sub_raw
+#undef fp_add
+#undef fp_sub
+#undef fp_neg
+#undef fp_dbl
+#undef fp_mul
+#undef fp_sqr
+#undef fp_to_mont
+#undef fp_from_mont
+#undef fp_shr1
+#undef fp_half_can
+#undef fp_inv_raw
+#undef fp_inv
+#undef fp_pow
+#undef fp_sgn0
+#undef fp_is_high
+#undef fp_from_be48
+#undef fp_to_be48
+#undef fp_decode64
+#undef fp_encode64
+
+#define BLS_G1ADD_GAS 375
+#define BLS_G1MSM_BASE_GAS 12000
+#define BLS_G2ADD_GAS 600
+#define BLS_G2MSM_BASE_GAS 22500
+#define BLS_PAIRING_BASE_GAS 37700
+#define BLS_PAIRING_PAIR_GAS 32600
+#define BLS_G1MAP_GAS 5500
+#define BLS_G2MAP_GAS 23800
+#define BLS_G1ADD_LEN 256
+#define BLS_G1MSM_PAIR_LEN 160
+#define BLS_G2ADD_LEN 512
+#define BLS_G2MSM_PAIR_LEN 288
+#define BLS_PAIRING_PAIR_LEN 384
+#define BLS_G1MAP_LEN 64
+#define BLS_G2MAP_LEN 128
+#define BLS_DISCOUNT_WORDS 256
+
+/* The EIP-2537 table has one 64-bit word per k for G1 followed by G2.
+   It is initialized outside any frame scratch mark and remains live for the
+   guest lifetime, like the generated BLS constants. */
+var 1 bls_discount = 0;
+
+fun 1 bls_precompiles_init() {
+  if bls_discount != 0 {
+    return 0;
+  }
+  bls_lib_init();
+  bls_discount = alloc(BLS_DISCOUNT_WORDS * 8);
+  st bls_discount + 0, 1000;
+  st bls_discount + 8, 949;
+  st bls_discount + 16, 848;
+  st bls_discount + 24, 797;
+  st bls_discount + 32, 764;
+  st bls_discount + 40, 750;
+  st bls_discount + 48, 738;
+  st bls_discount + 56, 728;
+  st bls_discount + 64, 719;
+  st bls_discount + 72, 712;
+  st bls_discount + 80, 705;
+  st bls_discount + 88, 698;
+  st bls_discount + 96, 692;
+  st bls_discount + 104, 687;
+  st bls_discount + 112, 682;
+  st bls_discount + 120, 677;
+  st bls_discount + 128, 673;
+  st bls_discount + 136, 669;
+  st bls_discount + 144, 665;
+  st bls_discount + 152, 661;
+  st bls_discount + 160, 658;
+  st bls_discount + 168, 654;
+  st bls_discount + 176, 651;
+  st bls_discount + 184, 648;
+  st bls_discount + 192, 645;
+  st bls_discount + 200, 642;
+  st bls_discount + 208, 640;
+  st bls_discount + 216, 637;
+  st bls_discount + 224, 635;
+  st bls_discount + 232, 632;
+  st bls_discount + 240, 630;
+  st bls_discount + 248, 627;
+  st bls_discount + 256, 625;
+  st bls_discount + 264, 623;
+  st bls_discount + 272, 621;
+  st bls_discount + 280, 619;
+  st bls_discount + 288, 617;
+  st bls_discount + 296, 615;
+  st bls_discount + 304, 613;
+  st bls_discount + 312, 611;
+  st bls_discount + 320, 609;
+  st bls_discount + 328, 608;
+  st bls_discount + 336, 606;
+  st bls_discount + 344, 604;
+  st bls_discount + 352, 603;
+  st bls_discount + 360, 601;
+  st bls_discount + 368, 599;
+  st bls_discount + 376, 598;
+  st bls_discount + 384, 596;
+  st bls_discount + 392, 595;
+  st bls_discount + 400, 593;
+  st bls_discount + 408, 592;
+  st bls_discount + 416, 591;
+  st bls_discount + 424, 589;
+  st bls_discount + 432, 588;
+  st bls_discount + 440, 586;
+  st bls_discount + 448, 585;
+  st bls_discount + 456, 584;
+  st bls_discount + 464, 582;
+  st bls_discount + 472, 581;
+  st bls_discount + 480, 580;
+  st bls_discount + 488, 579;
+  st bls_discount + 496, 577;
+  st bls_discount + 504, 576;
+  st bls_discount + 512, 575;
+  st bls_discount + 520, 574;
+  st bls_discount + 528, 573;
+  st bls_discount + 536, 572;
+  st bls_discount + 544, 570;
+  st bls_discount + 552, 569;
+  st bls_discount + 560, 568;
+  st bls_discount + 568, 567;
+  st bls_discount + 576, 566;
+  st bls_discount + 584, 565;
+  st bls_discount + 592, 564;
+  st bls_discount + 600, 563;
+  st bls_discount + 608, 562;
+  st bls_discount + 616, 561;
+  st bls_discount + 624, 560;
+  st bls_discount + 632, 559;
+  st bls_discount + 640, 558;
+  st bls_discount + 648, 557;
+  st bls_discount + 656, 556;
+  st bls_discount + 664, 555;
+  st bls_discount + 672, 554;
+  st bls_discount + 680, 553;
+  st bls_discount + 688, 552;
+  st bls_discount + 696, 551;
+  st bls_discount + 704, 550;
+  st bls_discount + 712, 549;
+  st bls_discount + 720, 548;
+  st bls_discount + 728, 547;
+  st bls_discount + 736, 547;
+  st bls_discount + 744, 546;
+  st bls_discount + 752, 545;
+  st bls_discount + 760, 544;
+  st bls_discount + 768, 543;
+  st bls_discount + 776, 542;
+  st bls_discount + 784, 541;
+  st bls_discount + 792, 540;
+  st bls_discount + 800, 540;
+  st bls_discount + 808, 539;
+  st bls_discount + 816, 538;
+  st bls_discount + 824, 537;
+  st bls_discount + 832, 536;
+  st bls_discount + 840, 536;
+  st bls_discount + 848, 535;
+  st bls_discount + 856, 534;
+  st bls_discount + 864, 533;
+  st bls_discount + 872, 532;
+  st bls_discount + 880, 532;
+  st bls_discount + 888, 531;
+  st bls_discount + 896, 530;
+  st bls_discount + 904, 529;
+  st bls_discount + 912, 528;
+  st bls_discount + 920, 528;
+  st bls_discount + 928, 527;
+  st bls_discount + 936, 526;
+  st bls_discount + 944, 525;
+  st bls_discount + 952, 525;
+  st bls_discount + 960, 524;
+  st bls_discount + 968, 523;
+  st bls_discount + 976, 522;
+  st bls_discount + 984, 522;
+  st bls_discount + 992, 521;
+  st bls_discount + 1000, 520;
+  st bls_discount + 1008, 520;
+  st bls_discount + 1016, 519;
+  st bls_discount + 1024, 1000;
+  st bls_discount + 1032, 1000;
+  st bls_discount + 1040, 923;
+  st bls_discount + 1048, 884;
+  st bls_discount + 1056, 855;
+  st bls_discount + 1064, 832;
+  st bls_discount + 1072, 812;
+  st bls_discount + 1080, 796;
+  st bls_discount + 1088, 782;
+  st bls_discount + 1096, 770;
+  st bls_discount + 1104, 759;
+  st bls_discount + 1112, 749;
+  st bls_discount + 1120, 740;
+  st bls_discount + 1128, 732;
+  st bls_discount + 1136, 724;
+  st bls_discount + 1144, 717;
+  st bls_discount + 1152, 711;
+  st bls_discount + 1160, 704;
+  st bls_discount + 1168, 699;
+  st bls_discount + 1176, 693;
+  st bls_discount + 1184, 688;
+  st bls_discount + 1192, 683;
+  st bls_discount + 1200, 679;
+  st bls_discount + 1208, 674;
+  st bls_discount + 1216, 670;
+  st bls_discount + 1224, 666;
+  st bls_discount + 1232, 663;
+  st bls_discount + 1240, 659;
+  st bls_discount + 1248, 655;
+  st bls_discount + 1256, 652;
+  st bls_discount + 1264, 649;
+  st bls_discount + 1272, 646;
+  st bls_discount + 1280, 643;
+  st bls_discount + 1288, 640;
+  st bls_discount + 1296, 637;
+  st bls_discount + 1304, 634;
+  st bls_discount + 1312, 632;
+  st bls_discount + 1320, 629;
+  st bls_discount + 1328, 627;
+  st bls_discount + 1336, 624;
+  st bls_discount + 1344, 622;
+  st bls_discount + 1352, 620;
+  st bls_discount + 1360, 618;
+  st bls_discount + 1368, 615;
+  st bls_discount + 1376, 613;
+  st bls_discount + 1384, 611;
+  st bls_discount + 1392, 609;
+  st bls_discount + 1400, 607;
+  st bls_discount + 1408, 606;
+  st bls_discount + 1416, 604;
+  st bls_discount + 1424, 602;
+  st bls_discount + 1432, 600;
+  st bls_discount + 1440, 598;
+  st bls_discount + 1448, 597;
+  st bls_discount + 1456, 595;
+  st bls_discount + 1464, 593;
+  st bls_discount + 1472, 592;
+  st bls_discount + 1480, 590;
+  st bls_discount + 1488, 589;
+  st bls_discount + 1496, 587;
+  st bls_discount + 1504, 586;
+  st bls_discount + 1512, 584;
+  st bls_discount + 1520, 583;
+  st bls_discount + 1528, 582;
+  st bls_discount + 1536, 580;
+  st bls_discount + 1544, 579;
+  st bls_discount + 1552, 578;
+  st bls_discount + 1560, 576;
+  st bls_discount + 1568, 575;
+  st bls_discount + 1576, 574;
+  st bls_discount + 1584, 573;
+  st bls_discount + 1592, 571;
+  st bls_discount + 1600, 570;
+  st bls_discount + 1608, 569;
+  st bls_discount + 1616, 568;
+  st bls_discount + 1624, 567;
+  st bls_discount + 1632, 566;
+  st bls_discount + 1640, 565;
+  st bls_discount + 1648, 563;
+  st bls_discount + 1656, 562;
+  st bls_discount + 1664, 561;
+  st bls_discount + 1672, 560;
+  st bls_discount + 1680, 559;
+  st bls_discount + 1688, 558;
+  st bls_discount + 1696, 557;
+  st bls_discount + 1704, 556;
+  st bls_discount + 1712, 555;
+  st bls_discount + 1720, 554;
+  st bls_discount + 1728, 553;
+  st bls_discount + 1736, 552;
+  st bls_discount + 1744, 552;
+  st bls_discount + 1752, 551;
+  st bls_discount + 1760, 550;
+  st bls_discount + 1768, 549;
+  st bls_discount + 1776, 548;
+  st bls_discount + 1784, 547;
+  st bls_discount + 1792, 546;
+  st bls_discount + 1800, 545;
+  st bls_discount + 1808, 545;
+  st bls_discount + 1816, 544;
+  st bls_discount + 1824, 543;
+  st bls_discount + 1832, 542;
+  st bls_discount + 1840, 541;
+  st bls_discount + 1848, 541;
+  st bls_discount + 1856, 540;
+  st bls_discount + 1864, 539;
+  st bls_discount + 1872, 538;
+  st bls_discount + 1880, 537;
+  st bls_discount + 1888, 537;
+  st bls_discount + 1896, 536;
+  st bls_discount + 1904, 535;
+  st bls_discount + 1912, 535;
+  st bls_discount + 1920, 534;
+  st bls_discount + 1928, 533;
+  st bls_discount + 1936, 532;
+  st bls_discount + 1944, 532;
+  st bls_discount + 1952, 531;
+  st bls_discount + 1960, 530;
+  st bls_discount + 1968, 530;
+  st bls_discount + 1976, 529;
+  st bls_discount + 1984, 528;
+  st bls_discount + 1992, 528;
+  st bls_discount + 2000, 527;
+  st bls_discount + 2008, 526;
+  st bls_discount + 2016, 526;
+  st bls_discount + 2024, 525;
+  st bls_discount + 2032, 524;
+  st bls_discount + 2040, 524;
+  return 0;
+}
+
+fun 1 bls_g1_msm_discount(1 k) {
+  if k >+ 128 {
+    return 519;
+  }
+  return lds 1 (bls_discount + (k - 1) * 8);
+}
+
+fun 1 bls_g2_msm_discount(1 k) {
+  if k >+ 128 {
+    return 524;
+  }
+  return lds 1 (bls_discount + (128 + k - 1) * 8);
+}
+
+fun 1 pre_bls_g1_add() {
+  var msg = lds 1 (ev + EV_MSG);
+  var n = lds 1 (msg + MSG_DATA_N);
+  if n != BLS_G1ADD_LEN {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  charge_gas(BLS_G1ADD_GAS);
+  var 1 out = alloc(128);
+  var 1 err = bls_g1_add_exec(lds 1 (msg + MSG_DATA), out);
+  if err != 0 {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, 128;
+  return 0;
+}
+
+fun 1 pre_bls_g1_msm() {
+  var msg = lds 1 (ev + EV_MSG);
+  var n = lds 1 (msg + MSG_DATA_N);
+  if n == 0 {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  var {1,1} qr = udivmod(n, BLS_G1MSM_PAIR_LEN);
+  if qr.1 != 0 {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  var 1 k = qr.0;
+  var 1 discount = bls_g1_msm_discount(k);
+  var {1,1} gasq = udivmod(k * BLS_G1MSM_BASE_GAS * discount, 1000);
+  charge_gas(gasq.0);
+  var 1 out = alloc(128);
+  var 1 err = bls_g1_msm_exec(lds 1 (msg + MSG_DATA), k, out);
+  if err != 0 {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, 128;
+  return 0;
+}
+
+fun 1 pre_bls_g2_add() {
+  var msg = lds 1 (ev + EV_MSG);
+  var n = lds 1 (msg + MSG_DATA_N);
+  if n != BLS_G2ADD_LEN {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  charge_gas(BLS_G2ADD_GAS);
+  var 1 out = alloc(256);
+  var 1 err = bls_g2_add_exec(lds 1 (msg + MSG_DATA), out);
+  if err != 0 {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, 256;
+  return 0;
+}
+
+fun 1 pre_bls_g2_msm() {
+  var msg = lds 1 (ev + EV_MSG);
+  var n = lds 1 (msg + MSG_DATA_N);
+  if n == 0 {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  var {1,1} qr = udivmod(n, BLS_G2MSM_PAIR_LEN);
+  if qr.1 != 0 {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  var 1 k = qr.0;
+  var 1 discount = bls_g2_msm_discount(k);
+  var {1,1} gasq = udivmod(k * BLS_G2MSM_BASE_GAS * discount, 1000);
+  charge_gas(gasq.0);
+  var 1 out = alloc(256);
+  var 1 err = bls_g2_msm_exec(lds 1 (msg + MSG_DATA), k, out);
+  if err != 0 {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, 256;
+  return 0;
+}
+
+fun 1 pre_bls_pairing() {
+  var msg = lds 1 (ev + EV_MSG);
+  var n = lds 1 (msg + MSG_DATA_N);
+  if n == 0 {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  var {1,1} qr = udivmod(n, BLS_PAIRING_PAIR_LEN);
+  if qr.1 != 0 {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  var 1 k = qr.0;
+  charge_gas(BLS_PAIRING_PAIR_GAS * k + BLS_PAIRING_BASE_GAS);
+  var 1 out = alloc(32);
+  var 1 err = bls_pairing_exec(lds 1 (msg + MSG_DATA), k, out);
+  if err != 0 {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, 32;
+  return 0;
+}
+
+fun 1 pre_bls_map_fp_to_g1() {
+  var msg = lds 1 (ev + EV_MSG);
+  var n = lds 1 (msg + MSG_DATA_N);
+  if n != BLS_G1MAP_LEN {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  charge_gas(BLS_G1MAP_GAS);
+  var 1 out = alloc(128);
+  var 1 err = bls_map_fp_to_g1_exec(lds 1 (msg + MSG_DATA), out);
+  if err != 0 {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, 128;
+  return 0;
+}
+
+fun 1 pre_bls_map_fp2_to_g2() {
+  var msg = lds 1 (ev + EV_MSG);
+  var n = lds 1 (msg + MSG_DATA_N);
+  if n != BLS_G2MAP_LEN {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  charge_gas(BLS_G2MAP_GAS);
+  var 1 out = alloc(256);
+  var 1 err = bls_map_fp2_to_g2_exec(lds 1 (msg + MSG_DATA), out);
+  if err != 0 {
+    throw EvmErr E_INVALID_PARAMETER;
+  }
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, 256;
+  return 0;
+}

@@ -13,7 +13,7 @@ Milestones (each is measured with `tools/eest-run.py` on EEST fixtures):
       gas, state tracker, block access list, receipts/bloom, post-state root
       (incremental MPT writes). `succ` starts matching on plain-transfer / simple-opcode fixtures.
 - [ ] **M4 precompiles** (done: ecrecover, sha256, ripemd160, identity, modexp, alt_bn128 add/mul/pairing,
-      blake2f, p256verify; open: BLS12-381 #27, KZG point evaluation #28; alt_bn128 is correct but slow #29).
+      blake2f, p256verify, BLS12-381 #27; open: KZG point evaluation #28; alt_bn128 is correct but slow #29).
 - [ ] **M5 performance**: instruction counts vs evm-asm codegen guest / reth
       (spike minstret and ziskemu steps), profile hot spots.
 - [ ] **M6 ZisK accelerators**: keccak/sha256/secp256k1/bn254/bls12/blake2 via ZisK CSRs behind Pancake
@@ -117,6 +117,14 @@ ZISK_ACCEL` gives a differential test: both builds must produce identical bytes 
   bench --profile) and landed alt_bn128 from the interrupted agents' branch: 30/30 baseline fixtures,
   185/200 random (remaining 15 = BLS12-381/KZG, fail 1/99). Unmerged partial work (BLS12-381 library,
   sha256 rewrite) is kept on branch `wip/agents-partial`; issues #27–#36 describe how to finish it (#29–#32, software crypto speedups, were closed on 2026-09-03 as superseded by M6).
+
+* 2026-09-03: BLS12-381 (#27) uses the existing Spike/ZisK acceleration points for
+  Fp, Fp2, and affine G1 operations, with the software implementation retained
+  behind `#ifndef ZISK_ACCEL`.  The standalone differential is byte-identical:
+  3,980,271,828 -> 207,495,435 Spike steps for the full vector stream; one
+  pairing is 531,453,581 -> 28,242,021 steps.  The accelerated main guest passes
+  all 1,015 BLS EEST blocks and the 30-fixture baseline; the 200-fixture sample
+  is 198/200 with the two known KZG `1/99` failures.
 
 ## Workflow
 Mechanical, well-specified tasks are filed as GitHub issues with the `mechanical` label

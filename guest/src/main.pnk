@@ -28,6 +28,7 @@ fun 1 main() {
   ssz_init();
   mpt_init();
   u256_ws_init();
+  bls_precompiles_init();
   ripemd160_init();
   blake2_init();
   header_init();
