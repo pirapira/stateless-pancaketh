@@ -53,6 +53,10 @@ fun 1 htab_new_scratch(1 key_len, 1 cap) {
   var 1 used = scratch_alloc(cap);
   memzero(used, cap);
   st t + HT_USED, used;
+  var 1 order = scratch_alloc(cap * 8);
+  st t + HT_ORDER, order;
+  var 1 order_pos = scratch_alloc(cap * 8);
+  st t + HT_ORDER_POS, order_pos;
   return t;
 }
 
