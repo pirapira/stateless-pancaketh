@@ -140,6 +140,13 @@ ZISK_ACCEL` gives a differential test: both builds must produce identical bytes 
   parity. Software guest: two BLS G2-MSM fixtures exceed spike_run's step cap (recorded as allowed ERRORs in
   `tools/eest-baseline.json`; the accelerated build passes them).
 
+* 2026-09-04: merged #48 (full EEST sweep: 26,090/26,104 PASS(full) + 8 malformed, 6 FAIL tracked in #47;
+  results in `work/sweep/all.json.gz`), #49/#50/#51 (ZisK CSR paths for sha256, secp256k1, alt_bn128).
+  Accelerated guest, fixture 00000: 3.63M ZisK steps / 0.637G cost (software: 21.1M / 2.48G); 30-fixture
+  mean 3.8M steps vs 24.3M. Both builds byte-identical on all fixtures; ziskemu parity holds.
+  Lesson: when resolving `start.S` stub conflicts, re-check every stub ends in `ret` (a dropped `ret` made
+  sha256f fall through into arith256mod).
+
 ## Workflow
 Mechanical, well-specified tasks are filed as GitHub issues with the `mechanical` label
 (https://github.com/pirapira/stateless-pancaketh/issues) for other agents; this session keeps the
