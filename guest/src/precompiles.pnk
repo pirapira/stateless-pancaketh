@@ -4,9 +4,9 @@
    current frame `ev` (charges gas, sets EV_OUTPUT). Implemented so far:
    identity, sha256, ecrecover (via lib/secp256k1), ripemd160, modexp,
    blake2f (lib/ripemd160, lib/modexp, lib/blake2; PrecompilesHash.lean and
-   Precompiles.lean pModexp), and BLS12-381 (precompiles_bls.pnk). Others raise
-   BlockErr 99 (the guest cannot decide the block -> rejection, reported as a
-   succ miss). */
+   Precompiles.lean pModexp), KZG point evaluation, and BLS12-381
+   (precompiles_kzg.pnk and precompiles_bls.pnk). Others raise BlockErr 99
+   (the guest cannot decide the block -> rejection, reported as a succ miss). */
 #include "lib/ripemd160.pnk"
 #include "lib/blake2.pnk"
 #include "lib/modexp.pnk"
@@ -14,6 +14,7 @@
 
 #include "precompiles_bn254.pnk"
 #include "precompiles_bls.pnk"
+#include "precompiles_kzg.pnk"
 
 fun 1 precompile_index(1 addr) {
   var 1 z = is_zero_bytes(addr, 18);
@@ -237,6 +238,7 @@ fun 1 run_precompile(1 idx) {
   if idx == 8 { pre_alt_bn128_pairing_check(); return 0; }
   if idx == 5 { pre_modexp(); return 0; }
   if idx == 9 { pre_blake2f(); return 0; }
+  if idx == 10 { pre_kzg_point_evaluation(); return 0; }
   if idx == 11 { pre_bls_g1_add(); return 0; }
   if idx == 12 { pre_bls_g1_msm(); return 0; }
   if idx == 13 { pre_bls_g2_add(); return 0; }

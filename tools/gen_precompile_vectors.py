@@ -5,6 +5,7 @@ Each record is [idx:u8][gas:u64 LE][data_len:u32 LE][call data]. The whole
 record blob is wrapped in the ziskemu input format used by input_blob().
 """
 import argparse
+import hashlib
 import os
 import struct
 import sys
@@ -15,6 +16,21 @@ sys.path.insert(0, TOOLS)
 from gen_p256_vectors import fixed_cases  # noqa: E402
 from gen_pre_vectors import BODY, EIP152  # noqa: E402
 from gen_secp_vectors import FIXED, ecrecover_address  # noqa: E402
+
+
+KZG_INFINITY = b"\xc0" + b"\0" * 47
+KZG_BLS_MODULUS = bytes.fromhex(
+    "73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001"
+)
+
+
+def kzg_versioned_hash(commitment):
+    return b"\x01" + hashlib.sha256(commitment).digest()[1:]
+
+
+def kzg_data(z=b"\0" * 31 + b"\x02", y=b"\0" * 32,
+             commitment=KZG_INFINITY, proof=KZG_INFINITY):
+    return kzg_versioned_hash(commitment) + z + y + commitment + proof
 
 
 def frame(blob):
@@ -116,6 +132,21 @@ def build_blob():
         record(18, 6900, bad),
         record(18, 6900, valid[:-1]),
         record(18, 6899, valid),
+    ]
+
+    # KZG point evaluation: zero-polynomial success, version/hash and field
+    # failures before pairing, malformed compressed G1, short input, and OOG.
+    kzg_valid = kzg_data()
+    kzg_wrong_hash = bytes([kzg_valid[0] ^ 1]) + kzg_valid[1:]
+    kzg_out_of_range_z = kzg_data(z=KZG_BLS_MODULUS)
+    kzg_bad_point = kzg_data(commitment=bytes(48))
+    recs += [
+        record(10, 50000, kzg_valid),
+        record(10, 50000, kzg_wrong_hash),
+        record(10, 50000, kzg_out_of_range_z),
+        record(10, 50000, kzg_bad_point),
+        record(10, 50000, kzg_valid[:-1]),
+        record(10, 49999, kzg_valid),
     ]
     return b"".join(recs)
 

@@ -1,0 +1,25 @@
+/* precompiles_kzg.pnk -- EIP-4844 point-evaluation precompile (0x0a).
+   The KZG body lives with the BLS12-381 library because it shares the field,
+   G1, pairing, and trusted-setup constants.  This file supplies the EVM
+   framing: exact input length, fixed gas, and the fixed success output. */
+
+#define KZG_POINT_EVALUATION_GAS 50000
+#define KZG_POINT_EVALUATION_LEN 192
+
+fun 1 pre_kzg_point_evaluation() {
+  var msg = lds 1 (ev + EV_MSG);
+  var n = lds 1 (msg + MSG_DATA_N);
+  /* point_evaluation.py checks length before charging gas. */
+  if n != KZG_POINT_EVALUATION_LEN {
+    throw EvmErr E_KZG_PROOF;
+  }
+  charge_gas(KZG_POINT_EVALUATION_GAS);
+  var 1 out = alloc(64);
+  var 1 err = kzg_point_evaluation_exec(lds 1 (msg + MSG_DATA), out);
+  if err != 0 {
+    throw EvmErr E_KZG_PROOF;
+  }
+  st ev + EV_OUTPUT, out;
+  st ev + EV_OUTPUT_N, 64;
+  return 0;
+}
