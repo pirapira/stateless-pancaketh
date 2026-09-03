@@ -13,7 +13,7 @@ Milestones (each is measured with `tools/eest-run.py` on EEST fixtures):
       gas, state tracker, block access list, receipts/bloom, post-state root
       (incremental MPT writes). `succ` starts matching on plain-transfer / simple-opcode fixtures.
 - [ ] **M4 precompiles** (done: ecrecover, sha256, ripemd160, identity, modexp, alt_bn128 add/mul/pairing,
-      blake2f, p256verify, BLS12-381 #27; open: KZG point evaluation #28; alt_bn128 is correct but slow #29).
+      blake2f, p256verify, BLS12-381 #27, KZG point evaluation #28; alt_bn128 is correct but slow #29).
 - [ ] **M5 performance**: instruction counts vs evm-asm codegen guest / reth
       (spike minstret and ziskemu steps), profile hot spots.
 - [ ] **M6 ZisK accelerators**: keccak/sha256/secp256k1/bn254/bls12/blake2 via ZisK CSRs behind Pancake

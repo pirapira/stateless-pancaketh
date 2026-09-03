@@ -1,0 +1,45 @@
+/* t_kzg.pnk -- KZG point-evaluation vectors.
+   Input records are [8-byte case id][8-byte length][payload padded to 8].
+   Output records are [8-byte case id][8-byte output length][8-byte error]
+   followed by the 64-byte success output (zeroed on error). */
+#include "config.h"
+#include "lib/mem.pnk"
+#include "lib/arith.pnk"
+#include "lib/u256.pnk"
+#include "lib/sha256.pnk"
+#include "lib/bls12381_consts.pnk"
+#include "lib/fp384.pnk"
+#include "lib/bls12381.pnk"
+
+fun 1 main() {
+  mem_init();
+  sha256_init();
+  u256_ws_init();
+  bls_lib_init();
+  var {1,1} inp = input_blob();
+  var 1 out = alloc(inp.1 * 2 + 4096);
+  var pos = 0;
+  var opos = 0;
+  while pos + 16 <=+ inp.1 {
+    var ty = lds 1 (inp.0 + pos);
+    var len = lds 1 (inp.0 + pos + 8);
+    var pl = inp.0 + pos + 16;
+    var 1 mark = heap_mark();
+    var 1 err = 1;
+    st out + opos, ty;
+    st out + opos + 8, 72;
+    if len == 192 {
+      err = kzg_point_evaluation_exec(pl, out + opos + 24);
+    }
+    st out + opos + 16, err;
+    if err != 0 {
+      memzero(out + opos + 24, 64);
+    }
+    heap_release(mark);
+    opos = opos + 88;
+    pos = pos + 16 + ((len + 7) & (0 - 8));
+  }
+  output_write(out, opos);
+  @halt(@base, 0, @base, 0);
+  return 0;
+}

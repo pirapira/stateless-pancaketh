@@ -13,10 +13,12 @@ sys.path.insert(0, TOOLS)
 
 import pyref  # noqa: E402
 from gen_p256_vectors import verify as p256_verify  # noqa: E402
+from gen_precompile_vectors import kzg_data  # noqa: E402
 from gen_secp_vectors import ecrecover_address  # noqa: E402
 
 E_OUT_OF_GAS = 4
 E_INVALID_PARAMETER = 10
+E_KZG_PROOF = 13
 
 
 def read_padded(data, off, n):
@@ -98,6 +100,21 @@ def run_one(idx, gas, data):
         r, s, qx, qy = (int.from_bytes(data[32 * i:32 * (i + 1)], "big") for i in range(1, 5))
         result = b"\0" * 31 + b"\1" if p256_verify(h, r, s, qx, qy) else b""
         return 0, cost, result
+
+    if idx == 10:
+        cost = 50000
+        if len(data) != 192:
+            return E_KZG_PROOF, 0, b""
+        if gas < cost:
+            return E_OUT_OF_GAS, 0, b""
+        # gen_precompile_vectors.py keeps wrapper cases to the inexpensive
+        # zero-polynomial proof; the standalone KZG test covers wrong-y's
+        # full pairing path against execution-specs.
+        if data == kzg_data():
+            return 0, cost, bytes(30) + b"\x10\0" + bytes.fromhex(
+                "73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001"
+            )
+        return E_KZG_PROOF, cost, b""
 
     raise AssertionError(f"unsupported test index {idx}")
 

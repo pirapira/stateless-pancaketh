@@ -53,6 +53,7 @@ ffitrap:
 .globl ffikeccakf
 ffikeccakf:
     csrrs x0, 0x800, a0
+    ret
 
 # FFI: BLS12-381 accelerator calls.  The first argument is the parameter
 # block described by evm-asm/scripts/spike/zisk_accel.cc; each CSR mutates its
