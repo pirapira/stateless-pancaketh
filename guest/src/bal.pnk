@@ -261,49 +261,95 @@ fun 1 incorporate_tx_into_block() {
 
 /* ---- build + encode + hash ---------------------------------------------------- */
 
+/* 1 if a sorts after b for the sort key selected by kind. */
+fun 1 bal_sort_gt(1 a, 1 b, 1 kind) {
+  if kind == 0 {
+    if (lds 1 a) >+ (lds 1 b) {
+      return 1;
+    }
+    return 0;
+  }
+  var len = 20;
+  if kind == 2 {
+    len = 32;
+  }
+  var k = 0;
+  while k < len {
+    var ca = ld8 (a + k);
+    var cb = ld8 (b + k);
+    if ca != cb {
+      if ca >+ cb {
+        return 1;
+      }
+      return 0;
+    }
+    k = k + 1;
+  }
+  return 0;
+}
+
 /* Sort an array of n fixed-size elements by a key: kind 0 = first word
    (index), kind 1 = 20-byte address at elem, kind 2 = 32-byte big-endian
-   bytes at elem. Stable insertion sort (inputs are small). */
+   bytes at elem. Bottom-up merge sort is stable: equal keys always take the
+   element from the left run first. tmp is retained for the existing caller
+   signature; the merge buffer is allocated for the whole list below. */
 fun 1 sort_elems(1 p, 1 n, 1 esz, 1 kind, 1 tmp) {
-  var i = 1;
-  while i < n {
-    var j = i;
-    while j > 0 {
-      var a = p + (j - 1) * esz;
-      var b = p + j * esz;
-      var gt = 0;
-      if kind == 0 {
-        if (lds 1 a) >+ (lds 1 b) {
-          gt = 1;
-        }
-      } else {
-        var len = 20;
-        if kind == 2 {
-          len = 32;
-        }
-        var k = 0;
-        while k <+ len {
-          var ca = ld8 (a + k);
-          var cb = ld8 (b + k);
-          if ca != cb {
-            if ca >+ cb {
-              gt = 1;
-            }
-            k = len;
-          }
-          k = k + 1;
-        }
-      }
-      if gt == 0 {
-        break;
-      }
-      memcpy(tmp, a, esz);
-      memcpy(a, b, esz);
-      memcpy(b, tmp, esz);
-      j = j - 1;
-    }
-    i = i + 1;
+  if n <+ 2 {
+    return 0;
   }
+  var 1 mark = heap_mark();
+  var 1 aux = alloc(n * esz);
+  var 1 src = p;
+  var 1 dst = aux;
+  var width = 1;
+  while width < n {
+    var left = 0;
+    while left < n {
+      var mid = left + width;
+      if mid >+ n {
+        mid = n;
+      }
+      var right = mid + width;
+      if right >+ n {
+        right = n;
+      }
+      var i = left;
+      var j = mid;
+      var k = left;
+      while (i < mid) && (j < right) {
+        var a = src + i * esz;
+        var b = src + j * esz;
+        var 1 gt = bal_sort_gt(a, b, kind);
+        if gt == 0 {
+          memcpy(dst + k * esz, a, esz);
+          i = i + 1;
+        } else {
+          memcpy(dst + k * esz, b, esz);
+          j = j + 1;
+        }
+        k = k + 1;
+      }
+      while i < mid {
+        memcpy(dst + k * esz, src + i * esz, esz);
+        i = i + 1;
+        k = k + 1;
+      }
+      while j < right {
+        memcpy(dst + k * esz, src + j * esz, esz);
+        j = j + 1;
+        k = k + 1;
+      }
+      left = right;
+    }
+    var 1 swap = src;
+    src = dst;
+    dst = swap;
+    width = width * 2;
+  }
+  if src != p {
+    memcpy(p, src, n * esz);
+  }
+  heap_release(mark);
   return 0;
 }
 
