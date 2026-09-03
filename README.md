@@ -85,4 +85,5 @@ the script exit non-zero.
 
 ## Status / plan
 
-See `PLAN.md`.
+See `PLAN.md`. Deliberate numeric-width and saturation boundaries are
+documented in [docs/ENVELOPE.md](docs/ENVELOPE.md).
