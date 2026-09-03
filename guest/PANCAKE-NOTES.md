@@ -69,6 +69,16 @@ Empirically verified against the prebuilt `cake` (CakeML e8eca63, 2026-08-24).
 * Register pressure: ~30 live locals compile but spill; order statements for short live ranges
   in hot loops.
 
+## Lessons from recent work
+
+* Scratch buffers are allocated by explicit `*_init()` functions called from
+  `main()`; never allocate them lazily inside a scratch mark/release region.
+  Unit tests must call the same init functions as the main guest; see
+  `guest/test/t_recover.pnk` for the pattern.
+* `DBG(k)` expands to `skip` when `GUEST_DEBUG` is not defined. Debug markers
+  therefore disappear from the default build; `DEBUG=1 guest/build.sh ...`
+  enables the output stores.
+
 ## Tooling
 * Unit tests: `guest/test/t_*.pnk` (a `main` that reads `input_blob()`, computes, and
   `output_write`s the result), checked with `tools/unit.py TEST INPUT 'python-expr'`.

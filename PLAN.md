@@ -12,9 +12,17 @@ Milestones (each is measured with `tools/eest-run.py` on EEST fixtures):
 - [x] **M3 execution** (2026-09-02: 173/200 random fixtures PASS(full); all remaining failures are unimplemented precompiles): transactions (RLP, typed txs, secp256k1 recovery), EVM interpreter,
       gas, state tracker, block access list, receipts/bloom, post-state root
       (incremental MPT writes). `succ` starts matching on plain-transfer / simple-opcode fixtures.
-- [ ] **M4 precompiles** (done: ecrecover, sha256, ripemd160, identity, modexp, alt_bn128 add/mul/pairing,
-      blake2f, p256verify, BLS12-381 #27; open: KZG point evaluation #28; alt_bn128 is correct but slow #29).
-      blake2f, p256verify, BLS12-381 #27, KZG point evaluation #28; alt_bn128 is correct but slow #29).
+- [x] **M4 precompiles**:
+      - [x] ecrecover
+      - [x] sha256
+      - [x] ripemd160
+      - [x] identity
+      - [x] modexp
+      - [x] alt_bn128 ECADD, ECMUL, and pairing (correct, but slow; #29 is superseded by M6)
+      - [x] blake2f
+      - [x] p256verify
+      - [x] BLS12-381 (#27)
+      - [x] KZG point evaluation (#28)
 - [ ] **M5 performance**: instruction counts vs evm-asm codegen guest / reth
       (spike minstret and ziskemu steps), profile hot spots.
 - [ ] **M6 ZisK accelerators**: keccak/sha256/secp256k1/bn254/bls12/blake2 via ZisK CSRs behind Pancake
@@ -131,8 +139,10 @@ ZISK_ACCEL` gives a differential test: both builds must produce identical bytes 
 Mechanical, well-specified tasks are filed as GitHub issues with the `mechanical` label
 (https://github.com/pirapira/stateless-pancaketh/issues) for other agents; this session keeps the
 spec-porting and semantic-debugging work.
-PR checklist for those issues: read `guest/PANCAKE-NOTES.md`; add every new test to `tools/check_all.sh`;
-report the `check_all.sh` summary and the 30/30 line of `tools/eest-run.py guest/build/guest.elf
-work/inputs/manifest.tsv --quiet-passes`; performance PRs report before/after instruction counts.
-Unit tests must call the same `*_init()` functions as `guest/src/main.pnk` (scratch buffers are never
-allocated lazily).
+PR checklist for those issues:
+
+* Read `guest/PANCAKE-NOTES.md` before editing Pancake.
+* Add every new unit test or vector check to `tools/check_all.sh`.
+* Report the `check_all.sh` summary and the 30/30 line from
+  `tools/eest-run.py guest/build/guest.elf work/inputs/manifest.tsv --quiet-passes`.
+* Performance PRs report before/after instruction counts.

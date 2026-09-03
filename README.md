@@ -65,6 +65,50 @@ Debug bytes in the output region (past the 69-byte result, ignored by the harnes
 * `ziskemu` (`~/.zisk/bin/ziskemu`) for ZisK step counts.
 * Python oracle: `uv run --directory evm-asm/execution-specs python ...`.
 
+## Tools
+
+`guest/build.sh` accepts `DEBUG=1` to define `GUEST_DEBUG`; this preserves the
+debug bytes at output offsets 69, 70, and 100. The default build omits those
+stores. For example:
+
+```bash
+DEBUG=1 guest/build.sh guest/src/main.pnk guest/build/guest-debug.elf
+```
+
+`tools/eest-run.py` uses Spike by default and supports several ways to narrow
+down a failing sweep:
+
+```bash
+tools/eest-run.py guest/build/guest.elf work/inputs/manifest.tsv --json work/run/results.json
+tools/eest-run.py guest/build/guest.elf work/inputs/manifest.tsv \
+  --from-json work/run/results.json --fail-code 1/99
+```
+
+`--labels FILE` selects one manifest label per line (blank lines and lines
+starting with `#` are ignored). A JSON run records the classification, debug
+bytes, regions, and steps for each fixture. When failures exist, the runner
+also prints a histogram grouped by result regions and debug failure code.
+
+For the per-function profile, build the histogram-enabled Spike runner first,
+then pass `--profile` to `tools/bench.py`:
+
+```bash
+tools/spike_prof/build.sh
+tools/bench.py guest/build/guest.elf work/inputs/manifest.tsv --profile
+```
+
+`tools/check_all.sh` saves command output under `$CHECK_ALL_LOG_DIR` (default
+`work/check-all`). `CHECK_ALL_INPUT_COUNT` controls the generated EEST sample
+size, and `CHECK_ALL_EEST_JOBS` controls EEST parallelism. The alt_bn128
+vector checker can run a quick ECADD/ECMUL smoke check with:
+
+```bash
+tools/check_bn254.sh --only 1,2
+```
+
+The checker also covers pairing and field-tower records; select those record
+types with `--only` when running the slower software reference cases.
+
 ## Quick start
 
 ```bash
