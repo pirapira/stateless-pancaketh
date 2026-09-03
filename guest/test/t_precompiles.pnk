@@ -30,6 +30,7 @@ fun 1 main() {
   keccak_init();
   u256_ws_init();
   secp256k1_init();
+  bn254_init();
   bls_precompiles_init();
   ripemd160_init();
   blake2_init();

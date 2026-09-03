@@ -72,6 +72,34 @@ ffisecpadd:
 .globl ffisecpdbl
 ffisecpdbl:
     .4byte 0x80452073             # csrs 0x804, a0 -> secp256k1 affine double
+.globl ffibn_arith256
+ffibn_arith256:
+    .4byte 0x80252073             # csrs 0x802, a0 -> Arith256Mod
+    ret
+
+.globl ffibn_g1_add
+ffibn_g1_add:
+    .4byte 0x80652073             # csrs 0x806, a0 -> BN254 G1 affine add
+    ret
+
+.globl ffibn_g1_dbl
+ffibn_g1_dbl:
+    .4byte 0x80752073             # csrs 0x807, a0 -> BN254 G1 affine double
+    ret
+
+.globl ffibn_fp2_add
+ffibn_fp2_add:
+    .4byte 0x80852073             # csrs 0x808, a0 -> BN254 Fp2 add
+    ret
+
+.globl ffibn_fp2_sub
+ffibn_fp2_sub:
+    .4byte 0x80952073             # csrs 0x809, a0 -> BN254 Fp2 subtract
+    ret
+
+.globl ffibn_fp2_mul
+ffibn_fp2_mul:
+    .4byte 0x80a52073             # csrs 0x80A, a0 -> BN254 Fp2 multiply
     ret
 
 # FFI: BLS12-381 accelerator calls.  The first argument is the parameter
