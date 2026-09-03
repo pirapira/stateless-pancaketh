@@ -249,7 +249,7 @@ fun 1 validate_authorization_checks(1 auth, 1 authority) {
 fun 1 set_delegation() {
   var msg = lds 1 (ev + EV_MSG);
   var te = lds 1 (msg + MSG_TE);
-  var be = lds 1 (msg + MSG_BE);
+  var benv = lds 1 (msg + MSG_BE);
   var 1 written = htab_new(20, 8);
   htab_set(written, lds 1 (te + TE_ORIGIN), 1);
   var 1 vz = u256_is_zero(lds {1,1,1,1} (te + TE_VALUE));
@@ -270,7 +270,7 @@ fun 1 set_delegation() {
     if cz != 0 {
       cid_ok = 1;
     }
-    if (cfit != 0) && (cid.0 == (lds 1 (be + BE_CHAIN_ID))) {
+    if (cfit != 0) && (cid.0 == (lds 1 (benv + BE_CHAIN_ID))) {
       cid_ok = 1;
     }
     if cid_ok != 0 {

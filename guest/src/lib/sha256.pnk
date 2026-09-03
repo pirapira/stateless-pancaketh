@@ -342,23 +342,23 @@ fun 1 sha256(1 p, 1 len, 1 out) {
    fully loaded before anything is stored). Block 1 is a ++ b with the IV as
    immediates; block 2 is the constant padding block (0x80, zeros, length 512),
    whose whole schedule is folded into the round constants. */
-fun 1 sha256_pair(1 a, 1 b, 1 out) {
-  var w0 = LD_BE32(a + 0);
-  var w1 = LD_BE32(a + 4);
-  var w2 = LD_BE32(a + 8);
-  var w3 = LD_BE32(a + 12);
-  var w4 = LD_BE32(a + 16);
-  var w5 = LD_BE32(a + 20);
-  var w6 = LD_BE32(a + 24);
-  var w7 = LD_BE32(a + 28);
-  var w8 = LD_BE32(b + 0);
-  var w9 = LD_BE32(b + 4);
-  var w10 = LD_BE32(b + 8);
-  var w11 = LD_BE32(b + 12);
-  var w12 = LD_BE32(b + 16);
-  var w13 = LD_BE32(b + 20);
-  var w14 = LD_BE32(b + 24);
-  var w15 = LD_BE32(b + 28);
+fun 1 sha256_pair(1 input_a, 1 input_b, 1 out) {
+  var w0 = LD_BE32(input_a + 0);
+  var w1 = LD_BE32(input_a + 4);
+  var w2 = LD_BE32(input_a + 8);
+  var w3 = LD_BE32(input_a + 12);
+  var w4 = LD_BE32(input_a + 16);
+  var w5 = LD_BE32(input_a + 20);
+  var w6 = LD_BE32(input_a + 24);
+  var w7 = LD_BE32(input_a + 28);
+  var w8 = LD_BE32(input_b + 0);
+  var w9 = LD_BE32(input_b + 4);
+  var w10 = LD_BE32(input_b + 8);
+  var w11 = LD_BE32(input_b + 12);
+  var w12 = LD_BE32(input_b + 16);
+  var w13 = LD_BE32(input_b + 20);
+  var w14 = LD_BE32(input_b + 24);
+  var w15 = LD_BE32(input_b + 28);
   var a = 1779033703;
   var b = -1150833019;
   var c = 1013904242;
