@@ -42,6 +42,7 @@ fun 1 main() {
   sha256_init();
   keccak_init();
   u256_ws_init();
+  secp256k1_init();
   ssz_init();
   var {1,1} inp = input_blob();
   var 1 si = decode_stateless_input(inp.0, inp.1);
