@@ -15,7 +15,7 @@ Command:
 ```bash
 ACCEL=1 guest/build.sh guest/src/main.pnk guest/build/guest-accel.elf
 tools/eest-run.py guest/build/guest-accel.elf work/sweep/manifest.tsv \
-  --jobs 32 --quiet-passes --json work/sweep/all.json \
+  --jobs 32 --quiet-passes --json work/sweep/all.json (gunzip work/sweep/all.json.gz) \
   --out-dir work/sweep/run-accel
 ```
 
@@ -59,6 +59,6 @@ Rerun the group after rebuilding the accelerated guest with:
 
 ```bash
 tools/eest-run.py guest/build/guest-accel.elf work/sweep/manifest.tsv \
-  --from-json work/sweep/all.json --fail-code 0/0 --jobs 32 \
+  --from-json work/sweep/all.json (gunzip work/sweep/all.json.gz) --fail-code 0/0 --jobs 32 \
   --out-dir work/sweep/rerun-0-0
 ```
