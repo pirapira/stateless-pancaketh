@@ -7,12 +7,23 @@ import argparse, os, re, subprocess, sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPIKE_RUN = os.environ.get("SPIKE_RUN", os.path.join(ROOT, "evm-asm/scripts/spike/spike_run"))
 ZISKEMU = os.environ.get("ZISKEMU", os.path.expanduser("~/.zisk/bin/ziskemu"))
+
+def resolve_input_path(path, manifest_dir):
+    if os.path.isfile(path):
+        return path
+    return os.path.join(manifest_dir, os.path.basename(path))
+
 ap = argparse.ArgumentParser(); ap.add_argument("elf"); ap.add_argument("manifest")
 ap.add_argument("--limit", type=int, default=0); ap.add_argument("--filter", default="")
 a = ap.parse_args()
-rows = [l.rstrip("\n").split("\t") for l in open(a.manifest) if l.strip()]
+manifest_path = os.path.abspath(a.manifest)
+manifest_dir = os.path.dirname(manifest_path)
+with open(manifest_path) as manifest:
+    rows = [l.rstrip("\n").split("\t") for l in manifest if l.strip()]
 if a.filter: rows = [r for r in rows if a.filter in r[0]]
 if a.limit: rows = rows[:a.limit]
+for row in rows:
+    row[1] = resolve_input_path(row[1], manifest_dir)
 out_dir = os.path.join(ROOT, "work/bench"); os.makedirs(out_dir, exist_ok=True)
 tot = dict(spike=0, steps=0, cost=0, ok=0, n=0)
 print(f"{'fixture':60s} {'ok':>3s} {'spike_instr':>12s} {'zisk_steps':>11s} {'zisk_cost':>14s} {'main%':>6s} {'prec%':>6s} {'mem%':>5s}")
