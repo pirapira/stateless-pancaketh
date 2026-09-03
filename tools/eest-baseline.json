@@ -58,83 +58,13 @@
     },
     "inputs-rand": {
       "failure_histogram": {
-        "root/----/tail, 1/99": 15
+        ", 0/0": 1
       },
       "failures": {
-        "00045_test_precomps_eip2929_cancun_fork_Amsterdam-blockchain_test_from_state_test-yes_from_prague0__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00046_test_valid_fork_Amsterdam-blockchain_test_from_state_test-bls_g1mul_random_g1-__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00063_test_invalid_fork_Amsterdam-blockchain_test_from_state_test--bls_g1mul_violate_top_bytes-__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00075_test_valid_fork_Amsterdam-blockchain_test_from_state_test-bls_pairing_e_0_0_-__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00107_test_invalid_fork_Amsterdam-blockchain_test_from_state_test--fq_eq_2_512_minus_1_2-__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00108_test_invalid_inputs_fork_Amsterdam-blockchain_test_from_state_test-result_Result.FAILURE-null_in": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00117_test_valid_fork_Amsterdam-blockchain_test_from_state_test-fp_map_to_inf-__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
         "00122_test_valid_gas_g2msm_fork_Amsterdam-discount_table_4_of_8-blockchain_test_from_state_test-precom": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00126_test_invalid_fork_Amsterdam-blockchain_test_from_state_test--rand_not_in_subgroup_2_times_q-__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00132_test_external_vectors_fork_Amsterdam-blockchain_test_from_state_test-versioned_hash_None-verify_": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00163_test_call_types_fork_Amsterdam-blockchain_test_from_state_test-inf_plus_inf-call_opcode_STATICCA": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00179_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00188_test_valid_fork_Amsterdam-blockchain_test_from_state_test-bls_g2msm_discount_table_66-__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00192_test_valid_fork_Amsterdam-blockchain_test_from_state_test-bls_g1msm_discount_table_136-__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00197_test_invalid_fork_Amsterdam-blockchain_test_from_state_test--g2_input_invalid_length-__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
+          "class": "ERROR",
+          "dbg": "0/0",
+          "regions": ""
         }
       },
       "labels": [
@@ -339,114 +269,19 @@
         "00198_test_precomps_eip2929_cancun_fork_Amsterdam-blockchain_test_from_state_test-yes71__b0",
         "00199_test_precompiles_fork_Amsterdam-blockchain_test_from_state_test-oog_False-full_block__b0"
       ],
-      "pass": 185,
-      "pass_full": 185,
+      "pass": 199,
+      "pass_full": 199,
       "total": 200
     },
     "inputs-rand2": {
       "failure_histogram": {
-        "root/----/tail, 1/99": 20
+        ", 0/0": 1
       },
       "failures": {
-        "00014_test_precomps_eip2929_cancun_fork_Amsterdam-blockchain_test_from_state_test-yes_from_prague34__b": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00042_test_valid_fork_Amsterdam-blockchain_test_from_state_test-bls_g2msm_discount_table_72-__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00045_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00057_test_invalid_fork_Amsterdam-blockchain_test_from_state_test--rand_not_on_curve_4_times_q_minus_1": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00088_test_external_vectors_fork_Amsterdam-blockchain_test_from_state_test-versioned_hash_None-verify_": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00108_test_valid_fork_Amsterdam-blockchain_test_from_state_test-bls_g1msm_discount_table_76-__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00115_test_bal_precompile_call_opcode_fork_Amsterdam-precompile_0x000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00125_test_withdrawing_to_precompiles_fork_Amsterdam-precompile_0x000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00127_test_invalid_fork_Amsterdam-blockchain_test_from_state_test--non_zero_byte_16_boundary_violation": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00144_test_valid_fork_Amsterdam-blockchain_test_from_state_test-bls_g2map_6162636465663031-__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00145_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00173_test_call_types_fork_Amsterdam-blockchain_test_from_state_test-zero_times_inf-call_opcode_CALLCO": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
         "00178_test_valid_fork_Amsterdam-blockchain_test_from_state_test-max_discount_plus_1-__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00201_test_invalid_fork_Amsterdam-blockchain_test_from_state_test--rand_not_in_subgroup_0_times_1-__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00203_test_invalid_fork_Amsterdam-blockchain_test_from_state_test--a_y_above_p-__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00225_test_invalid_fork_Amsterdam-blockchain_test_from_state_test---bls_pairing_g2_not_in_correct_subg": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00244_test_valid_fork_Amsterdam-blockchain_test_from_state_test-bls_g1msm_discount_table_134-__b0": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00255_test_external_vectors_fork_Amsterdam-blockchain_test_from_state_test-versioned_hash_None-verify_": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00277_test_bal_precompile_call_opcode_fork_Amsterdam-precompile_0x000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00284_test_precompiles_fork_Amsterdam-address_0x000000000000000000000000000000000000000e-precompile_ex": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
+          "class": "ERROR",
+          "dbg": "0/0",
+          "regions": ""
         }
       },
       "labels": [
@@ -751,176 +586,13 @@
         "00298_test_valid_multi_type_requests_fork_Amsterdam-withdrawal_from_eoa_builderdeposit_from_eoa_builde",
         "00299_test_invalid_negative_excess_blob_gas_fork_Amsterdam-parent_excess_blobs_11-parent_blobs_2-heade"
       ],
-      "pass": 280,
-      "pass_full": 280,
+      "pass": 299,
+      "pass_full": 299,
       "total": 300
     },
     "inputs-seq": {
-      "failure_histogram": {
-        "root/----/tail, 1/99": 32
-      },
-      "failures": {
-        "00105_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00106_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00107_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00108_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00109_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00110_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00111_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00112_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00113_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00114_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00115_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00116_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00117_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00118_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00119_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00120_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00121_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00122_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00123_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00124_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00125_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00126_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00127_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00128_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00129_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00130_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00131_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00132_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00133_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00134_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00135_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        },
-        "00136_test_value_move_to_precompiles_fork_Amsterdam-precompile_0x0000000000000000000000000000000000000": {
-          "class": "FAIL",
-          "dbg": "1/99",
-          "regions": "root/----/tail"
-        }
-      },
+      "failure_histogram": {},
+      "failures": {},
       "labels": [
         "00000_test_account_write_authority_is_recipient_fork_Amsterdam-blockchain_test_from_state_test-non-zer",
         "00001_test_account_write_authority_is_recipient_fork_Amsterdam-blockchain_test_from_state_test-zero_va",
@@ -1223,8 +895,8 @@
         "00298_test_bal_aborted_account_access_fork_Amsterdam-blockchain_test-invalid-staticcall__b0",
         "00299_test_bal_aborted_account_access_fork_Amsterdam-blockchain_test-revert-balance__b0"
       ],
-      "pass": 268,
-      "pass_full": 268,
+      "pass": 300,
+      "pass_full": 300,
       "total": 300
     }
   },

@@ -127,6 +127,11 @@ ZISK_ACCEL` gives a differential test: both builds must produce identical bytes 
   all 1,015 BLS EEST blocks and the 30-fixture baseline; the 200-fixture sample
   is 198/200 with the two known KZG `1/99` failures.
 
+* 2026-09-03 (late): merged #42/#43 (BLS12-381 + KZG, with ZisK CSR paths) and #44/#45 (EEST baseline checker,
+  bench snapshots). Every precompile is now implemented. Accelerated guest: 30/30, 200/200 random, ziskemu
+  parity. Software guest: two BLS G2-MSM fixtures exceed spike_run's step cap (recorded as allowed ERRORs in
+  `tools/eest-baseline.json`; the accelerated build passes them).
+
 ## Workflow
 Mechanical, well-specified tasks are filed as GitHub issues with the `mechanical` label
 (https://github.com/pirapira/stateless-pancaketh/issues) for other agents; this session keeps the
