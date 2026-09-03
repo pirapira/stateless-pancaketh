@@ -50,8 +50,10 @@ fun 1 htab_hash(1 p, 1 key_len) {
 
 /* Slot index of key, or cap if absent. */
 fun 1 htab_find_slot(1 t, 1 key) {
+#ifdef GUEST_DEBUG
   !stw OUTPUT_ADDR + 104, t;
   !stw OUTPUT_ADDR + 112, key;
+#endif
   var cap = lds 1 (t + HT_CAP);
   var klen = lds 1 (t + HT_KEYLEN);
   var stride = lds 1 (t + HT_KEYSTRIDE);
