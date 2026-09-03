@@ -103,6 +103,17 @@ run_check "unit t_modexp" \
   env SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
   "$ROOT/guest/test/t_modexp.pnk" "$PRE_DIR/modexp.in" @guest/test/exp_modexp.py
 
+run_check "unit t_recover" \
+  "$ROOT/tools/unit.py" \
+  "$ROOT/guest/test/t_recover.pnk" "$UNIT_INPUT" @guest/test/exp_recover.py
+
+run_check "generate precompile wrapper vectors" \
+  python3 "$ROOT/tools/gen_precompile_vectors.py" "$PRE_DIR/precompiles.in"
+
+run_check "unit t_precompiles" \
+  env SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+  "$ROOT/guest/test/t_precompiles.pnk" "$PRE_DIR/precompiles.in" @guest/test/exp_precompiles.py
+
 # t_m1_all is the aggregate M1 source (it has no standalone expected(blob)
 # oracle); compiling it is the appropriate smoke check, while the main guest
 # build below supplies the end-to-end EEST executable.
