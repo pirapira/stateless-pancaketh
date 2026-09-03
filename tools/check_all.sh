@@ -225,15 +225,40 @@ run_eest_variant() {
   run_eest_with_baseline "$elf" "$manifest" "$json" "${args[@]}"
 }
 
+# Fixtures recorded as allowed failures in tools/eest-baseline.json for this
+# manifest (e.g. software-only spike step-cap exits) are skipped: their
+# software output is by definition not comparable with the accelerated one.
+baseline_allowed_labels() {
+  python3 - "$ROOT/tools/eest-baseline.json" "$1" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except OSError:
+    sys.exit(0)
+entry = data.get("manifests", data).get(sys.argv[2], {})
+for label in (entry.get("failures") or {}):
+    print(label)
+PY
+}
+
 compare_eest_outputs() {
   local manifest="$1"
   local first_dir="$2"
   local second_dir="$3"
+  local manifest_name
+  manifest_name="$(basename "$(dirname "$manifest")")"
+  local allowed
+  allowed="$(baseline_allowed_labels "$manifest_name")"
   local checked=0
+  local skipped=0
   local failures=0
   local label remainder first second
   while IFS=$'\t' read -r label remainder; do
     [[ -n "$label" ]] || continue
+    if grep -qxF -- "$label" <<<"$allowed"; then
+      skipped=$((skipped + 1))
+      continue
+    fi
     first="$first_dir/$label.output"
     second="$second_dir/$label.output"
     checked=$((checked + 1))
@@ -246,7 +271,7 @@ compare_eest_outputs() {
     fi
   done < "$manifest"
   if (( failures == 0 )); then
-    printf 'PASS (%s EEST output files byte-identical)\n' "$checked"
+    printf 'PASS (%s EEST output files byte-identical, %s baseline-allowed failures skipped)\n' "$checked" "$skipped"
     return 0
   fi
   printf 'FAIL (%s of %s EEST output files differ or are missing)\n' \

@@ -151,6 +151,14 @@ ZISK_ACCEL` gives a differential test: both builds must produce identical bytes 
   `PASS(full)` on both Spike builds with byte-identical outputs; refreshed `work/sweep/all.json.gz` is
   26,096 `PASS(full)`, 8 malformed, 0 failures.
 
+* 2026-09-04 (later): merged #55 blake2f CSR, #56 dual-build tooling, #57 trap reason codes, #58 post-acceleration
+  hot spots, #59 frame-memory arenas (fixes the six sweep trap failures; sweep now 26,096/26,104 + 8 malformed, 0 FAIL).
+  Two merge fixes were needed: `htab_new_scratch` (#59) had to allocate the order arrays introduced by #58, and the
+  differential check skips baseline-allowed software failures. Accelerated fixture 00000: 2.49M steps / 0.539G cost.
+  Verified: 30/30 and 200/200 both builds byte-identical, 800-block sweep sample 800/800, ziskemu parity on 5 fixtures,
+  check_all 56/56. Also restored the submodule gitlinks: commit 60e6645 had accidentally committed `evm-asm`/`cakeml`
+  as symlinks.
+
 ## Workflow
 Mechanical, well-specified tasks are filed as GitHub issues with the `mechanical` label
 (https://github.com/pirapira/stateless-pancaketh/issues) for other agents; this session keeps the
