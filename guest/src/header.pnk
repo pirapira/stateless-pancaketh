@@ -285,7 +285,7 @@ fun {1,1,1,1} taylor_exponential(1 factor, 1 numerator, 1 denominator) {
     out = u256_add(out, acc);
     var {1,1,1,1,1,1,1,1} prod = u256_mul_full(acc, num);
     if (prod.4 | prod.5 | prod.6 | prod.7) != 0 {
-      @trap(@base, 0, @base, 0);
+      trap_with(3);              /* base-fee arithmetic overflow */
     }
     var {1,1,1,1} p = <prod.0, prod.1, prod.2, prod.3>;
     var {1,1,1,1} di = u256_from_word(i);

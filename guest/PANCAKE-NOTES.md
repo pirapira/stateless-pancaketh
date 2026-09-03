@@ -44,7 +44,9 @@ Empirically verified against the prebuilt `cake` (CakeML e8eca63, 2026-08-24).
 * Reserved words include `in`, `st`, `tick`, `skip`, and `true`/`false`; using one as a
   variable gives a parse error at its first USE, not at the declaration.
 * `@base` is heap start (0xa0100000). Do NOT use `@top` (broken in this build);
-  the heap ends at `HEAP_END`. FFI: `@halt(@base,0,@base,0)`, `@trap(...)` (runtime/start.S).
+  the heap ends at `HEAP_END`. FFI: `@halt(@base,0,@base,0)`,
+  `@trap(@base,code,@base,0)` (runtime/start.S). `trap_with(code)` records the
+  code, heap pointer, and journal count before entering that stub.
 * `inline fun` exists but a call is still a statement.
 * Forward references and mutual recursion between top-level functions work.
 
@@ -87,8 +89,10 @@ Empirically verified against the prebuilt `cake` (CakeML e8eca63, 2026-08-24).
   heap buffer and write once.
 * `uv run --directory DIR ...` resolves relative paths against `DIR`, not the directory
   from which `uv` was invoked.
-* `@trap` appears as `halted cleanly` in `spike_run`; the only output is marker byte `0xEE`
-  at output offset 32.
+* `@trap` appears as `halted cleanly` in `spike_run`; trap output has marker byte `0xEE`
+  at output offset 32, the reason code at offset 33, the heap pointer at offset 40,
+  and the journal count at offset 48. Codes are 1 allocation exhausted, 2 division by
+  zero, 3 base-fee overflow, 4 journal full in `jset`, and 5 journal full in `jdel`.
 * `objdump -d` shows cake's `.text` as `.word` data; to disassemble use
   `objcopy -O binary -j .text` then
   `objdump -D -b binary -m riscv:rv64 --adjust-vma=0x80000000`.

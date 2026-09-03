@@ -2,6 +2,17 @@
    The Pancake heap is [@base, HEAP_END); nothing else lives there. */
 
 var 1 heap_ptr = 0;
+var 1 journal_n = 0;   /* shared with state.pnk for trap diagnostics */
+
+/* Record a fatal guest condition before entering the runtime trap stub.
+   The metadata is outside the normal result and is consumed by eest-run. */
+fun 1 trap_with(1 code) {
+  !st8 OUTPUT_ADDR + 33, code;
+  !stw OUTPUT_ADDR + 40, heap_ptr;
+  !stw OUTPUT_ADDR + 48, journal_n;
+  @trap(@base, code, @base, 0);
+  return 0;
+}
 
 fun 1 mem_init() {
   heap_ptr = @base;
@@ -13,7 +24,7 @@ fun 1 alloc(1 n) {
   var p = heap_ptr;
   var q = (p + n + 7) & (0 - 8);
   if q >+ HEAP_END {
-    @trap(@base, 0, @base, 0);
+    trap_with(1);              /* allocation exhausted */
   }
   heap_ptr = q;
   return p;

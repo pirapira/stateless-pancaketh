@@ -47,7 +47,7 @@ def run_case(elf, row, out_dir, use_zisk):
     if use_zisk:
         m = re.search(r"steps[=: ]+(\d+)", logtxt)
         if m: steps = int(m.group(1))
-    actual = ""; dbg = -1
+    actual = ""; dbg = -1; trap = None
     stage_marker = None
     if os.path.exists(out):
         raw = open(out, "rb").read()
@@ -55,12 +55,14 @@ def run_case(elf, row, out_dir, use_zisk):
         # length is 69 (normal) or 61 (sentinel). Trim by expected length.
         n = len(expected_hex) // 2
         actual = raw[:n].hex()
+        if len(raw) > 33 and raw[32] == 0xEE:
+            trap = raw[33]
         dbg = raw[n] if len(raw) > n else 0   # guest debug bytes: fail class, code
         if len(raw) > n + 1: dbg = f"{dbg}/{raw[n+1]}"
         if len(raw) > 100:
             stage_marker = raw[100]
     return dict(label=label, rc=rc, steps=steps, secs=dt, expected=expected_hex,
-                actual=actual, dbg=dbg, stage_marker=stage_marker)
+                actual=actual, dbg=dbg, trap=trap, stage_marker=stage_marker)
 
 def classify(r):
     e, a = r["expected"], r["actual"]
@@ -128,16 +130,18 @@ def select_labels(rows, labels):
 
 def print_failure_histogram(results):
     histogram = Counter(
-        (r.get("regions", ""), debug_value(r.get("dbg", -1)))
+        (r.get("regions", ""),
+         (f"trap={r['trap']}" if r.get("trap") is not None
+          else debug_value(r.get("dbg", -1))))
         for r in results
         if str(r.get("class", "")).startswith("FAIL")
     )
     if not histogram:
         return
-    print(" failure histogram (regions, fail):")
-    for (regions, fail), count in sorted(
+    print(" failure histogram (regions, reason):")
+    for (regions, reason), count in sorted(
             histogram.items(), key=lambda item: (-item[1], item[0])):
-        print(f"  ({regions or '-'}, {fail}) = {count}")
+        print(f"  ({regions or '-'}, {reason}) = {count}")
 
 def main():
     ap = argparse.ArgumentParser()
@@ -195,7 +199,9 @@ def main():
         if cls.startswith("PASS") and r["steps"] is not None: steps_pass.append(r["steps"])
         r["class"] = cls; r["regions"] = tag
         if cls.startswith("PASS") and a.quiet_passes: continue
-        line = f"  {cls:16s} {tag:16s} fail={r['dbg']:<6} steps={r['steps']} {r['secs']:.2f}s {r['label'][:80]}"
+        reason = (f"trap={r['trap']}" if r.get("trap") is not None
+                  else f"fail={r['dbg']}")
+        line = f"  {cls:16s} {tag:16s} {reason:12s} steps={r['steps']} {r['secs']:.2f}s {r['label'][:80]}"
         print(line)
         if cls.startswith("FAIL"):
             print(f"    expected: {r['expected']}\n    actual:   {r['actual']}")

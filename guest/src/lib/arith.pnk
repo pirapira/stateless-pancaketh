@@ -3,7 +3,7 @@
 /* Unsigned <quotient, remainder>; traps on b == 0. */
 fun {1,1} udivmod(1 a, 1 b) {
   if b == 0 {
-    @trap(@base, 0, @base, 0);
+    trap_with(2);              /* division by zero */
   }
   if a <+ b {
     return <0, a>;
