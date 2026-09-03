@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# check_all.sh -- run the repository's unit, vector, and EEST checks.
+# check_all.sh -- run the repository's unit, vector, and EEST checks against
+# both the software and ZisK-accelerated main guests.
 #
 # Every command is captured in work/check-all/*.log so a noisy oracle or
 # emulator cannot hide the one-line PASS/FAIL status printed by this script.
@@ -15,6 +16,12 @@ mkdir -p "$LOG_DIR"
 
 PASS_COUNT=0
 FAIL_COUNT=0
+
+# Keep one overridable runner for all checks.  This is useful when the evm-asm
+# submodule is mounted elsewhere and also makes the Spike-first local workflow
+# explicit.
+SPIKE_RUN="${SPIKE_RUN:-$ROOT/evm-asm/scripts/spike/spike_run}"
+export SPIKE_RUN
 
 run_check() {
   local name="$1"
@@ -54,94 +61,144 @@ else
   run_check "locate unit-test input" false
 fi
 
+# Build both fixed-path main guests before running the end-to-end checks.
+run_check "build software and accelerated guests" "$ROOT/tools/build_both.sh"
+
+run_unit_variant() {
+  local variant="$1"
+  if [[ "$variant" == "accelerated" ]]; then
+    run_check "$variant unit t_globals" \
+      env ACCEL=1 SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_globals.pnk" "$UNIT_INPUT" \
+      "struct.pack('<QQQQQQQQ', 0xa0100000, 0xa0100000, 0xa0100040, 1234, 5678, 0xa0100040, 0xa01f4280, 1234)"
+    run_check "$variant unit t_keccak" \
+      env ACCEL=1 SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_keccak.pnk" "$UNIT_INPUT" \
+      "keccak256(blob) + keccak256(b'') + keccak256(blob[:min(len(blob),200)]) + keccak256(blob[:min(len(blob),136)]) + keccak256(blob[:min(len(blob),135)]) + keccak256(blob[1:1+min(len(blob),201)-1])"
+    run_check "$variant unit t_sha256" \
+      env ACCEL=1 SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_sha256.pnk" "$UNIT_INPUT" \
+      "hashlib.sha256(blob).digest() + hashlib.sha256(hashlib.sha256(blob).digest() * 2).digest()"
+    run_check "$variant unit t_header" \
+      env ACCEL=1 SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_header.pnk" "$UNIT_INPUT" @guest/test/exp_header.py
+    run_check "$variant unit t_tx" \
+      env ACCEL=1 SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_tx.pnk" "$UNIT_INPUT" @guest/test/exp_tx.py
+    run_check "$variant unit t_tx_neg" \
+      env ACCEL=1 SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_tx_neg.pnk" "$UNIT_INPUT" @guest/test/exp_tx_neg.py
+    run_check "$variant unit t_ripemd160" \
+      env ACCEL=1 SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_ripemd160.pnk" "$UNIT_INPUT" @guest/test/exp_ripemd160.py
+    run_check "$variant unit t_blake2f" \
+      env ACCEL=1 SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_blake2f.pnk" "$PRE_DIR/blake2f.in" @guest/test/exp_blake2f.py
+    run_check "$variant unit t_modexp" \
+      env ACCEL=1 SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_modexp.pnk" "$PRE_DIR/modexp.in" @guest/test/exp_modexp.py
+    run_check "$variant unit t_recover" \
+      env ACCEL=1 SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_recover.pnk" "$UNIT_INPUT" @guest/test/exp_recover.py
+    run_check "$variant unit t_precompiles" \
+      env ACCEL=1 SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_precompiles.pnk" "$PRE_DIR/precompiles.in" @guest/test/exp_precompiles.py
+  else
+    # Explicitly remove ACCEL so a caller's environment cannot make the
+    # software column accidentally use the accelerated source.
+    run_check "$variant unit t_globals" \
+      env -u ACCEL SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_globals.pnk" "$UNIT_INPUT" \
+      "struct.pack('<QQQQQQQQ', 0xa0100000, 0xa0100000, 0xa0100040, 1234, 5678, 0xa0100040, 0xa01f4280, 1234)"
+    run_check "$variant unit t_keccak" \
+      env -u ACCEL SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_keccak.pnk" "$UNIT_INPUT" \
+      "keccak256(blob) + keccak256(b'') + keccak256(blob[:min(len(blob),200)]) + keccak256(blob[:min(len(blob),136)]) + keccak256(blob[:min(len(blob),135)]) + keccak256(blob[1:1+min(len(blob),201)-1])"
+    run_check "$variant unit t_sha256" \
+      env -u ACCEL SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_sha256.pnk" "$UNIT_INPUT" \
+      "hashlib.sha256(blob).digest() + hashlib.sha256(hashlib.sha256(blob).digest() * 2).digest()"
+    run_check "$variant unit t_header" \
+      env -u ACCEL SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_header.pnk" "$UNIT_INPUT" @guest/test/exp_header.py
+    run_check "$variant unit t_tx" \
+      env -u ACCEL SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_tx.pnk" "$UNIT_INPUT" @guest/test/exp_tx.py
+    run_check "$variant unit t_tx_neg" \
+      env -u ACCEL SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_tx_neg.pnk" "$UNIT_INPUT" @guest/test/exp_tx_neg.py
+    run_check "$variant unit t_ripemd160" \
+      env -u ACCEL SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_ripemd160.pnk" "$UNIT_INPUT" @guest/test/exp_ripemd160.py
+    run_check "$variant unit t_blake2f" \
+      env -u ACCEL SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_blake2f.pnk" "$PRE_DIR/blake2f.in" @guest/test/exp_blake2f.py
+    run_check "$variant unit t_modexp" \
+      env -u ACCEL SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_modexp.pnk" "$PRE_DIR/modexp.in" @guest/test/exp_modexp.py
+    run_check "$variant unit t_recover" \
+      env -u ACCEL SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_recover.pnk" "$UNIT_INPUT" @guest/test/exp_recover.py
+    run_check "$variant unit t_precompiles" \
+      env -u ACCEL SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
+      "$ROOT/guest/test/t_precompiles.pnk" "$PRE_DIR/precompiles.in" @guest/test/exp_precompiles.py
+  fi
+}
+
 # t_globals has no data dependency, but unit.py still needs a framed input.
-# The expected pointers use the fixed heap base from guest/runtime/start.S;
-# alloc(64) and alloc(1000000) are both already 8-byte aligned.
-run_check "unit t_globals" \
-  env SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
-  "$ROOT/guest/test/t_globals.pnk" "$UNIT_INPUT" \
-  "struct.pack('<QQQQQQQQ', 0xa0100000, 0xa0100000, 0xa0100040, 1234, 5678, 0xa0100040, 0xa01f4280, 1234)"
-
-# t_keccak exercises the full input, empty input, the 200/136/135-byte
-# boundaries, and an unaligned slice.  Keep the expression beside the test
-# invocation because this test intentionally has no separate oracle file.
-run_check "unit t_keccak" \
-  env SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
-  "$ROOT/guest/test/t_keccak.pnk" "$UNIT_INPUT" \
-  "keccak256(blob) + keccak256(b'') + keccak256(blob[:min(len(blob),200)]) + keccak256(blob[:min(len(blob),136)]) + keccak256(blob[:min(len(blob),135)]) + keccak256(blob[1:1+min(len(blob),201)-1])"
-
-# t_sha256 checks SHA-256(input), followed by sha256_pair(digest,digest).
-run_check "unit t_sha256" \
-  env SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
-  "$ROOT/guest/test/t_sha256.pnk" "$UNIT_INPUT" \
-  "hashlib.sha256(blob).digest() + hashlib.sha256(hashlib.sha256(blob).digest() * 2).digest()"
-
-# The remaining fixture-backed unit tests use the first converted EEST input
-# and their checked-in Python expected(blob) functions.
-run_check "unit t_header" \
-  env SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
-  "$ROOT/guest/test/t_header.pnk" "$UNIT_INPUT" @guest/test/exp_header.py
-run_check "unit t_tx" \
-  env SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
-  "$ROOT/guest/test/t_tx.pnk" "$UNIT_INPUT" @guest/test/exp_tx.py
-run_check "unit t_tx_neg" \
-  env SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
-  "$ROOT/guest/test/t_tx_neg.pnk" "$UNIT_INPUT" @guest/test/exp_tx_neg.py
-run_check "unit t_ripemd160" \
-  env SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
-  "$ROOT/guest/test/t_ripemd160.pnk" "$UNIT_INPUT" @guest/test/exp_ripemd160.py
-
-# t_blake2f and t_modexp share the precompile vector generator.  The larger
-# output buffer is required by the modexp cases and is harmless for blake2f.
+# The expected pointers use the fixed heap base from guest/runtime/start.S.
+# The vector-backed unit tests use the same Python oracles for each build.
 PRE_DIR="$ROOT/work/check-all/pre"
 run_check "generate precompile vectors" \
   python3 "$ROOT/tools/gen_pre_vectors.py" "$PRE_DIR"
-run_check "unit t_blake2f" \
-  env SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
-  "$ROOT/guest/test/t_blake2f.pnk" "$PRE_DIR/blake2f.in" @guest/test/exp_blake2f.py
-run_check "unit t_modexp" \
-  env SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
-  "$ROOT/guest/test/t_modexp.pnk" "$PRE_DIR/modexp.in" @guest/test/exp_modexp.py
-
-run_check "unit t_recover" \
-  "$ROOT/tools/unit.py" \
-  "$ROOT/guest/test/t_recover.pnk" "$UNIT_INPUT" @guest/test/exp_recover.py
-
 run_check "generate precompile wrapper vectors" \
   python3 "$ROOT/tools/gen_precompile_vectors.py" "$PRE_DIR/precompiles.in"
 
-run_check "unit t_precompiles" \
-  env SPIKE_OUTPUT_LEN=65536 "$ROOT/tools/unit.py" \
-  "$ROOT/guest/test/t_precompiles.pnk" "$PRE_DIR/precompiles.in" @guest/test/exp_precompiles.py
+run_unit_variant software
+run_unit_variant accelerated
 
-# t_m1_all is the aggregate M1 source (it has no standalone expected(blob)
-# oracle); compiling it is the appropriate smoke check, while the main guest
-# build below supplies the end-to-end EEST executable.
-run_check "compile t_m1_all" \
-  "$ROOT/guest/build.sh" "$ROOT/guest/test/t_m1_all.pnk" \
-  "$LOG_DIR/t_m1_all.elf"
-run_check "build main guest" \
-  "$ROOT/guest/build.sh" "$ROOT/guest/src/main.pnk" \
-  "$LOG_DIR/guest.elf"
+# The aggregate M1 source is a compile smoke check.  Compile it in both modes
+# so accelerator-only FFI symbols are checked even though it has no oracle.
+run_check "compile t_m1_all software" \
+  env -u ACCEL "$ROOT/guest/build.sh" "$ROOT/guest/test/t_m1_all.pnk" \
+  "$LOG_DIR/t_m1_all-software.elf"
+run_check "compile t_m1_all accelerated" \
+  env ACCEL=1 "$ROOT/guest/build.sh" "$ROOT/guest/test/t_m1_all.pnk" \
+  "$LOG_DIR/t_m1_all-accelerated.elf"
 
-# These scripts own their generators, expected-data comparisons, and the
-# SPIKE_OUTPUT_LEN=65536 setting needed for their largest outputs.
-run_check "vector check_u256" "$ROOT/tools/check_u256.sh"
-run_check "vector check_rlp" "$ROOT/tools/check_rlp.sh"
-run_check "vector check_mpt" "$ROOT/tools/check_mpt.sh"
-run_check "vector check_secp256k1" "$ROOT/tools/check_secp256k1.sh"
-run_check "vector check_p256" "$ROOT/tools/check_p256.sh"
-run_check "unit t_bls12381 (software/accelerated Spike differential)" \
+run_vector_variant() {
+  local variant="$1"
+  local script="$2"
+  if [[ "$variant" == "accelerated" ]]; then
+    run_check "vector $variant ${script%.sh}" \
+      env ACCEL=1 "$ROOT/tools/$script"
+  else
+    run_check "vector $variant ${script%.sh}" \
+      env -u ACCEL "$ROOT/tools/$script"
+  fi
+}
+
+# These checkers build one test ELF themselves, so run each under both source
+# configurations.  BLS and KZG already build and compare both variants in a
+# single invocation and are therefore not duplicated here.
+for script in check_u256.sh check_rlp.sh check_mpt.sh check_secp256k1.sh check_p256.sh; do
+  run_vector_variant software "$script"
+  run_vector_variant accelerated "$script"
+done
+run_check "vector check_bls12381 software/accelerated" \
   "$ROOT/tools/check_bls12381.sh"
-run_check "unit t_kzg (software/accelerated Spike differential)" \
+run_check "vector check_bn254 software/accelerated" \
+  "$ROOT/tools/check_bn254.sh" --only 1,2
+run_check "vector check_kzg software/accelerated" \
   "$ROOT/tools/check_kzg.sh"
 
 run_eest_with_baseline() {
-  local manifest="$1"
-  local json="$2"
-  shift 2
+  local elf="$1"
+  local manifest="$2"
+  local json="$3"
+  shift 3
   local runner_rc=0
-  "$ROOT/tools/eest-run.py" "$LOG_DIR/guest.elf" "$manifest" "$@" \
+  "$ROOT/tools/eest-run.py" "$elf" "$manifest" "$@" \
     --json "$json" || runner_rc=$?
   # eest-run returns 1 when a fixture has an expected baseline failure.  The
   # baseline checker decides whether that failure is still allowed; setup and
@@ -155,25 +212,96 @@ run_eest_with_baseline() {
   "$ROOT/tools/eest-baseline.py" check "$manifest" "$json"
 }
 
+run_eest_variant() {
+  local variant="$1"
+  local elf="$2"
+  local manifest="$3"
+  local out_dir="$4"
+  local json="$5"
+  local -a args=(--quiet-passes --out-dir "$out_dir")
+  if [[ -n "${CHECK_ALL_EEST_JOBS:-}" ]]; then
+    args+=(--jobs "$CHECK_ALL_EEST_JOBS")
+  fi
+  run_eest_with_baseline "$elf" "$manifest" "$json" "${args[@]}"
+}
+
+compare_eest_outputs() {
+  local manifest="$1"
+  local first_dir="$2"
+  local second_dir="$3"
+  local checked=0
+  local failures=0
+  local label remainder first second
+  while IFS=$'\t' read -r label remainder; do
+    [[ -n "$label" ]] || continue
+    first="$first_dir/$label.output"
+    second="$second_dir/$label.output"
+    checked=$((checked + 1))
+    if [[ ! -f "$first" || ! -f "$second" ]]; then
+      printf 'missing output for %s\n' "$label"
+      failures=$((failures + 1))
+    elif ! cmp -s "$first" "$second"; then
+      printf 'output differs for %s\n' "$label"
+      failures=$((failures + 1))
+    fi
+  done < "$manifest"
+  if (( failures == 0 )); then
+    printf 'PASS (%s EEST output files byte-identical)\n' "$checked"
+    return 0
+  fi
+  printf 'FAIL (%s of %s EEST output files differ or are missing)\n' \
+    "$failures" "$checked"
+  return 1
+}
+
 # Run every converted EEST manifest, including sampled manifests such as
-# work/inputs-rand/manifest.tsv when they are present.  Relative input paths
-# in the manifests are valid because the script changed to the repository
-# root above.  Set CHECK_ALL_EEST_JOBS to override eest-run.py's default.
+# work/inputs-rand/manifest.tsv when present, against both main guests.  The
+# output-directory split is what makes the byte-for-byte differential check
+# independent of the PASS/FAIL classification.
 manifest_found=0
+BASE_MANIFEST=""
+BASE_ACCEL_DIR=""
 for manifest in "$ROOT"/work/inputs*/manifest.tsv; do
   [[ -f "$manifest" ]] || continue
   manifest_found=1
   manifest_name="$(basename "$(dirname "$manifest")")"
-  eest_args=(--quiet-passes --out-dir "$LOG_DIR/eest-$manifest_name")
-  if [[ -n "${CHECK_ALL_EEST_JOBS:-}" ]]; then
-    eest_args+=(--jobs "$CHECK_ALL_EEST_JOBS")
+  software_dir="$LOG_DIR/eest-${manifest_name}-software"
+  accelerated_dir="$LOG_DIR/eest-${manifest_name}-accelerated"
+  software_json="$LOG_DIR/eest-${manifest_name}-software.json"
+  accelerated_json="$LOG_DIR/eest-${manifest_name}-accelerated.json"
+  run_check "EEST $manifest_name software" \
+    run_eest_variant software "$ROOT/guest/build/guest.elf" "$manifest" \
+    "$software_dir" "$software_json"
+  run_check "EEST $manifest_name accelerated" \
+    run_eest_variant accelerated "$ROOT/guest/build/guest-accel.elf" "$manifest" \
+    "$accelerated_dir" "$accelerated_json"
+  run_check "EEST $manifest_name software/accelerated byte differential" \
+    compare_eest_outputs "$manifest" "$software_dir" "$accelerated_dir"
+  if [[ "$manifest_name" == "inputs" ]]; then
+    BASE_MANIFEST="$manifest"
+    BASE_ACCEL_DIR="$accelerated_dir"
   fi
-  eest_json="$LOG_DIR/eest-$manifest_name.json"
-  run_check "EEST $manifest_name" \
-    run_eest_with_baseline "$manifest" "$eest_json" "${eest_args[@]}"
 done
 if [[ "$manifest_found" -eq 0 ]]; then
   run_check "EEST manifests available" false
+fi
+
+# ziskemu is deliberately opt-in for the local Spike-first workflow because
+# it is substantially slower.  CI or a release check can enable the exact
+# requested parity gate with CHECK_ALL_ZISKE_PARITY=1.
+if [[ -n "$BASE_MANIFEST" ]]; then
+  if [[ "${CHECK_ALL_ZISKE_PARITY:-0}" == "1" ]]; then
+    ZISK_DIR="$LOG_DIR/eest-inputs-accelerated-ziskemu"
+    ZISK_JSON="$LOG_DIR/eest-inputs-accelerated-ziskemu.json"
+    run_check "EEST inputs accelerated ziskemu" \
+      run_eest_with_baseline "$ROOT/guest/build/guest-accel.elf" \
+      "$BASE_MANIFEST" "$ZISK_JSON" --quiet-passes --ziskemu \
+      --out-dir "$ZISK_DIR"
+    run_check "EEST inputs Spike/ziskemu byte differential" \
+      compare_eest_outputs "$BASE_MANIFEST" "$BASE_ACCEL_DIR" "$ZISK_DIR"
+  else
+    printf 'SKIP  EEST inputs accelerated ziskemu (set CHECK_ALL_ZISKE_PARITY=1)\n'
+  fi
 fi
 
 printf '%s\n' '----------------------------------------'
