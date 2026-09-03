@@ -52,10 +52,11 @@
 #define EC_POINT_BYTES 96
 
 /* ZisK arith256_mod scratch (all U256 values are four little-endian u64s).
-   The first five words are the CSR parameter block {a, b, c, m, d}; the next
-   five 32-byte records are operand copies.  The final 80 bytes hold the p2
-   affine point and its {p1, p2} parameter block for secp add.  This 280-byte
-   arena is allocated once by secp256k1_init, before any heap mark is taken. */
+   Keep independent parameter blocks for the two moduli used by recovery so
+   the modulus and c = 0 pointers are installed once, not on every product.
+   The final 80 bytes hold the p2 affine point and its {p1, p2} parameter block
+   for secp add.  This arena is allocated once by secp256k1_init, before any
+   heap mark is taken. */
 #define SECP_ACCEL_PA 0
 #define SECP_ACCEL_PB 8
 #define SECP_ACCEL_PC 16
@@ -66,11 +67,27 @@
 #define SECP_ACCEL_C 104
 #define SECP_ACCEL_M 136
 #define SECP_ACCEL_D 168
-#define SECP_ACCEL_POINT2 200
-#define SECP_ACCEL_POINT_PARAMS 264
-#define SECP_ACCEL_SIZE 280
+#define SECP_ACCEL_BLOCK 200
+#define SECP_ACCEL_PBASE 0
+#define SECP_ACCEL_NBASE SECP_ACCEL_BLOCK
+#define SECP_ACCEL_POINT2 (2 * SECP_ACCEL_BLOCK)
+#define SECP_ACCEL_POINT_PARAMS (SECP_ACCEL_POINT2 + 64)
+#define SECP_ACCEL_SIZE (2 * SECP_ACCEL_BLOCK + 80)
 
 var 1 secp_accel_scratch = 0;
+
+#ifdef ZISK_ACCEL
+fun 1 secp_accel_init_block(1 base, U256 modulus) {
+  st base + SECP_ACCEL_PA, base + SECP_ACCEL_A;
+  st base + SECP_ACCEL_PB, base + SECP_ACCEL_B;
+  st base + SECP_ACCEL_PC, base + SECP_ACCEL_C;
+  st base + SECP_ACCEL_PM, base + SECP_ACCEL_M;
+  st base + SECP_ACCEL_PD, base + SECP_ACCEL_D;
+  st base + SECP_ACCEL_C, U256_ZERO;
+  st base + SECP_ACCEL_M, modulus;
+  return 0;
+}
+#endif
 
 fun 1 secp256k1_init() {
 #ifdef ZISK_ACCEL
@@ -78,25 +95,34 @@ fun 1 secp256k1_init() {
     return 0;
   }
   secp_accel_scratch = alloc(SECP_ACCEL_SIZE);
-  st secp_accel_scratch + SECP_ACCEL_PA, secp_accel_scratch + SECP_ACCEL_A;
-  st secp_accel_scratch + SECP_ACCEL_PB, secp_accel_scratch + SECP_ACCEL_B;
-  st secp_accel_scratch + SECP_ACCEL_PC, secp_accel_scratch + SECP_ACCEL_C;
-  st secp_accel_scratch + SECP_ACCEL_PM, secp_accel_scratch + SECP_ACCEL_M;
-  st secp_accel_scratch + SECP_ACCEL_PD, secp_accel_scratch + SECP_ACCEL_D;
-  st secp_accel_scratch + SECP_ACCEL_C, U256_ZERO;
+  secp_accel_init_block(secp_accel_scratch + SECP_ACCEL_PBASE, SECP_P);
+  secp_accel_init_block(secp_accel_scratch + SECP_ACCEL_NBASE, SECP_N);
 #endif
   return 0;
 }
 
 #ifdef ZISK_ACCEL
-fun U256 secp_accel_modmul(U256 a, U256 b, U256 m) {
-  secp256k1_init();
-  st secp_accel_scratch + SECP_ACCEL_A, a;
-  st secp_accel_scratch + SECP_ACCEL_B, b;
-  st secp_accel_scratch + SECP_ACCEL_M, m;
-  st secp_accel_scratch + SECP_ACCEL_C, U256_ZERO;
-  @arith256mod(secp_accel_scratch, 0, 0, 0);
-  return lds U256 (secp_accel_scratch + SECP_ACCEL_D);
+fun U256 secp_accel_modmul_at(1 base, U256 a, U256 b) {
+  st base + SECP_ACCEL_A, a;
+  st base + SECP_ACCEL_B, b;
+  @arith256mod(base, 0, 0, 0);
+  return lds U256 (base + SECP_ACCEL_D);
+}
+
+fun U256 secp_accel_modmul_p(U256 a, U256 b) {
+  var 1 base = secp_accel_scratch + SECP_ACCEL_PBASE;
+  st base + SECP_ACCEL_A, a;
+  st base + SECP_ACCEL_B, b;
+  @arith256mod(base, 0, 0, 0);
+  return lds U256 (base + SECP_ACCEL_D);
+}
+
+fun U256 secp_accel_modmul_n(U256 a, U256 b) {
+  var 1 base = secp_accel_scratch + SECP_ACCEL_NBASE;
+  st base + SECP_ACCEL_A, a;
+  st base + SECP_ACCEL_B, b;
+  @arith256mod(base, 0, 0, 0);
+  return lds U256 (base + SECP_ACCEL_D);
 }
 #endif
 
@@ -146,11 +172,11 @@ fun U256 fp_reduce(U256 a) {
 
 #ifdef ZISK_ACCEL
 fun U256 fp_mul(U256 a, U256 b) {
-  return secp_accel_modmul(a, b, SECP_P);
+  return secp_accel_modmul_p(a, b);
 }
 
 fun U256 fp_sqr(U256 a) {
-  return secp_accel_modmul(a, a, SECP_P);
+  return secp_accel_modmul_p(a, a);
 }
 #endif
 
@@ -372,6 +398,45 @@ fun U256 fp_sqr(U256 a) {
 #endif
 #endif
 
+#ifdef ZISK_ACCEL
+/* Fixed-window exponentiation for the field CSRs.  The 4-bit table replaces
+   the per-bit exponent helper and cuts the 255/253-bit ladders to four
+   squarings per nibble plus one multiply for each non-zero nibble. */
+fun U256 secp_accel_fp_pow4(U256 a, U256 e) {
+  var mark = heap_mark();
+  var 1 table = alloc(16 * 32);
+  var U256 t = a;
+  st table + 32, t;
+  var 1 d = 2;
+  while d <=+ 15 {
+    t = fp_mul(t, a);
+    st table + d * 32, t;
+    d = d + 1;
+  }
+  var U256 r = <1, 0, 0, 0>;
+  var 1 win = 64;
+  while win >+ 0 {
+    win = win - 1;
+    r = fp_sqr(r);
+    r = fp_sqr(r);
+    r = fp_sqr(r);
+    r = fp_sqr(r);
+    var 1 limb = win >>> 4;
+    var 1 shift = (win & 15) * 4;
+    var 1 ew = e.0;
+    if limb == 1 { ew = e.1; }
+    if limb == 2 { ew = e.2; }
+    if limb == 3 { ew = e.3; }
+    var 1 digit = (ew >>> shift) & 15;
+    if digit != 0 {
+      r = fp_mul(r, lds U256 (table + digit * 32));
+    }
+  }
+  heap_release(mark);
+  return r;
+}
+#endif
+
 /* a ^ e mod p, square-and-multiply from the most significant set bit. */
 fun U256 fp_pow(U256 a, U256 e) {
   var U256 r = <1, 0, 0, 0>;
@@ -455,24 +520,32 @@ fun U256 mod_sub(U256 x, U256 y, U256 m) {
 
 /* a^-1 mod p (0 for a == 0). */
 fun U256 fp_inv(U256 a) {
+#ifdef ZISK_ACCEL
+  return secp_accel_fp_pow4(a, SECP_P_MINUS_2);
+#else
 #ifdef SECP_FERMAT_INV
   return fp_inv_fermat(a);
 #else
   return modinv_bin(a, SECP_P);
+#endif
 #endif
 }
 
 /* Square-root candidate a^((p+1)/4) mod p (Lean sqrtCand); the caller checks
    that its square is a. */
 fun U256 fp_sqrt(U256 a) {
+#ifdef ZISK_ACCEL
+  return secp_accel_fp_pow4(a, SECP_SQRT_EXP);
+#else
   return fp_pow(a, SECP_SQRT_EXP);
+#endif
 }
 
 /* ---------- scalar arithmetic mod n ---------- */
 
 fun U256 fn_mul(U256 a, U256 b) {
 #ifdef ZISK_ACCEL
-  return secp_accel_modmul(a, b, SECP_N);
+  return secp_accel_modmul_n(a, b);
 #else
   return u256_mulmod(a, b, SECP_N);
 #endif
@@ -481,6 +554,43 @@ fun U256 fn_mul(U256 a, U256 b) {
 fun U256 fn_add(U256 a, U256 b) {
   return u256_addmod(a, b, SECP_N);
 }
+
+#ifdef ZISK_ACCEL
+/* Scalar-modulus counterpart of secp_accel_fp_pow4. */
+fun U256 secp_accel_fn_pow4(U256 a, U256 e) {
+  var mark = heap_mark();
+  var 1 table = alloc(16 * 32);
+  var U256 t = a;
+  st table + 32, t;
+  var 1 d = 2;
+  while d <=+ 15 {
+    t = fn_mul(t, a);
+    st table + d * 32, t;
+    d = d + 1;
+  }
+  var U256 r = <1, 0, 0, 0>;
+  var 1 win = 64;
+  while win >+ 0 {
+    win = win - 1;
+    r = fn_mul(r, r);
+    r = fn_mul(r, r);
+    r = fn_mul(r, r);
+    r = fn_mul(r, r);
+    var 1 limb = win >>> 4;
+    var 1 shift = (win & 15) * 4;
+    var 1 ew = e.0;
+    if limb == 1 { ew = e.1; }
+    if limb == 2 { ew = e.2; }
+    if limb == 3 { ew = e.3; }
+    var 1 digit = (ew >>> shift) & 15;
+    if digit != 0 {
+      r = fn_mul(r, lds U256 (table + digit * 32));
+    }
+  }
+  heap_release(mark);
+  return r;
+}
+#endif
 
 /* a ^ e mod n. */
 fun U256 fn_pow(U256 a, U256 e) {
@@ -508,10 +618,14 @@ fun U256 fn_inv_fermat(U256 a) {
 
 /* a^-1 mod n (0 for a == 0). */
 fun U256 fn_inv(U256 a) {
+#ifdef ZISK_ACCEL
+  return secp_accel_fn_pow4(a, SECP_N_MINUS_2);
+#else
 #ifdef SECP_FERMAT_INV
   return fn_inv_fermat(a);
 #else
   return modinv_bin(a, SECP_N);
+#endif
 #endif
 }
 
@@ -698,7 +812,9 @@ fun 1 ec_add(1 pt, 1 q) {
   var U256 z1 = lds U256 EC_Z(pt);
   var 1 z1z = u256_is_zero(z1);
   if z1z == 1 {
-    memcpy(pt, q, EC_POINT_BYTES);
+    st EC_X(pt), lds U256 EC_X(q);
+    st EC_Y(pt), lds U256 EC_Y(q);
+    st EC_Z(pt), lds U256 EC_Z(q);
     return 0;
   }
   var U256 x1 = lds U256 EC_X(pt);
@@ -763,25 +879,147 @@ fun 1 ec_mul(1 out, U256 k, U256 ax, U256 ay) {
 }
 
 /* out = k1 * (ax, ay) + k2 * (bx, by) by a joint (Shamir) MSB-first
-   double-and-add: one doubling per bit, then up to two mixed additions.  Same
-   group element as pointAdd (scalarMul k1 A) (scalarMul k2 B) in the Lean. */
+   double-and-add.  The four joint digits are 0, A, B, and A+B; using the
+   precomputed A+B point turns the formerly two additions for digit 11 into
+   one.  Same group element as pointAdd (scalarMul k1 A) (scalarMul k2 B) in
+   the Lean. */
 fun 1 ec_mul2(1 out, U256 k1, U256 ax, U256 ay, U256 k2, U256 bx, U256 by) {
   ec_set_infinity(out);
   var 1 len1 = u256_bit_length(k1);
   var 1 len2 = u256_bit_length(k2);
   var 1 i = max(len1, len2);
+  if i == 0 {
+    return 0;
+  }
+  var mark = heap_mark();
+#ifdef ZISK_ACCEL
+  /* A 2-bit joint window halves the ladder/control iterations.  The 16 affine
+     entries cover d1*A + d2*B for d1,d2 in [0,3]; all CSR point operations
+     return affine points, so the table can be consumed by mixed addition. */
+  var 1 table = alloc(16 * EC_POINT_BYTES);
+  ec_set_infinity(table);
+  ec_set_affine(table + 4 * EC_POINT_BYTES, ax, ay);
+  ec_set_affine(table + 8 * EC_POINT_BYTES, ax, ay);
+  ec_double(table + 8 * EC_POINT_BYTES);
+  ec_set_affine(table + 12 * EC_POINT_BYTES, ax, ay);
+  ec_double(table + 12 * EC_POINT_BYTES);
+  ec_add_affine(table + 12 * EC_POINT_BYTES, ax, ay);
+  ec_set_affine(table + EC_POINT_BYTES, bx, by);
+  ec_set_affine(table + 2 * EC_POINT_BYTES, bx, by);
+  ec_double(table + 2 * EC_POINT_BYTES);
+  ec_set_affine(table + 3 * EC_POINT_BYTES, bx, by);
+  ec_double(table + 3 * EC_POINT_BYTES);
+  ec_add_affine(table + 3 * EC_POINT_BYTES, bx, by);
+  ec_set_affine(table + 5 * EC_POINT_BYTES,
+                lds U256 EC_X(table + 4 * EC_POINT_BYTES),
+                lds U256 EC_Y(table + 4 * EC_POINT_BYTES));
+  ec_add_affine(table + 5 * EC_POINT_BYTES,
+                lds U256 EC_X(table + EC_POINT_BYTES),
+                lds U256 EC_Y(table + EC_POINT_BYTES));
+  ec_set_affine(table + 6 * EC_POINT_BYTES,
+                lds U256 EC_X(table + 4 * EC_POINT_BYTES),
+                lds U256 EC_Y(table + 4 * EC_POINT_BYTES));
+  ec_add_affine(table + 6 * EC_POINT_BYTES,
+                lds U256 EC_X(table + 2 * EC_POINT_BYTES),
+                lds U256 EC_Y(table + 2 * EC_POINT_BYTES));
+  ec_set_affine(table + 7 * EC_POINT_BYTES,
+                lds U256 EC_X(table + 4 * EC_POINT_BYTES),
+                lds U256 EC_Y(table + 4 * EC_POINT_BYTES));
+  ec_add_affine(table + 7 * EC_POINT_BYTES,
+                lds U256 EC_X(table + 3 * EC_POINT_BYTES),
+                lds U256 EC_Y(table + 3 * EC_POINT_BYTES));
+  ec_set_affine(table + 9 * EC_POINT_BYTES,
+                lds U256 EC_X(table + 8 * EC_POINT_BYTES),
+                lds U256 EC_Y(table + 8 * EC_POINT_BYTES));
+  ec_add_affine(table + 9 * EC_POINT_BYTES,
+                lds U256 EC_X(table + EC_POINT_BYTES),
+                lds U256 EC_Y(table + EC_POINT_BYTES));
+  ec_set_affine(table + 10 * EC_POINT_BYTES,
+                lds U256 EC_X(table + 8 * EC_POINT_BYTES),
+                lds U256 EC_Y(table + 8 * EC_POINT_BYTES));
+  ec_add_affine(table + 10 * EC_POINT_BYTES,
+                lds U256 EC_X(table + 2 * EC_POINT_BYTES),
+                lds U256 EC_Y(table + 2 * EC_POINT_BYTES));
+  ec_set_affine(table + 11 * EC_POINT_BYTES,
+                lds U256 EC_X(table + 8 * EC_POINT_BYTES),
+                lds U256 EC_Y(table + 8 * EC_POINT_BYTES));
+  ec_add_affine(table + 11 * EC_POINT_BYTES,
+                lds U256 EC_X(table + 3 * EC_POINT_BYTES),
+                lds U256 EC_Y(table + 3 * EC_POINT_BYTES));
+  ec_set_affine(table + 13 * EC_POINT_BYTES,
+                lds U256 EC_X(table + 12 * EC_POINT_BYTES),
+                lds U256 EC_Y(table + 12 * EC_POINT_BYTES));
+  ec_add_affine(table + 13 * EC_POINT_BYTES,
+                lds U256 EC_X(table + EC_POINT_BYTES),
+                lds U256 EC_Y(table + EC_POINT_BYTES));
+  ec_set_affine(table + 14 * EC_POINT_BYTES,
+                lds U256 EC_X(table + 12 * EC_POINT_BYTES),
+                lds U256 EC_Y(table + 12 * EC_POINT_BYTES));
+  ec_add_affine(table + 14 * EC_POINT_BYTES,
+                lds U256 EC_X(table + 2 * EC_POINT_BYTES),
+                lds U256 EC_Y(table + 2 * EC_POINT_BYTES));
+  ec_set_affine(table + 15 * EC_POINT_BYTES,
+                lds U256 EC_X(table + 12 * EC_POINT_BYTES),
+                lds U256 EC_Y(table + 12 * EC_POINT_BYTES));
+  ec_add_affine(table + 15 * EC_POINT_BYTES,
+                lds U256 EC_X(table + 3 * EC_POINT_BYTES),
+                lds U256 EC_Y(table + 3 * EC_POINT_BYTES));
+  var 1 win = 128;
+  while win >+ 0 {
+    win = win - 1;
+    ec_double(out);
+    ec_double(out);
+    var 1 pos = win * 2;
+    var 1 high1 = u256_bit(k1, pos + 1);
+    var 1 wd1 = high1 * 2;
+    var 1 low1 = u256_bit(k1, pos);
+    wd1 = wd1 + low1;
+    var 1 high2 = u256_bit(k2, pos + 1);
+    var 1 wd2 = high2 * 2;
+    var 1 low2 = u256_bit(k2, pos);
+    wd2 = wd2 + low2;
+    var 1 digit = wd1 * 4 + wd2;
+    if digit != 0 {
+      var 1 entry = table + digit * EC_POINT_BYTES;
+      var 1 entry_inf = ec_is_infinity(entry);
+      if entry_inf == 0 {
+        ec_add_affine(out, lds U256 EC_X(entry), lds U256 EC_Y(entry));
+      }
+    }
+  }
+#else
+  var 1 sum = alloc(EC_POINT_BYTES);
+  ec_set_affine(sum, ax, ay);
+  ec_add_affine(sum, bx, by);
+  var 1 sum_inf = ec_is_infinity(sum);
+#ifndef ZISK_ACCEL
+  if sum_inf == 0 {
+    ec_to_affine(sum);
+  }
+#endif
+  var U256 sx = lds U256 EC_X(sum);
+  var U256 sy = lds U256 EC_Y(sum);
   while i >+ 0 {
     i = i - 1;
     ec_double(out);
     var 1 bit1 = u256_bit(k1, i);
-    if bit1 == 1 {
-      ec_add_affine(out, ax, ay);
-    }
     var 1 bit2 = u256_bit(k2, i);
-    if bit2 == 1 {
-      ec_add_affine(out, bx, by);
+    if bit1 == 1 {
+      if bit2 == 1 {
+        if sum_inf == 0 {
+          ec_add_affine(out, sx, sy);
+        }
+      } else {
+        ec_add_affine(out, ax, ay);
+      }
+    } else {
+      if bit2 == 1 {
+        ec_add_affine(out, bx, by);
+      }
     }
   }
+#endif
+  heap_release(mark);
   return 0;
 }
 

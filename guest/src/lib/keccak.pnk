@@ -223,6 +223,13 @@ fun 1 keccak256(1 p, 1 n, 1 out) {
   st8 keccak_pad + rem, 1;
   st8 keccak_pad + 135, (ld8 (keccak_pad + 135)) | 128;   /* 0x81 when rem == 135 */
   keccak_absorb_block(stp, keccak_pad);
-  memcpy(out, stp, 32);        /* first four lanes, little-endian */
+  if (out & 7) == 0 {
+    st out, lds 1 stp;
+    st out + 8, lds 1 (stp + 8);
+    st out + 16, lds 1 (stp + 16);
+    st out + 24, lds 1 (stp + 24);
+  } else {
+    memcpy(out, stp, 32);
+  }
   return 0;
 }

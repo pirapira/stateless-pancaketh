@@ -121,6 +121,21 @@ fun 1 mpt_init() {
 /* keyToNibbles / bytes_to_nibble_list: 2n nibbles at out. */
 fun 1 key_to_nibbles(1 key, 1 n, 1 out) {
   var i = 0;
+  while i + 4 <=+ n {
+    var b0 = ld8 (key + i);
+    st8 out + 2 * i, b0 >>> 4;
+    st8 out + 2 * i + 1, b0 & 15;
+    var b1 = ld8 (key + i + 1);
+    st8 out + 2 * i + 2, b1 >>> 4;
+    st8 out + 2 * i + 3, b1 & 15;
+    var b2 = ld8 (key + i + 2);
+    st8 out + 2 * i + 4, b2 >>> 4;
+    st8 out + 2 * i + 5, b2 & 15;
+    var b3 = ld8 (key + i + 3);
+    st8 out + 2 * i + 6, b3 >>> 4;
+    st8 out + 2 * i + 7, b3 & 15;
+    i = i + 4;
+  }
   while i <+ n {
     var b = ld8 (key + i);
     st8 out + 2 * i, b >>> 4;

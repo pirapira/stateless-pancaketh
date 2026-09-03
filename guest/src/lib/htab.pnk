@@ -2,8 +2,7 @@
    one word value. Linear probing, backward-shift deletion, doubling at
    load factor 1/2. Used for the witness node DB / code DB (32-byte keys),
    account maps (20-byte keys) and storage maps (52-byte keys).
-   Iteration order is unspecified (SpecRef uses insertion-ordered assoc
-   lists, but every consumer sorts or is order-insensitive). */
+   Iteration order is insertion order, matching the SpecRef assoc-list view. */
 
 #define HT_KEYLEN   0    /* key length in bytes */
 #define HT_KEYSTRIDE 8   /* key length rounded up to 8 */
@@ -12,7 +11,9 @@
 #define HT_KEYS     32   /* ptr to cap * keystride bytes */
 #define HT_VALS     40   /* ptr to cap words */
 #define HT_USED     48   /* ptr to cap bytes (1 = occupied) */
-#define HT_SIZE     56
+#define HT_ORDER    56   /* ptr to count slot indices for iteration */
+#define HT_ORDER_POS 64  /* ptr to reverse slot -> order index map */
+#define HT_SIZE     72
 
 fun 1 htab_new(1 key_len, 1 cap) {
   var 1 t = alloc(HT_SIZE);
@@ -28,10 +29,17 @@ fun 1 htab_new(1 key_len, 1 cap) {
   var 1 used = alloc(cap);
   memzero(used, cap);
   st t + HT_USED, used;
+  var 1 order = alloc(cap * 8);
+  st t + HT_ORDER, order;
+  var 1 order_pos = alloc(cap * 8);
+  st t + HT_ORDER_POS, order_pos;
   return t;
 }
 
-/* Hash of key_len bytes at p (byte-wise FNV-1a style mix on words). */
+/* Hash of key_len bytes at p.  The keys are already cryptographic material in
+   this guest, so XOR-fold the native words and apply one final avalanche.  It
+   keeps the slot distribution while avoiding a multiply/round-trip for every
+   word in the hot lookup path. */
 fun 1 htab_hash(1 p, 1 key_len) {
   var h = 14695981039346656037;
   var 1 w = 0;
@@ -41,87 +49,106 @@ fun 1 htab_hash(1 p, 1 key_len) {
   if (p & 7) == 0 {
     if key_len == 20 {
       w = lds 1 p;
-      h = (h ^ w) * 1099511628211;
-      h = h ^ (h >>> 29);
+      h = h ^ w;
       w = lds 1 (p + 8);
-      h = (h ^ w) * 1099511628211;
-      h = h ^ (h >>> 29);
-      h = (h ^ (ld8 (p + 16))) * 1099511628211;
-      h = h ^ (h >>> 29);
-      h = (h ^ (ld8 (p + 17))) * 1099511628211;
-      h = h ^ (h >>> 29);
-      h = (h ^ (ld8 (p + 18))) * 1099511628211;
-      h = h ^ (h >>> 29);
-      h = (h ^ (ld8 (p + 19))) * 1099511628211;
-      h = h ^ (h >>> 29);
+      h = h ^ w;
+      w = LD_LE32(p + 16);
+      h = h ^ w;
       h = h ^ (h >>> 32);
-      return h;
+      h = h * 1099511628211;
+      return h ^ (h >>> 29);
     }
     if key_len == 32 {
       w = lds 1 p;
-      h = (h ^ w) * 1099511628211;
-      h = h ^ (h >>> 29);
+      h = h ^ w;
       w = lds 1 (p + 8);
-      h = (h ^ w) * 1099511628211;
-      h = h ^ (h >>> 29);
+      h = h ^ w;
       w = lds 1 (p + 16);
-      h = (h ^ w) * 1099511628211;
-      h = h ^ (h >>> 29);
+      h = h ^ w;
       w = lds 1 (p + 24);
-      h = (h ^ w) * 1099511628211;
-      h = h ^ (h >>> 29);
+      h = h ^ w;
       h = h ^ (h >>> 32);
-      return h;
+      h = h * 1099511628211;
+      return h ^ (h >>> 29);
+    }
+    if key_len == 52 {
+      w = lds 1 p;
+      h = h ^ w;
+      w = lds 1 (p + 8);
+      h = h ^ w;
+      w = lds 1 (p + 16);
+      h = h ^ w;
+      w = lds 1 (p + 24);
+      h = h ^ w;
+      w = lds 1 (p + 32);
+      h = h ^ w;
+      w = lds 1 (p + 40);
+      h = h ^ w;
+      w = LD_LE32(p + 48);
+      h = h ^ w;
+      h = h ^ (h >>> 32);
+      h = h * 1099511628211;
+      return h ^ (h >>> 29);
     }
   } else {
     if key_len == 20 {
       w = LD_LE64(p);
-      h = (h ^ w) * 1099511628211;
-      h = h ^ (h >>> 29);
+      h = h ^ w;
       w = LD_LE64(p + 8);
-      h = (h ^ w) * 1099511628211;
-      h = h ^ (h >>> 29);
-      h = (h ^ (ld8 (p + 16))) * 1099511628211;
-      h = h ^ (h >>> 29);
-      h = (h ^ (ld8 (p + 17))) * 1099511628211;
-      h = h ^ (h >>> 29);
-      h = (h ^ (ld8 (p + 18))) * 1099511628211;
-      h = h ^ (h >>> 29);
-      h = (h ^ (ld8 (p + 19))) * 1099511628211;
-      h = h ^ (h >>> 29);
+      h = h ^ w;
+      w = LD_LE32(p + 16);
+      h = h ^ w;
       h = h ^ (h >>> 32);
-      return h;
+      h = h * 1099511628211;
+      return h ^ (h >>> 29);
     }
     if key_len == 32 {
       w = LD_LE64(p);
-      h = (h ^ w) * 1099511628211;
-      h = h ^ (h >>> 29);
+      h = h ^ w;
       w = LD_LE64(p + 8);
-      h = (h ^ w) * 1099511628211;
-      h = h ^ (h >>> 29);
+      h = h ^ w;
       w = LD_LE64(p + 16);
-      h = (h ^ w) * 1099511628211;
-      h = h ^ (h >>> 29);
+      h = h ^ w;
       w = LD_LE64(p + 24);
-      h = (h ^ w) * 1099511628211;
-      h = h ^ (h >>> 29);
+      h = h ^ w;
       h = h ^ (h >>> 32);
-      return h;
+      h = h * 1099511628211;
+      return h ^ (h >>> 29);
+    }
+    if key_len == 52 {
+      w = LD_LE64(p);
+      h = h ^ w;
+      w = LD_LE64(p + 8);
+      h = h ^ w;
+      w = LD_LE64(p + 16);
+      h = h ^ w;
+      w = LD_LE64(p + 24);
+      h = h ^ w;
+      w = LD_LE64(p + 32);
+      h = h ^ w;
+      w = LD_LE64(p + 40);
+      h = h ^ w;
+      w = LD_LE32(p + 48);
+      h = h ^ w;
+      h = h ^ (h >>> 32);
+      h = h * 1099511628211;
+      return h ^ (h >>> 29);
     }
   }
 
   var i = 0;
   while i + 8 <=+ key_len {
-    h = (h ^ LD_LE64(p + i)) * 1099511628211;
-    h = h ^ (h >>> 29);
+    w = LD_LE64(p + i);
+    h = h ^ w;
     i = i + 8;
   }
   while i <+ key_len {
-    h = (h ^ (ld8 (p + i))) * 1099511628211;
+    h = h ^ (ld8 (p + i));
     i = i + 1;
   }
   h = h ^ (h >>> 32);
-  return h;
+  h = h * 1099511628211;
+  return h ^ (h >>> 29);
 }
 
 /* Slot index of key, or cap if absent. */
@@ -171,6 +198,8 @@ fun 1 htab_insert_raw(1 t, 1 key, 1 value) {
   var stride = lds 1 (t + HT_KEYSTRIDE);
   var keys = lds 1 (t + HT_KEYS);
   var used = lds 1 (t + HT_USED);
+  var order = lds 1 (t + HT_ORDER);
+  var order_pos = lds 1 (t + HT_ORDER_POS);
   var 1 h = htab_hash(key, klen);
   var i = h & (cap - 1);
   while (ld8 (used + i)) != 0 {
@@ -179,7 +208,10 @@ fun 1 htab_insert_raw(1 t, 1 key, 1 value) {
   memcpy(keys + i * stride, key, klen);
   st (lds 1 (t + HT_VALS)) + i * 8, value;
   st8 used + i, 1;
-  st t + HT_COUNT, (lds 1 (t + HT_COUNT)) + 1;
+  var 1 n = lds 1 (t + HT_COUNT);
+  st order + n * 8, i;
+  st order_pos + i * 8, n;
+  st t + HT_COUNT, n + 1;
   return 0;
 }
 
@@ -188,23 +220,27 @@ fun 1 htab_grow(1 t) {
   var stride = lds 1 (t + HT_KEYSTRIDE);
   var keys = lds 1 (t + HT_KEYS);
   var vals = lds 1 (t + HT_VALS);
-  var used = lds 1 (t + HT_USED);
+  var order = lds 1 (t + HT_ORDER);
+  var 1 nitems = lds 1 (t + HT_COUNT);
   var ncap = cap * 2;
   var 1 nkeys = alloc(ncap * stride);
   var 1 nvals = alloc(ncap * 8);
   var 1 nused = alloc(ncap);
+  var 1 norder = alloc(ncap * 8);
+  var 1 norder_pos = alloc(ncap * 8);
   memzero(nused, ncap);
   st t + HT_CAP, ncap;
   st t + HT_KEYS, nkeys;
   st t + HT_VALS, nvals;
   st t + HT_USED, nused;
+  st t + HT_ORDER, norder;
+  st t + HT_ORDER_POS, norder_pos;
   st t + HT_COUNT, 0;
-  var i = 0;
-  while i < cap {
-    if (ld8 (used + i)) != 0 {
-      htab_insert_raw(t, keys + i * stride, lds 1 (vals + i * 8));
-    }
-    i = i + 1;
+  var 1 k = 0;
+  while k < nitems {
+    var 1 i = lds 1 (order + k * 8);
+    htab_insert_raw(t, keys + i * stride, lds 1 (vals + i * 8));
+    k = k + 1;
   }
   return 0;
 }
@@ -235,6 +271,9 @@ fun 1 htab_del(1 t, 1 key) {
   var keys = lds 1 (t + HT_KEYS);
   var vals = lds 1 (t + HT_VALS);
   var used = lds 1 (t + HT_USED);
+  var order = lds 1 (t + HT_ORDER);
+  var order_pos = lds 1 (t + HT_ORDER_POS);
+  var 1 deleted_pos = lds 1 (order_pos + i * 8);
   var j = i;
   while true {
     j = (j + 1) & (cap - 1);
@@ -257,11 +296,21 @@ fun 1 htab_del(1 t, 1 key) {
     if movable != 0 {
       memcpy(keys + i * stride, keys + j * stride, klen);
       st vals + i * 8, lds 1 (vals + j * 8);
+      var 1 moved_pos = lds 1 (order_pos + j * 8);
+      st order + moved_pos * 8, i;
+      st order_pos + i * 8, moved_pos;
       i = j;
     }
   }
   st8 used + i, 0;
-  st t + HT_COUNT, (lds 1 (t + HT_COUNT)) - 1;
+  var 1 n = lds 1 (t + HT_COUNT);
+  var 1 last_pos = n - 1;
+  if deleted_pos != last_pos {
+    var 1 last_slot = lds 1 (order + last_pos * 8);
+    st order + deleted_pos * 8, last_slot;
+    st order_pos + last_slot * 8, deleted_pos;
+  }
+  st t + HT_COUNT, last_pos;
   return 1;
 }
 
@@ -281,21 +330,25 @@ fun {1,1,1} htab_slot(1 t, 1 i) {
   return <used, keyp, val>;
 }
 
+/* Item ordinal in the occupied-key list: <used, key ptr, value>. */
+fun {1,1,1} htab_item(1 t, 1 ordinal) {
+  var i = lds 1 ((lds 1 (t + HT_ORDER)) + ordinal * 8);
+  return htab_slot(t, i);
+}
+
 /* Copy all keys (packed at stride) into a fresh array; returns <ptr, count>. */
 fun {1,1} htab_keys(1 t) {
-  var cap = lds 1 (t + HT_CAP);
   var stride = lds 1 (t + HT_KEYSTRIDE);
   var n = lds 1 (t + HT_COUNT);
   var 1 out = alloc(n * stride + 8);
-  var used = lds 1 (t + HT_USED);
   var keys = lds 1 (t + HT_KEYS);
+  var order = lds 1 (t + HT_ORDER);
   var i = 0;
   var k = 0;
-  while i < cap {
-    if (ld8 (used + i)) != 0 {
-      memcpy(out + k * stride, keys + i * stride, stride);
-      k = k + 1;
-    }
+  while i < n {
+    var slot = lds 1 (order + i * 8);
+    memcpy(out + k * stride, keys + slot * stride, stride);
+    k = k + 1;
     i = i + 1;
   }
   return <out, n>;
@@ -316,5 +369,11 @@ fun 1 htab_copy(1 t) {
   var 1 used = alloc(cap);
   memcpy(used, lds 1 (t + HT_USED), cap);
   st n + HT_USED, used;
+  var 1 order = alloc(cap * 8);
+  memcpy(order, lds 1 (t + HT_ORDER), cap * 8);
+  st n + HT_ORDER, order;
+  var 1 order_pos = alloc(cap * 8);
+  memcpy(order_pos, lds 1 (t + HT_ORDER_POS), cap * 8);
+  st n + HT_ORDER_POS, order_pos;
   return n;
 }

@@ -186,10 +186,10 @@ fun {1,1,1,1} get_pre_tx_storage(1 addr, 1 key) {
 fun 1 update_builder_from_tx() {
   var idx = bal_index;
   var aw = lds 1 (ts + TS_ACCT_WRITES);
-  var cap = lds 1 (aw + HT_CAP);
+  var cap = lds 1 (aw + HT_COUNT);
   var i = 0;
   while i < cap {
-    var {1,1,1} s = htab_slot(aw, i);
+    var {1,1,1} s = htab_item(aw, i);
     if s.0 != 0 {
       var addr = s.1;
       var post = s.2;
@@ -226,16 +226,16 @@ fun 1 update_builder_from_tx() {
     i = i + 1;
   }
   var outer = lds 1 (ts + TS_STOR_WRITES);
-  cap = lds 1 (outer + HT_CAP);
+  cap = lds 1 (outer + HT_COUNT);
   i = 0;
   while i < cap {
-    var {1,1,1} s2 = htab_slot(outer, i);
+    var {1,1,1} s2 = htab_item(outer, i);
     if s2.0 != 0 {
       var inner = s2.2;
-      var icap = lds 1 (inner + HT_CAP);
+      var icap = lds 1 (inner + HT_COUNT);
       var j = 0;
       while j < icap {
-        var {1,1,1} e = htab_slot(inner, j);
+        var {1,1,1} e = htab_item(inner, j);
         if e.0 != 0 {
           var {1,1,1,1} pre_v = get_pre_tx_storage(s2.1, e.1);
           var {1,1,1,1} post_v = lds {1,1,1,1} (e.2);
@@ -423,7 +423,7 @@ fun 1 bal_encode_account(1 dst, 1 addr, 1 ad, 1 tmp) {
   while i < rk.1 {
     var 1 hasw = htab_has(sc, rk.0 + i * 32);
     if hasw == 0 {
-      memcpy(rk.0 + kept * 32, rk.0 + i * 32, 32);
+      st rk.0 + kept * 32, lds U256 (rk.0 + i * 32);
       kept = kept + 1;
     }
     i = i + 1;
@@ -527,20 +527,20 @@ fun 1 bal_encode_account(1 dst, 1 addr, 1 ad, 1 tmp) {
 fun {1,1} build_block_access_list_rlp() {
   /* block-level storage reads and touched accounts */
   var sr = lds 1 (bs + BS_STOR_READS);
-  var cap = lds 1 (sr + HT_CAP);
+  var cap = lds 1 (sr + HT_COUNT);
   var i = 0;
   while i < cap {
-    var {1,1,1} s = htab_slot(sr, i);
+    var {1,1,1} s = htab_item(sr, i);
     if s.0 != 0 {
       add_storage_read(s.1, s.1 + 20);
     }
     i = i + 1;
   }
   var ar = lds 1 (bs + BS_ACCT_READS);
-  cap = lds 1 (ar + HT_CAP);
+  cap = lds 1 (ar + HT_COUNT);
   i = 0;
   while i < cap {
-    var {1,1,1} s2 = htab_slot(ar, i);
+    var {1,1,1} s2 = htab_item(ar, i);
     if s2.0 != 0 {
       add_touched_account(s2.1);
     }
@@ -560,10 +560,10 @@ fun {1,1} build_block_access_list_rlp() {
     total = total + 128 + (lds 1 ((lds 1 (ad + AD_STOR_READS)) + HT_COUNT)) * 40;
     total = total + (lds 1 ((lds 1 (ad + AD_STOR_CHANGES)) + HT_COUNT)) * 96;
     var sc = lds 1 (ad + AD_STOR_CHANGES);
-    var scap = lds 1 (sc + HT_CAP);
+    var scap = lds 1 (sc + HT_COUNT);
     var j = 0;
     while j < scap {
-      var {1,1,1} e = htab_slot(sc, j);
+      var {1,1,1} e = htab_item(sc, j);
       if e.0 != 0 {
         total = total + (lds 1 (e.2 + LST_N)) * 48;
       }
@@ -601,19 +601,19 @@ fun {1,1} build_block_access_list_rlp() {
    over the built list: accounts + unique slots written or read). */
 fun 1 validate_block_access_list_gas_limit(1 block_gas_limit) {
   var items = 0;
-  var cap = lds 1 (bal_accounts + HT_CAP);
+  var cap = lds 1 (bal_accounts + HT_COUNT);
   var i = 0;
   while i < cap {
-    var {1,1,1} s = htab_slot(bal_accounts, i);
+    var {1,1,1} s = htab_item(bal_accounts, i);
     if s.0 != 0 {
       var ad = s.2;
       var sc = lds 1 (ad + AD_STOR_CHANGES);
       var sr = lds 1 (ad + AD_STOR_READS);
       items = items + 1 + (lds 1 (sc + HT_COUNT));
-      var rcap = lds 1 (sr + HT_CAP);
+      var rcap = lds 1 (sr + HT_COUNT);
       var j = 0;
       while j < rcap {
-        var {1,1,1} e = htab_slot(sr, j);
+        var {1,1,1} e = htab_item(sr, j);
         if e.0 != 0 {
           var 1 hasw = htab_has(sc, e.1);
           if hasw == 0 {

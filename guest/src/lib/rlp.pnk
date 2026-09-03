@@ -104,17 +104,101 @@ fun {1,1,1,1} rlp_decode_fully(1 p, 1 len) {
   return it;
 }
 
+/* Validating length-only decoder used by list walkers.  It keeps the same
+   canonical and recursive checks as rlp_item, but avoids constructing the
+   unused payload tuple when a caller only needs total length. */
+fun 1 rlp_item_total(1 p, 1 len) {
+  if len == 0 {
+    rlp_fail(1);
+  }
+  var b = ld8 p;
+  if b <+ 128 {
+    return 1;
+  }
+  if b <=+ 183 {
+    var n = b - 128;
+    if (len - 1) <+ n {
+      rlp_fail(3);
+    }
+    if n == 1 {
+      if (ld8 (p + 1)) <+ 128 {
+        rlp_fail(4);
+      }
+    }
+    return 1 + n;
+  }
+  if b <=+ 191 {
+    var ll = b - 183;
+    if (len - 1) <+ ll {
+      rlp_fail(3);
+    }
+    var 1 n = rlp_read_length(p + 1, ll);
+    if n <=+ 55 {
+      rlp_fail(5);
+    }
+    if (len - 1 - ll) <+ n {
+      rlp_fail(3);
+    }
+    return 1 + ll + n;
+  }
+  if b <=+ 247 {
+    var n = b - 192;
+    if (len - 1) <+ n {
+      rlp_fail(3);
+    }
+    rlp_list_count(p + 1, n);
+    return 1 + n;
+  }
+  var ll = b - 247;
+  if (len - 1) <+ ll {
+    rlp_fail(3);
+  }
+  var 1 n = rlp_read_length(p + 1, ll);
+  if n <=+ 55 {
+    rlp_fail(5);
+  }
+  if (len - 1 - ll) <+ n {
+    rlp_fail(3);
+  }
+  rlp_list_count(p + 1 + ll, n);
+  return 1 + ll + n;
+}
+
 /* decodeItems: number of items in the list payload at (p, len). Each item
    must lie within the payload; throws on any malformed item. */
 fun 1 rlp_list_count(1 p, 1 len) {
   var count = 0;
   var off = 0;
   while off <+ len {
-    var {1,1,1,1} it = rlp_item(p + off, len - off);
-    off = off + it.3;
+    var 1 total = rlp_item_total(p + off, len - off);
+    off = off + total;
     count = count + 1;
   }
   return count;
+}
+
+/* Header-only total decoder for the second pass of rlp_list_to_slices.  The
+   first pass has already validated the entire list recursively, so this pass
+   only needs to find each item's boundary. */
+fun 1 rlp_item_total_unchecked(1 p) {
+  var b = ld8 p;
+  if b <+ 128 {
+    return 1;
+  }
+  if b <=+ 183 {
+    return 1 + b - 128;
+  }
+  if b <=+ 191 {
+    var ll = b - 183;
+    var 1 n = rlp_read_length(p + 1, ll);
+    return 1 + ll + n;
+  }
+  if b <=+ 247 {
+    return 1 + b - 192;
+  }
+  var ll2 = b - 247;
+  var 1 n2 = rlp_read_length(p + 1, ll2);
+  return 1 + ll2 + n2;
 }
 
 /* Split the list payload at (p, len) into a slice array: element i is
@@ -126,10 +210,10 @@ fun {1,1} rlp_list_to_slices(1 p, 1 len) {
   var i = 0;
   var off = 0;
   while i <+ count {
-    var {1,1,1,1} it = rlp_item(p + off, len - off);
+    var 1 total = rlp_item_total_unchecked(p + off);
     st arr + i * 16, p + off;
-    st arr + i * 16 + 8, it.3;
-    off = off + it.3;
+    st arr + i * 16 + 8, total;
+    off = off + total;
     i = i + 1;
   }
   return <arr, count>;

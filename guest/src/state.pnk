@@ -543,10 +543,10 @@ fun 1 destroy_storage(1 addr) {
     return 0;
   }
   var inner = m.1;
-  var cap = lds 1 (inner + HT_CAP);
+  var cap = lds 1 (inner + HT_COUNT);
   var i = 0;
   while i < cap {
-    var {1,1,1} s = htab_slot(inner, i);
+    var {1,1,1} s = htab_item(inner, i);
     if s.0 != 0 {
       var 1 k = sk_make(addr, s.1);
       htab_set(lds 1 (ts + TS_STOR_READS), k, 1);
@@ -666,10 +666,10 @@ fun 1 set_code(1 addr, 1 code, 1 code_len) {
 
 /* Merge a set-like htab into another. */
 fun 1 htab_union_into(1 dst, 1 src) {
-  var cap = lds 1 (src + HT_CAP);
+  var cap = lds 1 (src + HT_COUNT);
   var i = 0;
   while i < cap {
-    var {1,1,1} s = htab_slot(src, i);
+    var {1,1,1} s = htab_item(src, i);
     if s.0 != 0 {
       htab_set(dst, s.1, s.2);
     }
@@ -688,10 +688,10 @@ fun 1 merge_tx_into_block() {
   /* storage: per address, merge slot maps */
   var outer = lds 1 (ts + TS_STOR_WRITES);
   var bouter = lds 1 (bs + BS_STOR_WRITES);
-  var cap = lds 1 (outer + HT_CAP);
+  var cap = lds 1 (outer + HT_COUNT);
   var i = 0;
   while i < cap {
-    var {1,1,1} s = htab_slot(outer, i);
+    var {1,1,1} s = htab_item(outer, i);
     if s.0 != 0 {
       var {1,1} m = htab_get(bouter, s.1);
       var binner = 0;
