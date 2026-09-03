@@ -20,15 +20,16 @@
    A point lives in memory as 3 U256 (X at +0, Y at +32, Z at +64, little-endian
    limbs); Z == 0 encodes the identity.
 
-   Field multiplication: fp_mul is a 32-bit-digit comba product whose 512-bit
-   result is reduced by two folds with 2^32 + 977 (p = 2^256 - 2^32 - 977).
+   Field multiplication: reference fp_mul is a 32-bit-digit comba product whose
+   512-bit result is reduced by two folds with 2^32 + 977 (p = 2^256 - 2^32 - 977).
    -DSECP_SIMPLE_MUL selects u256_mulmod instead, -DSECP_FOLD64_MUL the same
-   folds on u256_mul_full 64-bit limbs (both for cross-checking).  Inversion
-   mod p and mod n is the binary extended Euclid (modinv_bin); -DSECP_FERMAT_INV
-   selects the Fermat ladders a^(p-2) / a^(n-2) the Lean spec is written with
-   (same values: Crypto/Fermat.lean).  Scalar (mod n) products use u256_mulmod
-   (two per recovery).  Q = u1*G + u2*R is computed by a joint (Shamir)
-   double-and-add; the same group element as Lean scalarMul + pointAdd.
+   folds on u256_mul_full 64-bit limbs (both for cross-checking).  With
+   ZISK_ACCEL, fp_mul/fp_sqr and scalar products use the arith256_mod CSR.
+   Inversion mod p and mod n is the binary extended Euclid (modinv_bin);
+   -DSECP_FERMAT_INV selects the Fermat ladders a^(p-2) / a^(n-2) the Lean
+   spec is written with (same values: Crypto/Fermat.lean).  Q = u1*G + u2*R
+   is computed by a joint (Shamir) double-and-add; the same group element as
+   Lean scalarMul + pointAdd.
    Needs lib/mem.pnk, lib/arith.pnk, lib/u256.pnk, lib/keccak.pnk. */
 
 /* p = 2^256 - 2^32 - 977 (limbs as signed decimals: see PANCAKE-NOTES) */
@@ -49,6 +50,55 @@
 #define EC_Y(pt) ((pt) + 32)
 #define EC_Z(pt) ((pt) + 64)
 #define EC_POINT_BYTES 96
+
+/* ZisK arith256_mod scratch (all U256 values are four little-endian u64s).
+   The first five words are the CSR parameter block {a, b, c, m, d}; the next
+   five 32-byte records are operand copies.  The final 80 bytes hold the p2
+   affine point and its {p1, p2} parameter block for secp add.  This 280-byte
+   arena is allocated once by secp256k1_init, before any heap mark is taken. */
+#define SECP_ACCEL_PA 0
+#define SECP_ACCEL_PB 8
+#define SECP_ACCEL_PC 16
+#define SECP_ACCEL_PM 24
+#define SECP_ACCEL_PD 32
+#define SECP_ACCEL_A 40
+#define SECP_ACCEL_B 72
+#define SECP_ACCEL_C 104
+#define SECP_ACCEL_M 136
+#define SECP_ACCEL_D 168
+#define SECP_ACCEL_POINT2 200
+#define SECP_ACCEL_POINT_PARAMS 264
+#define SECP_ACCEL_SIZE 280
+
+var 1 secp_accel_scratch = 0;
+
+fun 1 secp256k1_init() {
+#ifdef ZISK_ACCEL
+  if secp_accel_scratch != 0 {
+    return 0;
+  }
+  secp_accel_scratch = alloc(SECP_ACCEL_SIZE);
+  st secp_accel_scratch + SECP_ACCEL_PA, secp_accel_scratch + SECP_ACCEL_A;
+  st secp_accel_scratch + SECP_ACCEL_PB, secp_accel_scratch + SECP_ACCEL_B;
+  st secp_accel_scratch + SECP_ACCEL_PC, secp_accel_scratch + SECP_ACCEL_C;
+  st secp_accel_scratch + SECP_ACCEL_PM, secp_accel_scratch + SECP_ACCEL_M;
+  st secp_accel_scratch + SECP_ACCEL_PD, secp_accel_scratch + SECP_ACCEL_D;
+  st secp_accel_scratch + SECP_ACCEL_C, U256_ZERO;
+#endif
+  return 0;
+}
+
+#ifdef ZISK_ACCEL
+fun U256 secp_accel_modmul(U256 a, U256 b, U256 m) {
+  secp256k1_init();
+  st secp_accel_scratch + SECP_ACCEL_A, a;
+  st secp_accel_scratch + SECP_ACCEL_B, b;
+  st secp_accel_scratch + SECP_ACCEL_M, m;
+  st secp_accel_scratch + SECP_ACCEL_C, U256_ZERO;
+  @arith256mod(secp_accel_scratch, 0, 0, 0);
+  return lds U256 (secp_accel_scratch + SECP_ACCEL_D);
+}
+#endif
 
 /* ---------- field arithmetic mod p (inputs and outputs in [0, p)) ---------- */
 
@@ -94,6 +144,17 @@ fun U256 fp_reduce(U256 a) {
   return a;
 }
 
+#ifdef ZISK_ACCEL
+fun U256 fp_mul(U256 a, U256 b) {
+  return secp_accel_modmul(a, b, SECP_P);
+}
+
+fun U256 fp_sqr(U256 a) {
+  return secp_accel_modmul(a, a, SECP_P);
+}
+#endif
+
+#ifndef ZISK_ACCEL
 #ifdef SECP_SIMPLE_MUL
 fun U256 fp_mul(U256 a, U256 b) {
   return u256_mulmod(a, b, SECP_P);
@@ -309,6 +370,7 @@ fun U256 fp_sqr(U256 a) {
   return fp_mul(a, a);
 }
 #endif
+#endif
 
 /* a ^ e mod p, square-and-multiply from the most significant set bit. */
 fun U256 fp_pow(U256 a, U256 e) {
@@ -409,7 +471,11 @@ fun U256 fp_sqrt(U256 a) {
 /* ---------- scalar arithmetic mod n ---------- */
 
 fun U256 fn_mul(U256 a, U256 b) {
+#ifdef ZISK_ACCEL
+  return secp_accel_modmul(a, b, SECP_N);
+#else
   return u256_mulmod(a, b, SECP_N);
+#endif
 }
 
 fun U256 fn_add(U256 a, U256 b) {
@@ -470,9 +536,45 @@ fun 1 ec_is_infinity(1 pt) {
   return u256_is_zero(z);
 }
 
+#ifdef ZISK_ACCEL
+/* Convert a finite Jacobian point to affine before handing it to a point CSR. */
+fun 1 secp_accel_normalize(1 pt) {
+  var U256 z = lds U256 EC_Z(pt);
+  var U256 zi = fp_inv(z);
+  var U256 zi2 = fp_sqr(zi);
+  var U256 zi3 = fp_mul(zi2, zi);
+  var U256 x = lds U256 EC_X(pt);
+  var U256 y = lds U256 EC_Y(pt);
+  x = fp_mul(x, zi2);
+  y = fp_mul(y, zi3);
+  ec_set_affine(pt, x, y);
+  return 1;
+}
+#endif
+
 /* pt = 2 * pt.  Lean: pointAdd P P is the identity when (y + y) % p == 0, i.e.
    y == 0 (the curve has no such point, but the case is kept), else curveDbl. */
 fun 1 ec_double(1 pt) {
+#ifdef ZISK_ACCEL
+  var U256 z = lds U256 EC_Z(pt);
+  var 1 zz = u256_is_zero(z);
+  if zz == 1 {
+    return 0;
+  }
+  var U256 y = lds U256 EC_Y(pt);
+  var 1 yz = u256_is_zero(y);
+  if yz == 1 {
+    ec_set_infinity(pt);
+    return 0;
+  }
+  var 1 affine = u256_eq(z, <1, 0, 0, 0>);
+  if affine == 0 {
+    secp_accel_normalize(pt);
+  }
+  @secpdbl(pt, 0, 0, 0);
+  st EC_Z(pt), <1, 0, 0, 0>;
+  return 0;
+#else
   var U256 z = lds U256 EC_Z(pt);
   var 1 zz = u256_is_zero(z);
   if zz == 1 {
@@ -508,6 +610,7 @@ fun 1 ec_double(1 pt) {
   st EC_Y(pt), y3;
   st EC_Z(pt), z3;
   return 0;
+#endif
 }
 
 /* pt = pt + (ax, ay) with (ax, ay) an affine point (Z2 = 1; mixed addition).
@@ -519,6 +622,34 @@ fun 1 ec_add_affine(1 pt, U256 ax, U256 ay) {
     ec_set_affine(pt, ax, ay);
     return 0;
   }
+#ifdef ZISK_ACCEL
+  var 1 affine = u256_eq(z1, <1, 0, 0, 0>);
+  if affine == 0 {
+    secp_accel_normalize(pt);
+  }
+  var U256 x1 = lds U256 EC_X(pt);
+  var U256 y1 = lds U256 EC_Y(pt);
+  var 1 samex = u256_eq(x1, ax);
+  if samex == 1 {
+    var U256 ysum = fp_add(y1, ay);
+    var 1 ysz = u256_is_zero(ysum);
+    if ysz == 1 {
+      ec_set_infinity(pt);
+      return 0;
+    }
+    ec_double(pt);
+    return 0;
+  }
+  secp256k1_init();
+  st secp_accel_scratch + SECP_ACCEL_POINT2, ax;
+  st secp_accel_scratch + SECP_ACCEL_POINT2 + 32, ay;
+  st secp_accel_scratch + SECP_ACCEL_POINT_PARAMS, pt;
+  st secp_accel_scratch + SECP_ACCEL_POINT_PARAMS + 8,
+      secp_accel_scratch + SECP_ACCEL_POINT2;
+  @secpadd(secp_accel_scratch + SECP_ACCEL_POINT_PARAMS, 0, 0, 0);
+  st EC_Z(pt), <1, 0, 0, 0>;
+  return 0;
+#else
   var U256 x1 = lds U256 EC_X(pt);
   var U256 y1 = lds U256 EC_Y(pt);
   var U256 z1z1 = fp_sqr(z1);
@@ -554,6 +685,7 @@ fun 1 ec_add_affine(1 pt, U256 ax, U256 ay) {
   st EC_Y(pt), y3;
   st EC_Z(pt), z3;
   return 0;
+#endif
 }
 
 /* pt = pt + q, both Jacobian (general addition, Lean pointAdd). */

@@ -59,6 +59,19 @@ ffikeccakf:
 .globl ffisha256f
 ffisha256f:
     csrrs x0, 0x805, a0
+.globl ffiarith256mod
+ffiarith256mod:
+    .4byte 0x80252073             # csrs 0x802, a0 -> Arith256Mod
+    ret
+
+.globl ffisecpadd
+ffisecpadd:
+    .4byte 0x80352073             # csrs 0x803, a0 -> secp256k1 affine add
+    ret
+
+.globl ffisecpdbl
+ffisecpdbl:
+    .4byte 0x80452073             # csrs 0x804, a0 -> secp256k1 affine double
     ret
 
 # FFI: BLS12-381 accelerator calls.  The first argument is the parameter
