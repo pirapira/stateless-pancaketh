@@ -1,0 +1,178 @@
+/* t_bls12381.pnk -- BLS12-381 field, group, map, MSM, and pairing vectors.
+   Input/output records are [8-byte type][8-byte length][payload padded to 8].
+   Types 1/2 are Fp/Fp2 multiplication. Types 3..10 return [8-byte error]
+   followed by the encoded result; type 11 returns an 8-byte pairing status. */
+#include "config.h"
+#include "lib/mem.pnk"
+#include "lib/arith.pnk"
+#include "lib/u256.pnk"
+#include "lib/sha256.pnk"
+#include "lib/bls12381_consts.pnk"
+#include "lib/fp384.pnk"
+#include "lib/bls12381.pnk"
+
+fun 1 pad_read(1 src, 1 n, 1 size, 1 dst) {
+  var 1 m = min(n, size);
+  memcpy(dst, src, m);
+  memzero(dst + m, size - m);
+  return 0;
+}
+
+fun 1 main() {
+  mem_init();
+  u256_ws_init();
+  bls_lib_init();
+  var {1,1} inp = input_blob();
+  var 1 out = alloc(inp.1 * 4 + 4096);
+  var pos = 0;
+  var opos = 0;
+  while pos + 16 <=+ inp.1 {
+    var ty = lds 1 (inp.0 + pos);
+    var len = lds 1 (inp.0 + pos + 8);
+    var pl = inp.0 + pos + 16;
+    var 1 mark = heap_mark();
+    var 1 olen = 0;
+
+    st out + opos, ty;
+    if ty == 1 {
+      var FP ac = fp_from_be48(pl);
+      var FP bc = fp_from_be48(pl + 48);
+      var FP fa = fp_to_mont(ac);
+      var FP fb = fp_to_mont(bc);
+      var FP fr = fp_mul(fa, fb);
+      fr = fp_from_mont(fr);
+      fp_to_be48(fr, out + opos + 16);
+      olen = 48;
+    }
+    if ty == 2 {
+      var FP a0c = fp_from_be48(pl);
+      var FP a1c = fp_from_be48(pl + 48);
+      var FP b0c = fp_from_be48(pl + 96);
+      var FP b1c = fp_from_be48(pl + 144);
+      var FP a0 = fp_to_mont(a0c);
+      var FP a1 = fp_to_mont(a1c);
+      var FP b0 = fp_to_mont(b0c);
+      var FP b1 = fp_to_mont(b1c);
+      var 1 a2 = alloc(FP2_BYTES);
+      var 1 b2 = alloc(FP2_BYTES);
+      var 1 r2 = alloc(FP2_BYTES);
+      st a2, a0;
+      st a2 + 48, a1;
+      st b2, b0;
+      st b2 + 48, b1;
+      fp2_mul(r2, a2, b2);
+      var FP r0 = lds FP r2;
+      var FP r1 = lds FP (r2 + 48);
+      r0 = fp_from_mont(r0);
+      r1 = fp_from_mont(r1);
+      fp_to_be48(r0, out + opos + 16);
+      fp_to_be48(r1, out + opos + 64);
+      olen = 96;
+    }
+    if ty == 3 {
+      var 1 buf = alloc(256);
+      pad_read(pl, len, 256, buf);
+      var 1 e = bls_g1_add_exec(buf, out + opos + 24);
+      st out + opos + 16, e;
+      if e != 0 { memzero(out + opos + 24, 128); }
+      olen = 136;
+    }
+    if ty == 4 {
+      var 1 buf = alloc(160);
+      var 1 p = alloc(G1_BYTES);
+      var 1 scalar = alloc(32);
+      pad_read(pl, len, 160, buf);
+      var 1 e = g1_decode(buf, p);
+      if e == 1 {
+        var {1,1,1,1} m = u256_from_be(buf + 128, 32);
+        st scalar, m;
+        g1_mul(p, p, scalar, 4);
+        g1_encode(p, out + opos + 24);
+        e = 0;
+      } else {
+        memzero(out + opos + 24, 128);
+        e = 1;
+      }
+      st out + opos + 16, e;
+      olen = 136;
+    }
+    if ty == 5 {
+      var {1,1} qr = udivmod(len, 160);
+      var 1 e = bls_g1_msm_exec(pl, qr.0, out + opos + 24);
+      st out + opos + 16, e;
+      if e != 0 { memzero(out + opos + 24, 128); }
+      olen = 136;
+    }
+    if ty == 6 {
+      var 1 buf2 = alloc(512);
+      pad_read(pl, len, 512, buf2);
+      var 1 e2 = bls_g2_add_exec(buf2, out + opos + 24);
+      st out + opos + 16, e2;
+      if e2 != 0 { memzero(out + opos + 24, 256); }
+      olen = 264;
+    }
+    if ty == 7 {
+      var 1 buf2 = alloc(288);
+      var 1 p2 = alloc(G2_BYTES);
+      var 1 scalar2 = alloc(32);
+      pad_read(pl, len, 288, buf2);
+      var 1 e3 = g2_decode(buf2, p2);
+      if e3 == 1 {
+        var {1,1,1,1} m2 = u256_from_be(buf2 + 256, 32);
+        st scalar2, m2;
+        g2_mul(p2, p2, scalar2, 4);
+        g2_encode(p2, out + opos + 24);
+        e3 = 0;
+      } else {
+        memzero(out + opos + 24, 256);
+        e3 = 1;
+      }
+      st out + opos + 16, e3;
+      olen = 264;
+    }
+    if ty == 8 {
+      var {1,1} qr2 = udivmod(len, 288);
+      var 1 e4 = bls_g2_msm_exec(pl, qr2.0, out + opos + 24);
+      st out + opos + 16, e4;
+      if e4 != 0 { memzero(out + opos + 24, 256); }
+      olen = 264;
+    }
+    if ty == 9 {
+      var 1 buf3 = alloc(64);
+      pad_read(pl, len, 64, buf3);
+      var 1 e5 = bls_map_fp_to_g1_exec(buf3, out + opos + 24);
+      st out + opos + 16, e5;
+      if e5 != 0 { memzero(out + opos + 24, 128); }
+      olen = 136;
+    }
+    if ty == 10 {
+      var 1 buf4 = alloc(128);
+      pad_read(pl, len, 128, buf4);
+      var 1 e6 = bls_map_fp2_to_g2_exec(buf4, out + opos + 24);
+      st out + opos + 16, e6;
+      if e6 != 0 { memzero(out + opos + 24, 256); }
+      olen = 264;
+    }
+    if ty == 11 {
+      var {1,1} qr3 = udivmod(len, 384);
+      var 1 status = 3;
+      if qr3.1 == 0 {
+        var 1 pair_out = alloc(32);
+        status = bls_pairing_exec(pl, qr3.0, pair_out);
+        if status == 0 {
+          st out + opos + 16, ld8(pair_out + 31);
+        } else {
+          st out + opos + 16, status;
+        }
+      }
+      olen = 8;
+    }
+    heap_release(mark);
+    st out + opos + 8, olen;
+    opos = opos + 16 + ((olen + 7) & (0 - 8));
+    pos = pos + 16 + ((len + 7) & (0 - 8));
+  }
+  output_write(out, opos);
+  @halt(@base, 0, @base, 0);
+  return 0;
+}
