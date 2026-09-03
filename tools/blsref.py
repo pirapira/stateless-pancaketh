@@ -443,6 +443,12 @@ def gen_consts(out):
         fh.write(f"#define FP_INV {sdec(INV)}   /* -p^-1 mod 2^64 */\n")
         for i, w in enumerate(limbs(P)):
             fh.write(f"#define FP_P{i} {sdec(w)}\n")
+        def lit(x): return "<" + ", ".join(sdec(w) for w in limbs(x)) + ">"
+        fh.write(f"#define FP_P_LIT {lit(P)}\n")
+        fh.write(f"#define FP_ONE_MONT {lit(mont(1))}   /* R mod p */\n")
+        fh.write(f"#define FP_R2_LIT {lit(RM * RM % P)}\n")
+        fh.write(f"#define FP_R3_LIT {lit(RM * RM * RM % P)}\n")
+        fh.write(f"#define FP_P_HALF_LIT {lit((P - 1) // 2)}\n")
         fh.write(f"#define BLS_CONSTS_SIZE {size}\n")
         fh.write("\n".join(defs) + "\n\n")
         fh.write("var 1 bls_c = 0;\n\nfun 1 bls_consts_init() {\n  if bls_c != 0 { return 0; }\n")

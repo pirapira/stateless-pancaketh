@@ -55,10 +55,75 @@ PAD512 = schedule([0x80000000] + [0] * 14 + [512])   # second block of sha256(64
 o = []
 w = o.append
 
+import os
+VARIANT = os.environ.get("SHA_VARIANT", "rot")
+
 def emit_rounds(ind, sv, wv, const_w=None):
+    if VARIANT == "rot": return emit_rounds_rot(ind, sv, wv, const_w)
+    if VARIANT == "ssa": return emit_rounds_ssa(ind, sv, wv, const_w)
+    if VARIANT == "explicit": return emit_rounds_explicit(ind, sv, wv, const_w)
+    if VARIANT == "wmem": return emit_rounds_wmem(ind, sv, wv, const_w)
+    raise SystemExit("bad variant")
+
+def emit_rounds_ssa(ind, sv, wv, const_w=None):
+    sv = list(sv); wv = list(wv)
+    for t in range(64):
+        a, b, c, d, e, f, g, h = sv
+        if const_w is None:
+            if t >= 16:
+                w15, w7, w2 = wv[1], wv[9], wv[14]
+                w(f"{ind}var x{t} = {mask(f'{wv[0]} + {s0(w15)} + {w7} + {s1(w2)}')};")
+                wv = wv[1:] + [f"x{t}"]
+            kw = f"{s32(K[t])} + {wv[t if t < 16 else 15]}"
+        else:
+            kw = f"{s32(K[t] + const_w[t])}"
+        w(f"{ind}var t{t}_1 = {h} + {S1(e)} + ({g} ^ ({e} & ({f} ^ {g}))) + {kw};")
+        w(f"{ind}var e{t+1} = {mask(f'{d} + t{t}_1')};")
+        w(f"{ind}var a{t+1} = {mask(f't{t}_1 + {S0(a)} + ({b} ^ (({a} ^ {b}) & ({b} ^ {c})))')};")
+        sv = [f"a{t+1}", a, b, c, f"e{t+1}", e, f, g]
+    for i in range(8): w(f"{ind}{SV[i]} = {sv[i]};")
+    if const_w is None:
+        for i in range(16): w(f"{ind}{WV[i]} = {wv[i]};")
+
+def emit_rounds_explicit(ind, sv, wv, const_w=None):
+    a, b, c, d, e, f, g, h = sv
+    for t in range(64):
+        if const_w is None:
+            if t >= 16:
+                ws, w15, w7, w2 = (wv[(t - k) % 16] for k in (16, 15, 7, 2))
+                w(f"{ind}{ws} = {mask(f'{ws} + {s0(w15)} + {w7} + {s1(w2)}')};")
+            kw = f"{s32(K[t])} + {wv[t % 16]}"
+        else:
+            kw = f"{s32(K[t] + const_w[t])}"
+        w(f"{ind}t1 = {h} + {S1(e)} + ({g} ^ ({e} & ({f} ^ {g}))) + {kw};")
+        w(f"{ind}{h} = {mask(f't1 + {S0(a)} + ({b} ^ (({a} ^ {b}) & ({b} ^ {c})))')};")
+        w(f"{ind}var n{t} = {mask(f'{d} + t1')};")
+        w(f"{ind}{d} = {c}; {c} = {b}; {b} = {a}; {a} = {h}; {h} = {g}; {g} = {f}; {f} = {e}; {e} = n{t};")
+
+def emit_rounds_wmem(ind, sv, wv, const_w=None):
+    # W window lives in memory at wp (16 words); wv ignored
+    for t in range(64):
+        a, b, c, d, e, f, g, h = (sv[(r - t) % 8] for r in range(8))
+        if const_w is None:
+            if t >= 16:
+                w(f"{ind}w15 = lds 1 (wp + {8*((t-15)%16)});")
+                w(f"{ind}w2 = lds 1 (wp + {8*((t-2)%16)});")
+                w(f"{ind}st wp + {8*(t%16)}, {mask(f'(lds 1 (wp + {8*(t%16)})) + {s0('w15')} + (lds 1 (wp + {8*((t-7)%16)})) + {s1('w2')}')};")
+            kw = f"{s32(K[t])} + (lds 1 (wp + {8*(t%16)}))"
+        else:
+            kw = f"{s32(K[t] + const_w[t])}"
+        w(f"{ind}t1 = {h} + {S1(e)} + ({g} ^ ({e} & ({f} ^ {g}))) + {kw};")
+        w(f"{ind}{d} = {mask(f'{d} + t1')};")
+        w(f"{ind}{h} = {mask(f't1 + {S0(a)} + ({b} ^ (({a} ^ {b}) & ({b} ^ {c})))')};")
+
+MAJ = os.environ.get("SHA_MAJ", "plain")
+
+def emit_rounds_rot(ind, sv, wv, const_w=None):
     """64 rounds on the 8 state variables sv (a..h at round 0) with the 16
     schedule variables wv (W[0..15]); if const_w is given the schedule is that
     constant list and K[t]+W[t] is folded into one immediate."""
+    if MAJ == "carry":
+        w(f"{ind}ab0 = {sv[1]} ^ {sv[2]};")
     for t in range(64):
         a, b, c, d, e, f, g, h = (sv[(r - t) % 8] for r in range(8))
         if const_w is None:
@@ -70,7 +135,19 @@ def emit_rounds(ind, sv, wv, const_w=None):
             kw = f"{s32(K[t] + const_w[t])}"
         w(f"{ind}t1 = {h} + {S1(e)} + ({g} ^ ({e} & ({f} ^ {g}))) + {kw};")
         w(f"{ind}{d} = {mask(f'{d} + t1')};")
-        w(f"{ind}{h} = {mask(f't1 + {S0(a)} + ({b} ^ (({a} ^ {b}) & ({b} ^ {c})))')};")
+        if MAJ == "carry":
+            old, new = f"ab{t % 2}", f"ab{(t + 1) % 2}"
+            w(f"{ind}{new} = {a} ^ {b};")
+            maj = f"(({old} & {new}) ^ {b})"
+        elif MAJ == "m2":
+            maj = f"(({a} & {b}) | ({c} & ({a} | {b})))"
+        elif MAJ == "m3":
+            maj = f"((({a} & {b}) ^ ({a} & {c})) ^ ({b} & {c}))"
+        elif MAJ == "m5":
+            maj = f"((({a} | {b}) & {c}) | ({a} & {b}))"
+        else:
+            maj = f"({b} ^ (({a} ^ {b}) & ({b} ^ {c})))"
+        w(f"{ind}{h} = {mask(f't1 + {S0(a)} + {maj}')};")
 
 SV = list("abcdefgh")
 WV = [f"w{i}" for i in range(16)]
@@ -84,10 +161,12 @@ w("""/* lib/sha256.pnk -- SHA-256 (FIPS 180-4) on 64-bit words masked to 32 bits
 
 var 1 sha_st = 0;    /* 8-word working state */
 var 1 sha_pad = 0;   /* 128-byte padding scratch */
+var 1 sha_w = 0;
 
 fun 1 sha256_init() {
   sha_st = alloc(64);
   sha_pad = alloc(128);
+  sha_w = alloc(128);
   return 0;
 }
 
@@ -99,12 +178,18 @@ w("""  return 0;
 
 /* One compression of the 64-byte block at blk into the 8-word state at stp. */
 fun 1 sha256_block(1 stp, 1 blk) {""")
-for i in range(16):
+if VARIANT == "wmem":
+    w("  var wp = sha_w; var w15 = 0; var w2 = 0;")
+    for i in range(16):
+        w(f"  st wp + {8*i}, LD_BE32(blk + {4*i});")
+else:
+  for i in range(16):
     w(f"  var w{i} = LD_BE32(blk + {4*i});")
 for i, v in enumerate(SV):
     w(f"  var {v} = lds 1 (stp + {8*i});")
-w("  var t1 = 0;")
-emit_rounds("  ", SV, WV)
+w("  var t1 = 0; var ab0 = 0; var ab1 = 0;")
+if VARIANT == "wmem": emit_rounds_wmem("  ", SV, WV)
+else: emit_rounds_rot("  ", SV, WV)
 for i, v in enumerate(SV):
     w(f"  st stp + {8*i}, {mask(f'(lds 1 (stp + {8*i})) + {v}')};")
 w("""  return 0;
@@ -148,20 +233,20 @@ fun 1 sha256(1 p, 1 len, 1 out) {
    fully loaded before anything is stored). Block 1 is a ++ b with the IV as
    immediates; block 2 is the constant padding block (0x80, zeros, length 512),
    whose whole schedule is folded into the round constants. */
-fun 1 sha256_pair(1 a, 1 b, 1 out) {""")
+fun 1 sha256_pair(1 pa, 1 pb, 1 out) {""")
 for i in range(8):
-    w(f"  var w{i} = LD_BE32(a + {4*i});")
+    w(f"  var w{i} = LD_BE32(pa + {4*i});")
 for i in range(8, 16):
-    w(f"  var w{i} = LD_BE32(b + {4*(i-8)});")
+    w(f"  var w{i} = LD_BE32(pb + {4*(i-8)});")
 for i, v in enumerate(SV):
     w(f"  var {v} = {s32(IV[i])};")
-w("  var t1 = 0;")
-emit_rounds("  ", SV, WV)
+w("  var t1 = 0; var ab0 = 0; var ab1 = 0;")
+emit_rounds_rot("  ", SV, WV)
 # H1 = IV + state; reuse the (now dead) schedule variables w0..w7 to hold it.
 for i, v in enumerate(SV):
     w(f"  w{i} = {mask(f'{v} + {s32(IV[i])}')};")
     w(f"  {v} = w{i};")
-emit_rounds("  ", SV, WV, const_w=PAD512)
+emit_rounds_rot("  ", SV, WV, const_w=PAD512)
 for i, v in enumerate(SV):
     w(f"  w{i} = {mask(f'w{i} + {v}')};")
     for k in range(4):
