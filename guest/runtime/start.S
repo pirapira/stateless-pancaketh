@@ -60,6 +60,12 @@ ffikeccakf:
 ffisha256f:
     csrrs x0, 0x805, a0
     ret
+
+.globl ffiblake2bround
+ffiblake2bround:
+    .4byte 0x81952073             # csrs 0x819, a0 -> BLAKE2b round
+    ret
+
 .globl ffiarith256mod
 ffiarith256mod:
     .4byte 0x80252073             # csrs 0x802, a0 -> Arith256Mod
