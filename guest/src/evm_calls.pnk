@@ -715,6 +715,7 @@ fun 1 set_retdata(1 p, 1 n) {
   if n == 0 {
     st ev + EV_RETDATA, evm_empty;
     st ev + EV_RETDATA_N, 0;
+    st ev + EV_RETDATA_CAP, 0;
     return 0;
   }
   var cap = lds 1 (ev + EV_RETDATA_CAP);
