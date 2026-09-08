@@ -1,4 +1,4 @@
-# stateless-pancake
+# stateless-pancaketh
 
 Experiment: an Ethereum **stateless guest** written in
 [Pancake](https://cakeml.org/pancake) (the verified C-like language compiled
