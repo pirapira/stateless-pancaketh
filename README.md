@@ -1,8 +1,8 @@
 # stateless-pancaketh
 
 Experiment: an Ethereum **stateless guest** written in
-[Pancake](https://cakeml.org/pancake) (the verified C-like language compiled
-by the CakeML compiler) and run as a RISC-V zkVM guest, as an alternative
+[Pancake](https://cakeml.org/pancake) (an imperative language with a formally verified compiler)
+and run as a RISC-V zkVM guest, as an alternative
 route to evm-asm's hand-written/codegen RV64 guest.
 
 ## Goal
