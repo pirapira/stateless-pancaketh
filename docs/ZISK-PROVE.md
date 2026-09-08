@@ -4,7 +4,8 @@ This walks through the two ZisK-specific steps that `README.md` only
 summarizes: emulating the Pancake-compiled guest with `ziskemu` (for step
 counts) and generating an actual STARK proof of a real execution with
 `cargo-zisk prove`. It starts with a tiny example (`hello.pnk`) to validate
-the pipeline cheaply, then does the same with a real EEST block fixture.
+the pipeline cheaply, then does the same with an EEST test fixture (a
+synthetic single-block, single-transaction test case, not a chain block).
 
 ## Prerequisites
 
@@ -75,7 +76,7 @@ SpecifiedRanges, VirtualTable0/1), all verified, **106.8s** proving time
 `cargo-zisk verify -p work/proof-hello/proofs/<Air>_<n>.json` re-checks any
 individual proof file standalone.
 
-## Real block: EEST fixture 00000
+## EEST test fixture 00000
 
 `work/inputs/00000_..non-zer.input` (5.8 KB) is fixture
 `blockchain_tests/for_amsterdam/amsterdam/eip2780_reduce_intrinsic_tx_gas/authorization_charges/account_write_authority_is_recipient.json`
@@ -123,6 +124,6 @@ Wall clock for the whole `prove` invocation (including proving-key load):
   (otherwise successful) proving run.
 * Proving cost above is dominated by the fixed per-AIR setup
   (contributions/inner-proof machinery), not step count: 1032 steps (hello)
-  and 18.77M steps (real block) differ by four orders of magnitude in steps
+  and 18.77M steps (fixture) differ by four orders of magnitude in steps
   but only ~2x in proving time, because both stay within a handful of AIR
   instances of the fixed proving-key size.
