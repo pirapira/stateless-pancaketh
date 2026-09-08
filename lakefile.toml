@@ -2,12 +2,13 @@ name = "Guest"
 version = "0.1.0"
 defaultTargets = ["Guest"]
 
-# Pinned to flapjack's HEAD as of this setup; bump deliberately (and re-check
-# lean-toolchain compatibility) rather than tracking main unpinned.
+# Pinned to flapjack's HEAD as of this setup (needs PR 403, the memory model in
+# the stepped semantics); bump deliberately (and re-check lean-toolchain
+# compatibility) rather than tracking main unpinned.
 [[require]]
 name = "flapjack"
 git = "https://github.com/pirapira/flapjack"
-rev = "4f4a8cc8e8f38b01356e6aa35383eb1db18bc1cc"
+rev = "9db2c5bf9c53215cd424508c7622d9bacb18f91d"
 
 [[lean_lib]]
 name = "Guest"
@@ -17,3 +18,9 @@ name = "Guest"
 [[lean_exe]]
 name = "gen-guest-ast"
 root = "Tools.GenGuestAst"
+
+# `lake exe run-guest [input.bin] [fuel]` executes the guest under the stepped
+# source semantics, as Guest.runGuestStepped defines it.
+[[lean_exe]]
+name = "run-guest"
+root = "Tools.RunGuest"

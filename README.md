@@ -187,10 +187,15 @@ Pancake compiler, pinned by commit. `lake build` checks it.
 * `Guest/AstParse.lean` proves, by `native_decide`, that parsing the committed
   source gives exactly the committed AST, so the rest of the development
   states things about `guestAst` without re-running the parser.
+* `Guest/Model.lean` is the guest as a flapjack program: initial state per
+  `guest/src/config.h`, primitive/FFI handlers, CakeML's aligned-cell memory
+  model, and the step-counted run `Guest.runGuestStepped`. It is computable;
+  `lake exe run-guest [input.bin]` executes it and prints the result, the
+  Pancake step count, and the output region. Its docstring lists the
+  modelling caveats.
 * `Guest/StepBound.lean` states the first goal: the guest terminates within a
   constant number of Pancake source steps (flapjack's step-counted semantics)
-  whenever the declared block gas limit is at most 200M. Its docstring lists
-  what is modelled and the caveats still open on the semantics side.
+  whenever the declared block gas limit is at most 200M.
 
 ## Status / plan
 

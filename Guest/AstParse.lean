@@ -27,7 +27,7 @@ committed AST. -/
 def runGuestSteppedParsed (input : InputBlob) (fuel : Nat) :
     Option (PanValueSteppedResult Word) :=
   evalPanValueSteppedProgram (guestInitialState input) guestPrimitiveHandler
-    guestFfiHandler fuel guestDeclarations guestEntry []
+    guestFfiHandler fuel guestDeclarations guestEntry [] (memoryAccess := some guestMemoryAccess)
 
 /-- Running the parsed guest is running the committed AST, so
 `guest_terminates_within_step_bound` transfers to the source as written. -/
