@@ -1,0 +1,13 @@
+name = "Guest"
+version = "0.1.0"
+defaultTargets = ["Guest"]
+
+# Pinned to flapjack's HEAD as of this setup; bump deliberately (and re-check
+# lean-toolchain compatibility) rather than tracking main unpinned.
+[[require]]
+name = "flapjack"
+git = "https://github.com/pirapira/flapjack"
+rev = "d0094d9a8f276d1dc4449faf491d81861fd542fc"
+
+[[lean_lib]]
+name = "Guest"
