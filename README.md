@@ -138,6 +138,10 @@ tools/eest-run.py guest/build/guest-accel.elf work/inputs/manifest.tsv --quiet-p
 For a pinned, self-contained full-corpus run through Spike, including the
 recorded commit and result, see [docs/EEST-SPIKE.md](docs/EEST-SPIKE.md).
 
+For running the guest under `ziskemu` and generating an actual ZisK STARK
+proof of an execution (small example plus an EEST test fixture, with recorded
+timings), see [docs/ZISK-PROVE.md](docs/ZISK-PROVE.md).
+
 ## Testing
 
 Run `tools/check_all.sh` for the unit/oracle tests, vector checks, and every
