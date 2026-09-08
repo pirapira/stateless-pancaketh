@@ -174,6 +174,24 @@ new main baseline, regenerate it with the same `bench.py` command using
 `work/bench/baseline-main.json`, force-add that ignored file with
 `git add -f`, and paste the comparator output into the performance PR.
 
+## Lean proofs
+
+The repo is also a Lake project (`lakefile.toml`, library `Guest`) depending
+on [flapjack](https://github.com/pirapira/flapjack), the Lean port of the
+Pancake compiler, pinned by commit. `lake build` checks it.
+
+* `Guest/guest.pp.pnk` is the cpp-expanded guest as `guest/build.sh` feeds it
+  to `cake` (default build), and `Guest/Ast.lean` is its parse by flapjack's
+  Pancake parser, committed as Lean terms (`Guest.guestAst`). Regenerate both
+  with `tools/gen-guest-ast.sh` after editing `guest/src`.
+* `Guest/AstParse.lean` proves, by `native_decide`, that parsing the committed
+  source gives exactly the committed AST, so the rest of the development
+  states things about `guestAst` without re-running the parser.
+* `Guest/StepBound.lean` states the first goal: the guest terminates within a
+  constant number of Pancake source steps (flapjack's step-counted semantics)
+  whenever the declared block gas limit is at most 200M. Its docstring lists
+  what is modelled and the caveats still open on the semantics side.
+
 ## Status / plan
 
 See `PLAN.md`. Deliberate numeric-width and saturation boundaries are
