@@ -8,7 +8,7 @@ defaultTargets = ["Guest"]
 [[require]]
 name = "flapjack"
 git = "https://github.com/pirapira/flapjack"
-rev = "3efd4fa98d05a8a554182607e7dc05dda77091c6"
+rev = "9f13fe523d889e7f90463f07e7abc5ecad7d693f"
 
 [[lean_lib]]
 name = "Guest"
