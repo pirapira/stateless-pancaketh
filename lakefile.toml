@@ -7,7 +7,13 @@ defaultTargets = ["Guest"]
 [[require]]
 name = "flapjack"
 git = "https://github.com/pirapira/flapjack"
-rev = "d0094d9a8f276d1dc4449faf491d81861fd542fc"
+rev = "4f4a8cc8e8f38b01356e6aa35383eb1db18bc1cc"
 
 [[lean_lib]]
 name = "Guest"
+
+# `lake exe gen-guest-ast Guest/guest.pp.pnk > Guest/Ast.lean` regenerates the
+# committed AST of the guest (see tools/gen-guest-ast.sh).
+[[lean_exe]]
+name = "gen-guest-ast"
+root = "Tools.GenGuestAst"
