@@ -448,6 +448,16 @@ the trap fix.
   *always* succeeds: `RiscV.panRiscVWordOp .add` is total.
 * `eval_load_global_add` and its counted form — `lds 1 (base + K)`, the guest's
   pervasive field read, combining this layer with the memory one.
+* `eval_op2` — any two-argument operator, composing with arbitrary
+  sub-expressions, with `wordOp_add`/`wordOp_sub` discharging its side
+  condition. This subsumes the address form and is what the guest's value
+  expressions need (`gl - amount`, `lds 1 (ev + 184) + amount`).
+* `eval_cmp_locals` — a comparison of two word locals. Always succeeds:
+  `RiscV.panRiscVCmp` is total, so the only way a guest comparison fails to
+  evaluate is an unbound or non-word operand.
+* `store_terminates` — **a word store terminates as soon as its two expressions
+  evaluate**, with no further obligation, because the access model's `domain`
+  is `fun _ => true`. Contrast the byte accesses, which can fail.
 
 None of these hold by `rfl`: `evalPanValueExp` is defined by well-founded
 recursion, so they go through the equation lemmas, and the list case is the
@@ -458,9 +468,10 @@ nested `evalPanValueExp.evalPanValueExps` rather than the top-level name.
 `charge_gas_terminates_of_state` now needs, in place of the assumed gas load
 and shape, only that the global `ev` holds a word and memory holds a word at
 `ev + 64`. Two of its four obligations are discharged. Still assumed: the
-comparison (`Exp.cmp`, not yet covered) and the tail's two `Prog.store`s (the
-store side of the expression layer). The pattern is the one every guest
-function will follow, so those two are the next pieces.
+comparison and the tail. Both now have their rules — `eval_cmp_locals` and
+`store_terminates` — so what is left there is threading them together, plus a
+rule for `Prog.return`, which carries its own obligation
+(`panValuePayloadWithinLimit`) in the same way `Prog.raise` does.
 
 ## What the bound itself needs
 
