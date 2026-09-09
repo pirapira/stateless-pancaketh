@@ -1,7 +1,8 @@
 /* evm_calls.pnk -- port of Interpreter.lean: system instructions (RETURN,
    REVERT, SELFDESTRUCT), EIP-7708 transfer logs, EIP-7702 delegation
    (recover_authority, calculate_delegation_cost, set_delegation,
-   prepare_dispatch), process_message / process_create_message,
+   prepare_dispatch), process_message / process_create_message (the recursion
+   through CALL/CREATE is run as an explicit frame loop, see run_frames),
    generic_create / CREATE / CREATE2, generic_call / CALL / CALLCODE /
    DELEGATECALL / STATICCALL, the opcode dispatch loop (execute_code) and
    process_message_call. Requires evm.pnk, state.pnk, tx.pnk (AUTH_* record
@@ -16,6 +17,9 @@
 #endif
 
 /* MessageCallOutput */
+/* Continuation record of the frame `ev` (see run_frames). */
+var 1 cur_cont = 0;
+
 #define MCO_GAS_LEFT 0
 #define MCO_REFUND 8
 #define MCO_LOGS 16
@@ -483,20 +487,67 @@ fun 1 op_dispatch(1 op) {
   return 0;
 }
 
-/* execute_code's while loop */
-fun 1 execute_loop() {
-  while (lds 1 (ev + EV_RUNNING)) != 0 {
-    var pc = lds 1 (ev + EV_PC);
-    if pc >=+ (lds 1 (ev + EV_CODE_N)) {
-      break;
-    }
-    op_dispatch(ld8 ((lds 1 (ev + EV_CODE)) + pc));
+
+/* ---- frame driver ------------------------------------------------------------------
+   process_message used to run a child frame by recursion (execute_loop ->
+   op_dispatch -> op_call -> generic_call -> process_message -> execute_body ->
+   execute_loop).  The interpreter is now one loop, run_frames, that executes
+   whichever frame `ev` points at.  Starting a child (start_child) records a
+   continuation, switches `ev` to the child and returns to the loop; when a
+   frame finishes, the loop performs process_message's epilogue and then the
+   parent's post-processing recorded in the continuation, and resumes the
+   parent.  Every frame, the transaction-level one included, has a
+   continuation record; cur_cont is the record of `ev`.  Records live in the
+   child's scratch region, right after frame_new took its marks. */
+#define CK_PARENT       0   /* parent frame (0 for the transaction-level frame) */
+#define CK_PARENT_CONT  8   /* the parent's continuation record */
+#define CK_KIND        16   /* 0 = transaction level, 1 = generic_call, 2 = generic_create */
+#define CK_SNAPSHOT    24   /* process_message's state snapshot for this frame */
+#define CK_DONE        32   /* 1 once the frame has finished (exception, precompile, halt) */
+#define CK_MSG         40   /* the frame's message */
+#define CK_MARK        48   /* kinds 1, 2: child scratch mark */
+#define CK_MEM_MARK    56   /* kinds 1, 2: child frame-memory mark */
+#define CK_NEW_ACCOUNT 64   /* kinds 1, 2: new_account_charged */
+#define CK_OUT_START   72   /* kind 1: output range in the parent's memory */
+#define CK_OUT_SIZE    80
+#define CK_CONTRACT    88   /* kind 2: contract address */
+#define CK_CSNAPSHOT   96   /* kind 2: process_create_message's snapshot */
+#define CK_SIZE       104
+
+/* frame_new plus the continuation record for msg; ev becomes the new frame. */
+fun 1 frame_open(1 msg, 1 kind) {
+  var parent = ev;
+  var 1 child = frame_new(msg);
+  var 1 rec = scratch_alloc(CK_SIZE);
+  memzero(rec, CK_SIZE);
+  st rec + CK_PARENT, parent;
+  st rec + CK_PARENT_CONT, cur_cont;
+  st rec + CK_KIND, kind;
+  st rec + CK_MSG, msg;
+  ev = child;
+  cur_cont = rec;
+  return child;
+}
+
+/* The exception handler of process_message's `try execute_body()`, applied to
+   the current frame, which is thereby finished. */
+fun 1 frame_exception(1 err) {
+  refill_frame_state_gas();
+  if err != E_REVERT {
+    frame_halt(err);
+    st ev + EV_OUTPUT, evm_empty;
+    st ev + EV_OUTPUT_N, 0;
+  } else {
+    st ev + EV_ERROR, err;
   }
+  st cur_cont + CK_DONE, 1;
   return 0;
 }
 
-/* The body process_message runs inside its try. */
-fun 1 execute_body() {
+/* The part of execute_body before the interpreter loop: value transfer and the
+   precompile shortcut.  Returns 1 when the frame is complete (precompile
+   target), 0 when its code is to be executed. */
+fun 1 frame_prologue() {
   DBG(68);
   var msg = lds 1 (ev + EV_MSG);
   if (lds 1 (msg + MSG_TRANSFER_VALUE)) != 0 {
@@ -517,12 +568,189 @@ fun 1 execute_body() {
       if (lds 1 (msg + MSG_DISABLE_PRECOMPILES)) == 0 {
         run_precompile(pi);
       }
-      return 0;
+      return 1;
     }
   }
   DBG(69);
-  execute_loop();
-  DBG(70);
+  return 0;
+}
+
+/* Run the prologue of the frame `ev` under its exception handler. */
+fun 1 frame_start() {
+  var err = 0;
+  var done = 0;
+  try done = frame_prologue()
+  catch EvmErr => err {
+    frame_exception(err);
+  }
+  if done != 0 {
+    st cur_cont + CK_DONE, 1;
+  }
+  return 0;
+}
+
+/* Epilogue of process_message (after execute_body): revert state on error. */
+fun 1 frame_epilogue() {
+  if (lds 1 (ev + EV_ERROR)) != 0 {
+    state_restore(lds 1 (cur_cont + CK_SNAPSHOT));
+  }
+  return 0;
+}
+
+/* The child frame `ev` (continuation cur_cont, kind 1 or 2) has finished:
+   process_create_message's tail for creates, then the tail of generic_call /
+   generic_create in the parent, then the parent's pc_add(1).  Returns with ev
+   and cur_cont at the parent. */
+fun 1 finish_child() {
+  var rec = cur_cont;
+  var child = ev;
+  var parent = lds 1 (rec + CK_PARENT);
+  var kind = lds 1 (rec + CK_KIND);
+  var msg = lds 1 (rec + CK_MSG);
+  var new_account_charged = lds 1 (rec + CK_NEW_ACCOUNT);
+  var child_mark = lds 1 (rec + CK_MARK);
+  var child_mem_mark = lds 1 (rec + CK_MEM_MARK);
+  var out_start = lds 1 (rec + CK_OUT_START);
+  var out_size = lds 1 (rec + CK_OUT_SIZE);
+  var contract_address = lds 1 (rec + CK_CONTRACT);
+  if kind == 2 {
+    var csnap = lds 1 (rec + CK_CSNAPSHOT);
+    if (lds 1 (child + EV_ERROR)) == 0 {
+      var err = 0;
+      try create_finish(msg, child)
+      catch EvmErr => err {
+        state_restore(csnap);
+        refill_frame_state_gas();
+        frame_halt(err);
+        st ev + EV_OUTPUT, evm_empty;
+        st ev + EV_OUTPUT_N, 0;
+      }
+    } else {
+      state_restore(csnap);
+    }
+  }
+  ev = parent;
+  cur_cont = lds 1 (rec + CK_PARENT_CONT);
+  if kind == 2 {
+    var 1 empty = evm_empty;
+    if (lds 1 (child + EV_ERROR)) != 0 {
+      incorporate_child_on_error(child);
+      if new_account_charged != 0 {
+        credit_state_gas_refund(SG_NEW_ACCOUNT);
+      }
+      set_retdata(lds 1 (child + EV_OUTPUT), lds 1 (child + EV_OUTPUT_N));
+      stack_push(<0, 0, 0, 0>);
+    } else {
+      incorporate_child_on_success(child);
+      set_retdata(empty, 0);
+      var {1,1,1,1} av = address_to_u256(contract_address);
+      stack_push(av);
+    }
+  } else {
+    if (lds 1 (child + EV_ERROR)) != 0 {
+      incorporate_child_on_error(child);
+      if new_account_charged != 0 {
+        credit_state_gas_refund(SG_NEW_ACCOUNT);
+      }
+      set_retdata(lds 1 (child + EV_OUTPUT), lds 1 (child + EV_OUTPUT_N));
+      stack_push(<0, 0, 0, 0>);
+    } else {
+      incorporate_child_on_success(child);
+      set_retdata(lds 1 (child + EV_OUTPUT), lds 1 (child + EV_OUTPUT_N));
+      stack_push(<1, 0, 0, 0>);
+    }
+    var 1 actual = min(out_size, lds 1 (child + EV_OUTPUT_N));
+    if actual != 0 {
+      /* The child may return a view of the suspended parent's memory (the
+         identity precompile does this).  Copy from the persistent returndata
+         snapshot so an overlapping output range cannot overwrite its source. */
+      memcpy(MEM_PTR(out_start), lds 1 (ev + EV_RETDATA), actual);
+    }
+  }
+  scratch_release(child_mark);
+  frame_mem_release(child_mem_mark);
+  pc_add(1);
+  return 0;
+}
+
+/* Run frames until the one started by process_message (kind 0) finishes.
+   Each iteration executes one opcode of the current frame or, when the
+   current frame is finished, its epilogue and the parent's continuation. */
+fun 1 run_frames() {
+  var go = 1;
+  while go != 0 {
+    var done = 0;
+    if (lds 1 (cur_cont + CK_DONE)) != 0 {
+      done = 1;
+    } else {
+      if (lds 1 (ev + EV_RUNNING)) == 0 {
+        done = 1;
+      } else {
+        var pc = lds 1 (ev + EV_PC);
+        if pc >=+ (lds 1 (ev + EV_CODE_N)) {
+          done = 1;
+        } else {
+          var err = 0;
+          try op_dispatch(ld8 ((lds 1 (ev + EV_CODE)) + pc))
+          catch EvmErr => err {
+            frame_exception(err);
+          }
+        }
+      }
+    }
+    if done != 0 {
+      DBG(64);
+      frame_epilogue();
+      if (lds 1 (cur_cont + CK_KIND)) == 0 {
+        ev = lds 1 (cur_cont + CK_PARENT);
+        cur_cont = lds 1 (cur_cont + CK_PARENT_CONT);
+        go = 0;
+      } else {
+        var err2 = 0;
+        try finish_child()
+        catch EvmErr => err2 {
+          frame_exception(err2);
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+/* Start executing the child message cm in a new frame: the former recursive
+   process_message (kind 1) / process_create_message (kind 2) call from
+   generic_call / generic_create.  Returns to the interpreter loop with ev at
+   the child; the parent's post-processing runs from the continuation once the
+   child finishes. */
+fun 1 start_child(1 cm, 1 kind, 1 child_mark, 1 child_mem_mark, 1 new_account_charged,
+    1 out_start, 1 out_size, 1 contract_address) {
+  var csnap = 0;
+  if kind == 2 {
+    csnap = state_snapshot();
+    var target = lds 1 (cm + MSG_CURRENT_TARGET);
+    destroy_storage(target);
+    mark_account_created(target);
+    increment_nonce(target);
+  }
+  if (lds 1 (cm + MSG_DEPTH)) >+ STACK_DEPTH_LIMIT {
+    throw EvmErr E_STACK_DEPTH_LIMIT;
+  }
+  DBG(61);
+  frame_open(cm, kind);
+  DBG(62);
+  /* A child is at depth >= 1; only the transaction-level frame, started by
+     process_message, runs depth0_prepare. */
+  DBG(63);
+  var 1 snapshot = state_snapshot();
+  st cur_cont + CK_SNAPSHOT, snapshot;
+  st cur_cont + CK_CSNAPSHOT, csnap;
+  st cur_cont + CK_MARK, child_mark;
+  st cur_cont + CK_MEM_MARK, child_mem_mark;
+  st cur_cont + CK_NEW_ACCOUNT, new_account_charged;
+  st cur_cont + CK_OUT_START, out_start;
+  st cur_cont + CK_OUT_SIZE, out_size;
+  st cur_cont + CK_CONTRACT, contract_address;
+  frame_start();
   return 0;
 }
 
@@ -552,16 +780,18 @@ fun 1 depth0_prepare() {
 }
 
 /* process_message(msg) -> resulting frame record */
+/* process_message(msg) -> resulting frame record.  Transaction-level entry
+   (depth 0): opens the frame, runs depth0_prepare, then drives the frame and
+   everything it calls to completion through run_frames. */
 fun 1 process_message(1 msg) {
   if (lds 1 (msg + MSG_DEPTH)) >+ STACK_DEPTH_LIMIT {
     throw EvmErr E_STACK_DEPTH_LIMIT;
   }
   DBG(61);
   var parent = ev;
-  var 1 child = frame_new(msg);
-  ev = child;
+  var parent_cont = cur_cont;
+  var 1 child = frame_open(msg, 0);
   DBG(62);
-  var err = 0;
   if (lds 1 (msg + MSG_DEPTH)) == 0 {
     var 1 prep_snapshot = state_snapshot();
     var prep_reservoir = lds 1 (msg + MSG_RESERVOIR);
@@ -572,6 +802,7 @@ fun 1 process_message(1 msg) {
         scratch_release(lds 1 (child + EV_STACK_MARK));
         frame_mem_release(lds 1 (child + EV_MEM_MARK));
         ev = parent;
+        cur_cont = parent_cont;
         throw EvmErr perr;
       }
       state_restore(prep_snapshot);
@@ -580,27 +811,15 @@ fun 1 process_message(1 msg) {
       refill_frame_state_gas();
       frame_halt(perr);
       ev = parent;
+      cur_cont = parent_cont;
       return child;
     }
   }
   DBG(63);
   var 1 snapshot = state_snapshot();
-  try execute_body()
-  catch EvmErr => err {
-    refill_frame_state_gas();
-    if err != E_REVERT {
-      frame_halt(err);
-      st ev + EV_OUTPUT, evm_empty;
-      st ev + EV_OUTPUT_N, 0;
-    } else {
-      st ev + EV_ERROR, err;
-    }
-  }
-  DBG(64);
-  if (lds 1 (child + EV_ERROR)) != 0 {
-    state_restore(snapshot);
-  }
-  ev = parent;
+  st cur_cont + CK_SNAPSHOT, snapshot;
+  frame_start();
+  run_frames();
   return child;
 }
 
@@ -766,7 +985,9 @@ fun 1 compute_create2_contract_address(1 addr, 1 salt, 1 code, 1 n, 1 out) {
   return 0;
 }
 
-/* generic_create(endowment, contract_address, memory_start, memory_size) */
+/* generic_create(endowment, contract_address, memory_start, memory_size):
+   1 if a child frame was started (the caller's pc_add(1) then happens in
+   finish_child), 0 otherwise. */
 fun 1 generic_create({1,1,1,1} endowment, 1 contract_address, 1 mstart, 1 msize) {
   if msize >+ MAX_INIT_CODE_SIZE {
     throw EvmErr E_OUT_OF_GAS;
@@ -811,23 +1032,10 @@ fun 1 generic_create({1,1,1,1} endowment, 1 contract_address, 1 mstart, 1 msize)
   var 1 child_mem_mark = frame_mem_mark();
   var 1 cm = child_message(sender_address, 0, contract_address, create_gas, reservoir, endowment,
       empty, 0, 0, call_data, msize, 1, 0, 0);
-  var 1 child = process_create_message(cm);
-  if (lds 1 (child + EV_ERROR)) != 0 {
-    incorporate_child_on_error(child);
-    if new_account_charged != 0 {
-      credit_state_gas_refund(SG_NEW_ACCOUNT);
-    }
-    set_retdata(lds 1 (child + EV_OUTPUT), lds 1 (child + EV_OUTPUT_N));
-    stack_push(<0, 0, 0, 0>);
-  } else {
-    incorporate_child_on_success(child);
-    set_retdata(empty, 0);
-    var {1,1,1,1} av = address_to_u256(contract_address);
-    stack_push(av);
-  }
-  scratch_release(child_mark);
-  frame_mem_release(child_mem_mark);
-  return 0;
+  /* The child runs from the interpreter loop; finish_child performs the rest of
+     this function (kind 2) when it completes. */
+  start_child(cm, 2, child_mark, child_mem_mark, new_account_charged, 0, 0, contract_address);
+  return 1;
 }
 
 fun 1 op_create() {
@@ -846,8 +1054,10 @@ fun 1 op_create() {
   var 1 ca = alloc(24);
   compute_contract_address(lds 1 (msg + MSG_CURRENT_TARGET), lds 1 (a + ACCT_NONCE), ca);
   var 1 s = sat_word(mstart);
-  generic_create(endowment, ca, s, n);
-  pc_add(1);
+  var 1 started = generic_create(endowment, ca, s, n);
+  if started == 0 {
+    pc_add(1);
+  }
   return 0;
 }
 
@@ -869,14 +1079,17 @@ fun 1 op_create2() {
   var 1 s = sat_word(mstart);
   var 1 ca = alloc(24);
   compute_create2_contract_address(lds 1 (msg + MSG_CURRENT_TARGET), salt, MEM_PTR(s), n, ca);
-  generic_create(endowment, ca, s, n);
-  pc_add(1);
+  var 1 started = generic_create(endowment, ca, s, n);
+  if started == 0 {
+    pc_add(1);
+  }
   return 0;
 }
 
 /* ---- calls -------------------------------------------------------------------------- */
 
-/* generic_call(...) */
+/* generic_call(...): 1 if a child frame was started (the caller's pc_add(1)
+   then happens in finish_child), 0 otherwise. */
 fun 1 generic_call(1 gas, 1 reservoir, {1,1,1,1} value, 1 caller, 1 to, 1 code_address,
     1 transfer, 1 is_static, 1 in_start, 1 in_size, 1 out_start, 1 out_size,
     1 code, 1 code_n, 1 disable_pre, 1 new_account_charged) {
@@ -899,29 +1112,10 @@ fun 1 generic_call(1 gas, 1 reservoir, {1,1,1,1} value, 1 caller, 1 to, 1 code_a
   var 1 child_mem_mark = frame_mem_mark();
   var 1 cm = child_message(caller, to, to, gas, reservoir, value, call_data, in_size,
       code_address, code, code_n, transfer, is_static, disable_pre);
-  var 1 child = process_message(cm);
-  if (lds 1 (child + EV_ERROR)) != 0 {
-    incorporate_child_on_error(child);
-    if new_account_charged != 0 {
-      credit_state_gas_refund(SG_NEW_ACCOUNT);
-    }
-    set_retdata(lds 1 (child + EV_OUTPUT), lds 1 (child + EV_OUTPUT_N));
-    stack_push(<0, 0, 0, 0>);
-  } else {
-    incorporate_child_on_success(child);
-    set_retdata(lds 1 (child + EV_OUTPUT), lds 1 (child + EV_OUTPUT_N));
-    stack_push(<1, 0, 0, 0>);
-  }
-  var 1 actual = min(out_size, lds 1 (child + EV_OUTPUT_N));
-  if actual != 0 {
-    /* The child may return a view of the suspended parent's memory (the
-       identity precompile does this).  Copy from the persistent returndata
-       snapshot so an overlapping output range cannot overwrite its source. */
-    memcpy(MEM_PTR(out_start), lds 1 (ev + EV_RETDATA), actual);
-  }
-  scratch_release(child_mark);
-  frame_mem_release(child_mem_mark);
-  return 0;
+  /* The child runs from the interpreter loop; finish_child performs the rest of
+     this function (kind 1) when it completes. */
+  start_child(cm, 1, child_mark, child_mem_mark, new_account_charged, out_start, out_size, 0);
+  return 1;
 }
 
 /* calculate_message_call_gas(value, gas, gas_left, memory_cost, extra_gas) -> <cost, sub_call> */
@@ -1004,6 +1198,7 @@ fun 1 op_call() {
   st ev + EV_STATE_GAS_LEFT, 0;
   var 1 sender = get_account(lds 1 (msg + MSG_CURRENT_TARGET));
   var 1 insufficient = u256_lt(lds {1,1,1,1} (sender + ACCT_BALANCE), value);
+  var started = 0;
   if insufficient != 0 {
     stack_push(<0, 0, 0, 0>);
     var 1 empty = evm_empty;
@@ -1018,10 +1213,12 @@ fun 1 op_call() {
     var 1 isz = sat_word(in_size);
     var 1 os = sat_word(out_start);
     var 1 osz = sat_word(out_size);
-    generic_call(mcg.1, reservoir, value, lds 1 (msg + MSG_CURRENT_TARGET), to, code_address,
+    started = generic_call(mcg.1, reservoir, value, lds 1 (msg + MSG_CURRENT_TARGET), to, code_address,
         1, 0, is, isz, os, osz, code.0, code.1, dl.0, new_account_charged);
   }
-  pc_add(1);
+  if started == 0 {
+    pc_add(1);
+  }
   return 0;
 }
 
@@ -1072,6 +1269,7 @@ fun 1 op_callcode() {
   st ev + EV_STATE_GAS_LEFT, 0;
   var 1 sender = get_account(to);
   var 1 insufficient = u256_lt(lds {1,1,1,1} (sender + ACCT_BALANCE), value);
+  var started = 0;
   if insufficient != 0 {
     stack_push(<0, 0, 0, 0>);
     var 1 empty = evm_empty;
@@ -1083,10 +1281,12 @@ fun 1 op_callcode() {
     var 1 isz = sat_word(in_size);
     var 1 os = sat_word(out_start);
     var 1 osz = sat_word(out_size);
-    generic_call(mcg.1, reservoir, value, to, to, code_address,
+    started = generic_call(mcg.1, reservoir, value, to, to, code_address,
         1, 0, is, isz, os, osz, code.0, code.1, dl.0, 0);
   }
-  pc_add(1);
+  if started == 0 {
+    pc_add(1);
+  }
   return 0;
 }
 
@@ -1132,9 +1332,11 @@ fun 1 op_delegatecall() {
   var 1 isz = sat_word(in_size);
   var 1 os = sat_word(out_start);
   var 1 osz = sat_word(out_size);
-  generic_call(mcg.1, reservoir, lds {1,1,1,1} (msg + MSG_VALUE), lds 1 (msg + MSG_CALLER),
+  var 1 started = generic_call(mcg.1, reservoir, lds {1,1,1,1} (msg + MSG_VALUE), lds 1 (msg + MSG_CALLER),
       lds 1 (msg + MSG_CURRENT_TARGET), code_address, 0, 0, is, isz, os, osz, code.0, code.1, dl.0, 0);
-  pc_add(1);
+  if started == 0 {
+    pc_add(1);
+  }
   return 0;
 }
 
@@ -1180,9 +1382,11 @@ fun 1 op_staticcall() {
   var 1 isz = sat_word(in_size);
   var 1 os = sat_word(out_start);
   var 1 osz = sat_word(out_size);
-  generic_call(mcg.1, reservoir, <0, 0, 0, 0>, lds 1 (msg + MSG_CURRENT_TARGET), to, code_address,
+  var 1 started = generic_call(mcg.1, reservoir, <0, 0, 0, 0>, lds 1 (msg + MSG_CURRENT_TARGET), to, code_address,
       1, 1, is, isz, os, osz, code.0, code.1, dl.0, 0);
-  pc_add(1);
+  if started == 0 {
+    pc_add(1);
+  }
   return 0;
 }
 

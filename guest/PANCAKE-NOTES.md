@@ -70,6 +70,15 @@ Empirically verified against the prebuilt `cake` (CakeML e8eca63, 2026-08-24).
 
 * Register pressure: ~30 live locals compile but spill; order statements for short live ranges
   in hot loops.
+* **The call graph is acyclic: no recursion, direct or mutual.** CakeML's Pancake
+  theorem then gives a static stack bound for the whole program (`compile_prog_max`),
+  and the Lean step-count work needs no dynamic depth argument. Tree walks use an
+  explicit stack of small records in the scratch arena (`scratch_mark` / `scratch_alloc`
+  / `scratch_release`, released on exceptions too via a wrapper `try`), see
+  `rlp_validate_items`, `_decode_witness_node`, `_mpt_delete_node`, `_node_rlp_fill`
+  in `lib/rlp.pnk` / `mpt.pnk`; the EVM interpreter runs nested calls from one loop
+  (`run_frames`) with continuation records, see `evm_calls.pnk`. Check with the SCC
+  script in the Lean repo tooling before adding a call that could close a cycle.
 
 ## Lessons from recent work
 
