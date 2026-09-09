@@ -15,7 +15,7 @@ the generator stamps the sources' hashes below; a changed source therefore
 changes this module and forces its rebuild.
 -/
 
--- guest.pp.pnk sha256: bfc1e7e714c14dc29dbb49c253bb78ea487e4970f0d524ae7919bc235e0be9bb
+-- guest.pp.pnk sha256: daf135834eb1628faf498a768833b04e4c1e67168f6920e5065482fd358a55b4
 -- guest-software.pp.pnk sha256: 8ea190f862a029b1e86efe2388334c12f9bc8cd42d4eeef63d1f0acf2e207d9d
 
 namespace Guest
