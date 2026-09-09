@@ -6,5 +6,6 @@ import Guest.SoftwareAst
 import Guest.DecidableEq
 import Guest.Accel
 import Guest.Model
+import Guest.FrameBound
 import Guest.StepBound
 import Guest.AstParse

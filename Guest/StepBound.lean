@@ -7,12 +7,15 @@ The stateless guest (`guest/src/main.pnk`, cpp-expanded by `guest/build.sh`
 with `ZISK_ACCEL`, i.e. the deployed build whose crypto runs on ZisK
 accelerators) must terminate, and do so within a fixed number of source-level
 Pancake steps, whenever the block it is asked to validate declares a gas limit
-of at most `maxBlockGasLimit` (200M). The step count is the one produced by
+of at most `maxBlockGasLimit` (200M) and the input fits ZisK's input region
+(`maxInputBytes`, 1 GiB minus the framing). The second premise is essential:
+the work done before any gas is consumed (SSZ decoding, witness node
+processing, hashing the payload request, rejecting invalid blocks) scales with
+the input, not with gas, so no finite bound exists without it, and the constant
+is expected to be dominated by that input-proportional term. The step count is the one produced by
 flapjack's step-counted source semantics `Flapjack.evalPanValueSteppedProgram`,
 applied to the model in `Guest.Model` (`Guest.runGuestStepped`); an accelerator
-call counts as one `ExtCall` step. Until flapjack #517 lands, `runGuestStepped`
-still denotes the software build (see `Guest.Model`), so the constant below
-must be read as provisional.
+call counts as one `ExtCall` step.
 
 Together with the step-preserving compilation theorem tracked in
 <https://github.com/pirapira/flapjack/issues/352> (a fixed linear relation
@@ -52,10 +55,11 @@ theorem terminatesWithin_panSteppedTerminates {input : InputBlob} {bound : Nat}
   obtain ⟨fuel, result, steps, hrun, _⟩ := h
   exact ⟨fuel, result, steps, hrun⟩
 
-/-- **Goal 1.** If the input declares a block gas limit of at most
-`maxBlockGasLimit`, the guest terminates within `guestPancakeStepBound`
-Pancake steps. -/
+/-- **Goal 1.** If the input fits ZisK's input region and declares a block gas
+limit of at most `maxBlockGasLimit`, the guest terminates within
+`guestPancakeStepBound` Pancake steps. -/
 theorem guest_terminates_within_step_bound (input : InputBlob) (gasLimit : Nat)
+    (hinput : input.length ≤ maxInputBytes)
     (hdeclared : declaredBlockGasLimit input = some gasLimit)
     (hle : gasLimit ≤ maxBlockGasLimit) :
     TerminatesWithin input guestPancakeStepBound := sorry
