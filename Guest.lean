@@ -10,5 +10,6 @@ import Guest.Model
 import Guest.FrameBound
 import Guest.StepCalculus
 import Guest.Termination
+import Guest.FunctionTermination
 import Guest.StepBound
 import Guest.AstParse

@@ -397,6 +397,33 @@ constraint on the remaining work, not a detail.
 The counter corollary takes `counter` as a `ℕ` precisely so that this obligation
 cannot be skipped.
 
+## First guest function proved to terminate (`Guest/FunctionTermination.lean`)
+
+`charge_gas_terminates`, `sorry`-free, composed from `dec_terminates`,
+`ite_terminates` and `seq_terminates` against the AST as committed
+(`chargeGasBody` is `Guest.guestFn_charge_gas`'s body, checked by `rfl`).
+
+`charge_gas` was chosen because it has no loop, so it tests the calculus on
+`dec`/`ite`/`seq`/leaves without needing a measure. Two things it showed:
+
+* the leaf rules really are one-liners at the use site — `skip` closes by
+  `rw [evalPanValueFfiProgSteps]` alone — so not writing lemmas for them was
+  the right call;
+* **`raise` is not free.** `Prog.raise` evaluates its payload and then requires
+  `panValueExceptionValid` and `panValuePayloadWithinLimit` against the
+  program's contracts, returning `none` otherwise. So every `throw` in the
+  guest carries an obligation that the exception is declared with a matching
+  shape — true here (`exception EvmErr : 1`), but it must be supplied, at every
+  raise site.
+
+Its remaining hypotheses are deliberate, and they name the next piece of
+missing infrastructure: `Exp.load` and `Prog.store` bottom out in
+`panValueFlatLoad` and `panValueStoreWithAccess`, about which flapjack proves
+nothing, so the gas load, the comparison and the tail are assumed rather than
+derived from the state. **A memory layer is the next dependency** — without it
+no function that touches memory can have its obligations discharged, and almost
+all of them do.
+
 ## What the bound itself needs
 
 The guest's call graph is acyclic (#71), so no recursion-depth argument is
