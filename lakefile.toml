@@ -10,6 +10,15 @@ name = "flapjack"
 git = "https://github.com/pirapira/flapjack"
 rev = "cbea0d192ea7de7bd129d2c75fafa7fb7abfb321"
 
+# ZisK accelerator semantics (RiscvZkvm.Rv64.ZiskAccel: Keccak-f, SHA-256
+# compress, Arith256/384Mod, secp256k1/BN254/BLS12-381 affine ops, BLAKE2b
+# round), shared with evm-asm. Only the mathlib-free RiscvZkvm.Rv64 library is
+# imported.
+[[require]]
+name = "riscv-zkvm"
+git = "https://github.com/Verified-zkEVM/riscv-zkvm"
+rev = "v0.3.0"
+
 [[lean_lib]]
 name = "Guest"
 

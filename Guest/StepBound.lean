@@ -3,12 +3,16 @@ import Guest.Model
 /-!
 # Goal 1: the guest terminates within a constant number of Pancake steps
 
-The stateless guest (`guest/src/main.pnk`, cpp-expanded by `guest/build.sh`)
-must terminate, and do so within a fixed number of source-level Pancake steps,
-whenever the block it is asked to validate declares a gas limit of at most
-`maxBlockGasLimit` (200M). The step count is the one produced by flapjack's
-step-counted source semantics `Flapjack.evalPanValueSteppedProgram`, applied
-to the model in `Guest.Model` (`Guest.runGuestStepped`).
+The stateless guest (`guest/src/main.pnk`, cpp-expanded by `guest/build.sh`
+with `ZISK_ACCEL`, i.e. the deployed build whose crypto runs on ZisK
+accelerators) must terminate, and do so within a fixed number of source-level
+Pancake steps, whenever the block it is asked to validate declares a gas limit
+of at most `maxBlockGasLimit` (200M). The step count is the one produced by
+flapjack's step-counted source semantics `Flapjack.evalPanValueSteppedProgram`,
+applied to the model in `Guest.Model` (`Guest.runGuestStepped`); an accelerator
+call counts as one `ExtCall` step. Until flapjack #517 lands, `runGuestStepped`
+still denotes the software build (see `Guest.Model`), so the constant below
+must be read as provisional.
 
 Together with the step-preserving compilation theorem tracked in
 <https://github.com/pirapira/flapjack/issues/352> (a fixed linear relation
