@@ -416,13 +416,34 @@ cannot be skipped.
   shape — true here (`exception EvmErr : 1`), but it must be supplied, at every
   raise site.
 
-Its remaining hypotheses are deliberate, and they name the next piece of
+Its remaining hypotheses are deliberate, and they named the next piece of
 missing infrastructure: `Exp.load` and `Prog.store` bottom out in
 `panValueFlatLoad` and `panValueStoreWithAccess`, about which flapjack proves
-nothing, so the gas load, the comparison and the tail are assumed rather than
-derived from the state. **A memory layer is the next dependency** — without it
-no function that touches memory can have its obligations discharged, and almost
-all of them do.
+nothing.
+
+### The memory layer (`Guest/Memory.lean`)
+
+That piece now exists for word accesses, which is what `lds 1` and `st` compile
+to everywhere in the guest:
+
+* `panValueFlatLoad_one`, `panValueStoreWithAccess_word` — generic: a
+  `Shape.one` load is exactly one underlying word read, a `.word` store exactly
+  one underlying word write.
+* `guest_readWord`, `guest_storeWord`, `guest_store_word_total` — the same
+  under `Guest.guestMemoryAccess`.
+
+The asymmetry in the last is worth stating plainly, because it is the one that
+bit before: **a word store always succeeds.** The guest's access model is
+`panValueMemoryAccessOfModel` with the default `domain := fun _ => true`, so
+`st` *extends* the map rather than failing outside it, while `ld8`/`st8` go
+through the model and fail on an absent cell. That asymmetry is exactly why
+heap exhaustion became an evaluation failure rather than a clean stop before
+the trap fix.
+
+Still missing before a function's obligations can be discharged from state
+alone: an **expression layer** — `Exp.var`, `Exp.const` and `Exp.op` under the
+access model's `wordOp`. Until that exists, `charge_gas_terminates` keeps its
+hypotheses.
 
 ## What the bound itself needs
 
