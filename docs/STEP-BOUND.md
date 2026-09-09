@@ -467,11 +467,37 @@ nested `evalPanValueExp.evalPanValueExps` rather than the top-level name.
 
 `charge_gas_terminates_of_state` now needs, in place of the assumed gas load
 and shape, only that the global `ev` holds a word and memory holds a word at
-`ev + 64`. Two of its four obligations are discharged. Still assumed: the
-comparison and the tail. Both now have their rules — `eval_cmp_locals` and
-`store_terminates` — so what is left there is threading them together, plus a
-rule for `Prog.return`, which carries its own obligation
-(`panValuePayloadWithinLimit`) in the same way `Prog.raise` does.
+`ev + 64`. Two of its four obligations are discharged. `charge_gas_tail_terminates` then proves the whole tail — both stores and the
+`return` — from state alone, chaining the two stores through the memory the
+first one produces. Its `hne` hypothesis (the two field addresses differ) is
+the kind of side condition that only appears once statements are composed for
+real.
+
+`Prog.return` and `Prog.raise` got named rules after all
+(`return_terminates`, `raise_terminates`): an earlier claim here that the leaf
+constructors need no rules was too strong. Those two check their payload
+against the program's contracts and answer `none` otherwise, so a proof about
+*any* guest function carries them — the control-flow analogue of the
+no-wraparound conditions the loop measures need.
+
+### `Terminates` does not compose; the rules need equational forms
+
+The one thing still between these two halves and a hypothesis-free
+`charge_gas`, and it is structural rather than an oversight.
+
+`seq_terminates` takes the first statement's result `r1` as a parameter, and
+rightly so: the second statement runs from whatever state the first left. But
+that means the caller must supply an **equation**, `eval fuel₁ … = some (r1,
+s1)`, not merely `∃ r, … = some r`. `store_runs` is the equational form of
+`store_terminates`, and it is what let the tail chain its two stores at all —
+the second store reads `ev + 184` out of the memory the first produced.
+
+The same is now needed for `ite`, and later for `while`, `dec` and `call`. In
+`charge_gas` the missing step is small — the condition is false, the branch is
+`skip`, the state is unchanged — but there is no `ite_runs` to say so, and an
+ad-hoc version would be the wrong shape. Adding the equational layer to
+`Guest/Termination.lean` is the next task; it is mechanical, since every rule's
+proof already constructs the result it needs.
 
 ## What the bound itself needs
 

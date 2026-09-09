@@ -24,11 +24,19 @@ termination proof can be assembled from per-construct facts.
   exception-validity checks, the destination assignment, a matching handler),
   and a call cannot terminate without them.
 
-The leaf constructors need no rule of their own: `Terminates` for `skip`,
-`assign`, `store`, `return`, `raise`, `break`, `continue`, `tick` and `annot`
-is discharged at the point of use by exhibiting the one-step run, e.g.
-`⟨1, _, by rw [evalPanValueFfiProgSteps, hexp]; rfl⟩`. Their only content is
-whether the expressions evaluate, which is an expression-level question.
+Most leaf constructors need no rule of their own: `Terminates` for `skip`,
+`assign`, `store`, `break`, `continue`, `tick` and `annot` is discharged at the
+point of use by exhibiting the one-step run, e.g.
+`⟨1, _, by rw [evalPanValueFfiProgSteps, hexp]; rfl⟩`, and their only content is
+whether the expressions evaluate.
+
+**Two leaves are not like that**, which an earlier version of this docstring got
+wrong: `return` and `raise` each carry a *validity* obligation beyond evaluating
+their payload — `panValuePayloadWithinLimit`, and for `raise` also
+`panValueExceptionValid` against the program's declared exceptions. The
+evaluator answers `none` when either fails. `return_terminates` and
+`raise_terminates` name them, since every guest function ends in one and most
+error paths raise.
 
 What is left is therefore the *measures* for the guest's loops;
 `docs/STEP-BOUND.md` records which of the 257 are substantive.
@@ -439,6 +447,34 @@ theorem while_terminates_of_increasing_counter (cond : Exp α) (body : Prog α)
   obtain ⟨hI', hinc⟩ := hstep l' g' m' f' hres
   have h1 : counter l < N := hentered l g m f hI n cs hc hnz
   exact ⟨hI', by omega⟩
+
+/-- `return`: the payload evaluates and is within the limit. -/
+theorem return_terminates (value : Exp α)
+    (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)
+    (v : PanValue α) (vs : Nat)
+    (hvalue : evalPanValueExpCounted structs l g m baseAddress topAddress bytesInWord value ma = some (v, vs))
+    (hlimit : panValuePayloadWithinLimit structs v = true) :
+    Terminates context primitive handler structs functions baseAddress topAddress
+      bytesInWord ma c mh l g m f (Prog.return value) := by
+  refine ⟨1, (PanValueFfiControlResult.returned (fun _ => none) g m f [v], vs + 1), ?_⟩
+  rw [evalPanValueFfiProgSteps, hvalue]
+  simp only [Option.bind_eq_bind, Option.bind_some, if_pos hlimit]
+  rfl
+
+/-- `raise`: the payload evaluates, the exception is declared with a matching
+shape, and the payload is within the limit. -/
+theorem raise_terminates (exception : ExceptionId) (value : Exp α)
+    (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)
+    (v : PanValue α) (vs : Nat)
+    (hvalue : evalPanValueExpCounted structs l g m baseAddress topAddress bytesInWord value ma = some (v, vs))
+    (hvalid : (panValueExceptionValid structs c exception v &&
+      panValuePayloadWithinLimit structs v) = true) :
+    Terminates context primitive handler structs functions baseAddress topAddress
+      bytesInWord ma c mh l g m f (Prog.raise exception value) := by
+  refine ⟨1, (PanValueFfiControlResult.raised (fun _ => none) g m f exception v, vs + 1), ?_⟩
+  rw [evalPanValueFfiProgSteps, hvalue]
+  simp only [Option.bind_eq_bind, Option.bind_some, if_pos hvalid]
+  rfl
 
 end
 end StepCalculus

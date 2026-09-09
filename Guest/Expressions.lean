@@ -125,9 +125,32 @@ variable (context : PanValueFfiContext Word) (primitive : PanPrimitiveHandler Wo
   (c : Option PanValueCallContracts)
   (mh : Option (PanValueMemoryFfiHandler Word HostMemory))
 
-/-- **A word store terminates as soon as its two expressions evaluate.** There
-is no further obligation: the guest's access model has `domain := fun _ => true`
-(see `Guest.Memory`), so the write itself is total. -/
+/-- **What a word store runs to.** An equation, not just termination: to
+compose statements sequentially you have to *know* the resulting state, not
+merely that one exists. `store_terminates` below is the weaker corollary.
+
+There is no obligation beyond the two expressions evaluating, because the
+guest's access model has `domain := fun _ => true` (see `Guest.Memory`), so the
+write itself is total. -/
+theorem store_runs (address value : Exp Word) (f : FfiState HostMemory)
+    (av vv : Word)
+    (haddr : evalPanValueExp structs l g m baseAddress topAddress bytesInWord
+      address (some guestMemoryAccess) = some (PanValue.word av))
+    (hvalue : evalPanValueExp structs l g m baseAddress topAddress bytesInWord
+      value (some guestMemoryAccess) = some (PanValue.word vv)) :
+    evalPanValueFfiProgSteps context primitive handler structs functions baseAddress
+      topAddress bytesInWord 1 l g m f (Prog.store address value)
+      (some guestMemoryAccess) c mh
+      = some (PanValueFfiControlResult.normal l g
+          (fun current => if current == av then some (PanValue.word vv) else m current) f,
+        panValueExpStepCost address + panValueExpStepCost value + 1) := by
+  rw [evalPanValueFfiProgSteps, evalPanValueExpCounted, evalPanValueExpCounted,
+    haddr, hvalue]
+  simp only [Option.map_some, Option.bind_eq_bind, Option.bind_some]
+  rw [guest_store_word_total]
+  rfl
+
+/-- Termination of a word store, from `store_runs`. -/
 theorem store_terminates (address value : Exp Word) (f : FfiState HostMemory)
     (av vv : Word)
     (haddr : evalPanValueExp structs l g m baseAddress topAddress bytesInWord
@@ -136,15 +159,9 @@ theorem store_terminates (address value : Exp Word) (f : FfiState HostMemory)
       value (some guestMemoryAccess) = some (PanValue.word vv)) :
     StepCalculus.Terminates context primitive handler structs functions baseAddress
       topAddress bytesInWord (some guestMemoryAccess) c mh l g m f
-      (Prog.store address value) := by
-  refine ⟨1, (PanValueFfiControlResult.normal l g
-    (fun current => if current == av then some (PanValue.word vv) else m current) f,
-    panValueExpStepCost address + panValueExpStepCost value + 1), ?_⟩
-  rw [evalPanValueFfiProgSteps, evalPanValueExpCounted, evalPanValueExpCounted,
-    haddr, hvalue]
-  simp only [Option.map_some, Option.bind_eq_bind, Option.bind_some]
-  rw [guest_store_word_total]
-  rfl
+      (Prog.store address value) :=
+  ⟨1, _, store_runs structs l g m baseAddress topAddress bytesInWord context primitive
+    handler functions c mh address value f av vv haddr hvalue⟩
 
 end Store
 

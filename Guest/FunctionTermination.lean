@@ -113,9 +113,8 @@ theorem charge_gas_terminates
     -- (see `charge_gas_terminates_of_state` below for the version whose gas
     -- load is derived rather than assumed)
     (hraise : ∀ l' : VarName → Option (PanValue Word),
-      ∃ r, evalPanValueFfiProgSteps context primitive handler structs functions
-        baseAddress topAddress bytesInWord 1 l' g m f
-        (Prog.raise "EvmErr" (Exp.const (BitVec.ofNat 64 4))) ma c mh = some r)
+      Terminates context primitive handler structs functions baseAddress topAddress
+        bytesInWord ma c mh l' g m f (Prog.raise "EvmErr" (Exp.const (BitVec.ofNat 64 4))))
     (htail : ∀ l' g' m' f', Terminates context primitive handler structs functions
       baseAddress topAddress bytesInWord ma c mh l' g' m' f' chargeGasTail) :
     Terminates context primitive handler structs functions baseAddress topAddress
@@ -131,7 +130,7 @@ theorem charge_gas_terminates
       topAddress bytesInWord ma c mh gasCond _ _ (updatePanValueMap l "gl" glv) g m f
       cv cs hcond ?_ ?_
     · intro _
-      exact ⟨1, hraise _⟩
+      exact hraise _
     · intro _
       exact ⟨1, _, by rw [evalPanValueFfiProgSteps]⟩
   obtain ⟨fuel1, r1, hr1⟩ := hite
@@ -179,10 +178,9 @@ theorem charge_gas_terminates_of_state
       baseAddress topAddress bytesInWord gasCond (some guestMemoryAccess)
       = some (PanValue.word cv, cs))
     (hraise : ∀ l' : VarName → Option (PanValue Word),
-      ∃ r, evalPanValueFfiProgSteps context primitive handler structs functions
-        baseAddress topAddress bytesInWord 1 l' g m f
-        (Prog.raise "EvmErr" (Exp.const (BitVec.ofNat 64 4)))
-        (some guestMemoryAccess) c mh = some r)
+      StepCalculus.Terminates context primitive handler structs functions baseAddress
+        topAddress bytesInWord (some guestMemoryAccess) c mh l' g m f
+        (Prog.raise "EvmErr" (Exp.const (BitVec.ofNat 64 4))))
     (htail : ∀ l' g' m' f', Terminates context primitive handler structs functions
       baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh l' g' m' f'
       chargeGasTail) :
@@ -193,5 +191,107 @@ theorem charge_gas_terminates_of_state
     (PanValue.word gl) _
     (charge_gas_load_of_state structs l g m baseAddress topAddress bytesInWord e gl hev hmem)
     (word_shape_matches structs gl) cv cs hcond hraise htail
+
+/-- The tail of `charge_gas` — the two stores and the `return` — terminates,
+from state alone.
+
+The second store reads `ev + 184` *after* the first has written `ev + 64`, so
+the proof needs the two addresses to be distinct; `hne` is that, and it is the
+kind of side condition that only shows up once statements are composed for
+real. `store_runs` is what makes it expressible: knowing the resulting memory,
+rather than only that the store terminated, is what lets the next statement be
+evaluated at all. -/
+theorem charge_gas_tail_terminates
+    (l g : VarName → Option (PanValue Word)) (m : Memory) (f : FfiState HostMemory)
+    (e gl amount used : Word)
+    (hev : g "ev" = some (PanValue.word e))
+    (hgl : l "gl" = some (PanValue.word gl))
+    (hamount : l "amount" = some (PanValue.word amount))
+    (hused : m (e + BitVec.ofNat 64 184) = some (PanValue.word used))
+    (hne : ((e + BitVec.ofNat 64 184) == (e + BitVec.ofNat 64 64)) = false)
+    (hlimit : panValuePayloadWithinLimit structs
+      (PanValue.word (BitVec.ofNat 64 0)) = true) :
+    StepCalculus.Terminates context primitive handler structs functions baseAddress
+      topAddress bytesInWord (some guestMemoryAccess) c mh l g m f chargeGasTail := by
+  have haddr1 : evalPanValueExp structs l g m baseAddress topAddress bytesInWord
+      evGasAddr (some guestMemoryAccess) = some (PanValue.word (e + BitVec.ofNat 64 64)) :=
+    eval_global_add_const structs l g m baseAddress topAddress bytesInWord "ev" e _ hev
+  have hval1 : evalPanValueExp structs l g m baseAddress topAddress bytesInWord
+      (Exp.op BinOp.sub [Exp.var VarKind.local "gl", Exp.var VarKind.local "amount"])
+      (some guestMemoryAccess) = some (PanValue.word (gl - amount)) := by
+    refine eval_op2 structs l g m baseAddress topAddress bytesInWord BinOp.sub _ _ gl amount _
+      ?_ ?_ (wordOp_sub gl amount)
+    · rw [eval_var_local]; exact hgl
+    · rw [eval_var_local]; exact hamount
+  have hrun1 := store_runs structs l g m baseAddress topAddress bytesInWord context
+    primitive handler functions c mh evGasAddr _ f _ _ haddr1 hval1
+  refine StepCalculus.seq_terminates context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _ _ l g m f
+    1 _ _ hrun1 ?_
+  intro l' g' m' f' heq
+  -- the first store left locals, globals and ffi alone, and the memory updated
+  -- at `ev + 64` only
+  injection heq with hl' hg' hm' hf'
+  subst hl'; subst hg'; subst hm'; subst hf'
+  -- the memory after the first store still holds `used` at `ev + 184`
+  have hused' : (fun current => if current == e + BitVec.ofNat 64 64
+      then some (PanValue.word (gl - amount)) else m current)
+      (e + BitVec.ofNat 64 184) = some (PanValue.word used) := by
+    simp only [hne]
+    exact hused
+  have haddr2 : evalPanValueExp structs l g (fun current => if current == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - amount)) else m current) baseAddress topAddress bytesInWord
+      (Exp.op BinOp.add [Exp.var VarKind.global "ev", Exp.const (BitVec.ofNat 64 184)])
+      (some guestMemoryAccess) = some (PanValue.word (e + BitVec.ofNat 64 184)) :=
+    eval_global_add_const structs l g (fun current => if current == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - amount)) else m current) baseAddress topAddress bytesInWord "ev" e _ hev
+  have hload2 : evalPanValueExp structs l g (fun current => if current == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - amount)) else m current) baseAddress topAddress bytesInWord
+      (Exp.load Shape.one (Exp.op BinOp.add
+        [Exp.var VarKind.global "ev", Exp.const (BitVec.ofNat 64 184)]))
+      (some guestMemoryAccess) = some (PanValue.word used) :=
+    eval_load_global_add structs l g (fun current => if current == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - amount)) else m current) baseAddress topAddress bytesInWord "ev" e _ used
+      hev hused'
+  have hval2 : evalPanValueExp structs l g (fun current => if current == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - amount)) else m current) baseAddress topAddress bytesInWord
+      (Exp.op BinOp.add [Exp.load Shape.one (Exp.op BinOp.add
+          [Exp.var VarKind.global "ev", Exp.const (BitVec.ofNat 64 184)]),
+        Exp.var VarKind.local "amount"])
+      (some guestMemoryAccess) = some (PanValue.word (used + amount)) := by
+    refine eval_op2 structs l g (fun current => if current == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - amount)) else m current) baseAddress topAddress bytesInWord BinOp.add _ _ used amount _
+      hload2 ?_ (wordOp_add used amount)
+    rw [eval_var_local]; exact hamount
+  have hrun2 := store_runs structs l g (fun current => if current == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - amount)) else m current) baseAddress topAddress bytesInWord context
+    primitive handler functions c mh _ _ f _ _ haddr2 hval2
+  refine StepCalculus.seq_terminates context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _ _ l g _ f
+    1 _ _ hrun2 ?_
+  intro l'' g'' m'' f'' heq2
+  injection heq2 with hl'' hg'' hm'' hf''
+  subst hl''; subst hg''; subst hm''; subst hf''
+  exact StepCalculus.return_terminates context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _ l g _ f _ _
+    (by rw [evalPanValueExpCounted, eval_const]; rfl) hlimit
+
+
+/-!
+### What is still missing, and why
+
+`charge_gas_terminates_of_state` and `charge_gas_tail_terminates` between them
+cover everything except joining them, and joining them is blocked by a
+structural point worth stating rather than worked around:
+
+**`Terminates` does not compose; the rules need equational forms too.**
+`seq_terminates` takes the first statement's result `r1` as a parameter, and
+rightly so — the second statement runs from whatever state the first left. But
+that means the caller must supply an *equation*, `eval fuel₁ … = some (r1, s1)`,
+not merely `∃ r, … = some r`. `store_runs` is the equational form of
+`store_terminates`, and it is what let `charge_gas_tail_terminates` chain its
+two stores at all: the second store reads `ev + 184` out of the memory the
+first one produced.
+
+The same is now needed for `ite` (and, later, for `while`, `dec` and `call`).
+In `charge_gas` the missing step is small — the condition is false, the branch
+is `skip`, so the state is unchanged — but there is no `ite_runs` to say so,
+and inventing one ad hoc here would be the wrong shape. Adding the equational
+layer to `Guest.Termination` is the next task; it is mechanical, since every
+rule's proof already constructs the result it needs.
+-/
 
 end Guest
