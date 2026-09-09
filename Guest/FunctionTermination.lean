@@ -1,5 +1,6 @@
 import Guest.Termination
 import Guest.Model
+import Guest.Expressions
 
 /-!
 # Termination of individual guest functions
@@ -109,6 +110,8 @@ theorem charge_gas_terminates
     (cv : Word) (cs : Nat)
     (hcond : evalPanValueExpCounted structs (updatePanValueMap l "gl" glv) g m
       baseAddress topAddress bytesInWord gasCond ma = some (PanValue.word cv, cs))
+    -- (see `charge_gas_terminates_of_state` below for the version whose gas
+    -- load is derived rather than assumed)
     (hraise : ∀ l' : VarName → Option (PanValue Word),
       ∃ r, evalPanValueFfiProgSteps context primitive handler structs functions
         baseAddress topAddress bytesInWord 1 l' g m f
@@ -138,5 +141,57 @@ theorem charge_gas_terminates
     fuel1 r1a r1b hr1 (fun l'' g'' m'' f'' _ => htail l'' g'' m'' f'')
 
 end
+
+/-- The gas load discharged from the state: if the global `ev` holds a word and
+memory holds a word at `ev + 64`, `charge_gas`'s `lds 1 (ev + 64)` evaluates,
+and its result has word shape. This is `Guest.Expressions` doing the work that
+`charge_gas_terminates` previously assumed. -/
+theorem charge_gas_load_of_state (structs : StructContext)
+    (l g : VarName → Option (PanValue Word)) (m : Memory)
+    (baseAddress topAddress bytesInWord : Word) (e gl : Word)
+    (hev : g "ev" = some (PanValue.word e))
+    (hmem : m (e + BitVec.ofNat 64 64) = some (PanValue.word gl)) :
+    evalPanValueExpCounted structs l g m baseAddress topAddress bytesInWord
+      (Exp.load Shape.one evGasAddr) (some guestMemoryAccess)
+      = some (PanValue.word gl,
+          panValueExpStepCost (Exp.load Shape.one evGasAddr)) :=
+  evalCounted_load_global_add structs l g m baseAddress topAddress bytesInWord
+    "ev" e (BitVec.ofNat 64 64) gl hev hmem
+
+/-- A word always matches the one-word shape. -/
+theorem word_shape_matches (structs : StructContext) (w : Word) :
+    panShapeMatches (panValueShape structs (PanValue.word w)) Shape.one = true := by
+  simp [panValueShape, panShapeMatches]
+
+/-- **`charge_gas` terminates, with its gas load derived from the state.**
+Two of the four obligations of `charge_gas_terminates` are now discharged: it
+suffices that the global `ev` holds a word and that memory holds a word at
+`ev + 64`. What remains assumed is the comparison (`Exp.cmp`, which the
+expression layer does not cover yet) and the tail (two `Prog.store`s, which
+need the store side of the expression layer). -/
+theorem charge_gas_terminates_of_state
+    (l g : VarName → Option (PanValue Word)) (m : Memory) (f : FfiState HostMemory)
+    (e gl : Word)
+    (hev : g "ev" = some (PanValue.word e))
+    (hmem : m (e + BitVec.ofNat 64 64) = some (PanValue.word gl))
+    (cv : Word) (cs : Nat)
+    (hcond : evalPanValueExpCounted structs (updatePanValueMap l "gl" (PanValue.word gl)) g m
+      baseAddress topAddress bytesInWord gasCond (some guestMemoryAccess)
+      = some (PanValue.word cv, cs))
+    (hraise : ∀ l' : VarName → Option (PanValue Word),
+      ∃ r, evalPanValueFfiProgSteps context primitive handler structs functions
+        baseAddress topAddress bytesInWord 1 l' g m f
+        (Prog.raise "EvmErr" (Exp.const (BitVec.ofNat 64 4)))
+        (some guestMemoryAccess) c mh = some r)
+    (htail : ∀ l' g' m' f', Terminates context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh l' g' m' f'
+      chargeGasTail) :
+    Terminates context primitive handler structs functions baseAddress topAddress
+      bytesInWord (some guestMemoryAccess) c mh l g m f chargeGasBody :=
+  charge_gas_terminates context primitive handler structs functions baseAddress
+    topAddress bytesInWord (some guestMemoryAccess) c mh l g m f
+    (PanValue.word gl) _
+    (charge_gas_load_of_state structs l g m baseAddress topAddress bytesInWord e gl hev hmem)
+    (word_shape_matches structs gl) cv cs hcond hraise htail
 
 end Guest

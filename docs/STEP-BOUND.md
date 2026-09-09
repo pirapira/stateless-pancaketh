@@ -440,10 +440,27 @@ through the model and fail on an absent cell. That asymmetry is exactly why
 heap exhaustion became an evaluation failure rather than a clean stop before
 the trap fix.
 
-Still missing before a function's obligations can be discharged from state
-alone: an **expression layer** — `Exp.var`, `Exp.const` and `Exp.op` under the
-access model's `wordOp`. Until that exists, `charge_gas_terminates` keeps its
-hypotheses.
+### The expression layer (`Guest/Expressions.lean`)
+
+* `eval_const`, `eval_var_global`, `eval_var_local` — the leaves.
+* `eval_global_add_const` — `base + K` where `base` is a global holding a word.
+  This is the guest's pervasive address form (`ev + 64`, `msg + 136`, …) and it
+  *always* succeeds: `RiscV.panRiscVWordOp .add` is total.
+* `eval_load_global_add` and its counted form — `lds 1 (base + K)`, the guest's
+  pervasive field read, combining this layer with the memory one.
+
+None of these hold by `rfl`: `evalPanValueExp` is defined by well-founded
+recursion, so they go through the equation lemmas, and the list case is the
+nested `evalPanValueExp.evalPanValueExps` rather than the top-level name.
+
+### What that buys, concretely
+
+`charge_gas_terminates_of_state` now needs, in place of the assumed gas load
+and shape, only that the global `ev` holds a word and memory holds a word at
+`ev + 64`. Two of its four obligations are discharged. Still assumed: the
+comparison (`Exp.cmp`, not yet covered) and the tail's two `Prog.store`s (the
+store side of the expression layer). The pattern is the one every guest
+function will follow, so those two are the next pieces.
 
 ## What the bound itself needs
 
