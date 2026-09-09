@@ -104,16 +104,18 @@ fun {1,1,1,1} rlp_decode_fully(1 p, 1 len) {
   return it;
 }
 
-/* Validating length-only decoder used by list walkers.  It keeps the same
-   canonical and recursive checks as rlp_item, but avoids constructing the
-   unused payload tuple when a caller only needs total length. */
-fun 1 rlp_item_total(1 p, 1 len) {
+
+/* Header of the item at (p, len): <header_len, payload_len, is_list>.  The
+   same canonical checks and failure codes, in the same order, as one level of
+   the former recursive rlp_item_total.  A single byte below 128 is reported as
+   header 0 / payload 1. */
+fun {1,1,1} rlp_item_header(1 p, 1 len) {
   if len == 0 {
     rlp_fail(1);
   }
   var b = ld8 p;
   if b <+ 128 {
-    return 1;
+    return <0, 1, 0>;
   }
   if b <=+ 183 {
     var n = b - 128;
@@ -125,7 +127,7 @@ fun 1 rlp_item_total(1 p, 1 len) {
         rlp_fail(4);
       }
     }
-    return 1 + n;
+    return <1, n, 0>;
   }
   if b <=+ 191 {
     var ll = b - 183;
@@ -139,15 +141,14 @@ fun 1 rlp_item_total(1 p, 1 len) {
     if (len - 1 - ll) <+ n {
       rlp_fail(3);
     }
-    return 1 + ll + n;
+    return <1 + ll, n, 0>;
   }
   if b <=+ 247 {
     var n = b - 192;
     if (len - 1) <+ n {
       rlp_fail(3);
     }
-    rlp_list_count(p + 1, n);
-    return 1 + n;
+    return <1, n, 1>;
   }
   var ll = b - 247;
   if (len - 1) <+ ll {
@@ -160,8 +161,69 @@ fun 1 rlp_item_total(1 p, 1 len) {
   if (len - 1 - ll) <+ n {
     rlp_fail(3);
   }
-  rlp_list_count(p + 1 + ll, n);
-  return 1 + ll + n;
+  return <1 + ll, n, 1>;
+}
+
+/* Check that the items in [p, p + len) tile the range exactly, validating
+   nested lists depth-first and left to right -- the order in which the former
+   recursive rlp_item_total / rlp_list_count pair checked them -- without
+   recursion.  A pending list continuation is a <resume, end, prev> record in
+   the scratch arena; rlp_validate_items releases them, also when failing. */
+fun 1 _rlp_validate_items_body(1 p, 1 len) {
+  var top = 0;
+  var pos = p;
+  var end = p + len;
+  var go = 1;
+  while go != 0 {
+    if pos == end {
+      if top == 0 {
+        go = 0;
+      } else {
+        pos = lds 1 (top + 0);
+        end = lds 1 (top + 8);
+        top = lds 1 (top + 16);
+      }
+    } else {
+      var {1,1,1} h = rlp_item_header(pos, end - pos);
+      var payload = pos + h.0;
+      var after = payload + h.1;
+      if h.2 != 0 {
+        var 1 rec = scratch_alloc(24);
+        st rec, after;
+        st rec + 8, end;
+        st rec + 16, top;
+        top = rec;
+        pos = payload;
+        end = after;
+      } else {
+        pos = after;
+      }
+    }
+  }
+  return 0;
+}
+
+fun 1 rlp_validate_items(1 p, 1 len) {
+  var 1 mark = scratch_mark();
+  var e = 0;
+  try _rlp_validate_items_body(p, len)
+  catch RlpErr => e {
+    scratch_release(mark);
+    throw RlpErr e;
+  }
+  scratch_release(mark);
+  return 0;
+}
+
+/* Validating length-only decoder used by list walkers.  It keeps the same
+   canonical and nested checks as rlp_item, but avoids constructing the
+   unused payload tuple when a caller only needs total length. */
+fun 1 rlp_item_total(1 p, 1 len) {
+  var {1,1,1} h = rlp_item_header(p, len);
+  if h.2 != 0 {
+    rlp_validate_items(p + h.0, h.1);
+  }
+  return h.0 + h.1;
 }
 
 /* decodeItems: number of items in the list payload at (p, len). Each item

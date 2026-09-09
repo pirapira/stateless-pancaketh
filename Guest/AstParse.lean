@@ -32,20 +32,25 @@ theorem Software.guestDeclarations_eq_ast : Software.guestDeclarations = Softwar
   rw [Software.guestParse_eq_ast]
   rfl
 
-/-- Step-counted run of the software guest as parsed from source, rather than
-from the committed AST. -/
-def runGuestSoftwareSteppedParsed (input : InputBlob) (fuel : Nat) :
-    Option (PanValueSteppedResult Word) :=
-  evalPanValueSteppedProgram (guestInitialState input) guestPrimitiveHandler
-    guestFfiHandler fuel Software.guestDeclarations guestEntry []
-    (memoryAccess := some guestMemoryAccess)
+/-- Step-counted run of the guest as parsed from source, rather than from the
+committed AST. -/
+def runGuestSteppedParsed (input : InputBlob) (fuel : Nat) :
+    Option (PanValueFfiSteppedResult Word HostMemory) :=
+  runProgramStepped guestDeclarations input fuel
 
-/-- Running the parsed guest is running the committed AST, so results about
-`runGuestSoftwareStepped` transfer to the source as written. -/
-theorem runGuestSoftwareSteppedParsed_eq :
-    runGuestSoftwareSteppedParsed = runGuestSoftwareStepped := by
+/-- Running the parsed guest is running the committed AST, so
+`guest_terminates_within_step_bound` transfers to the source as written. -/
+theorem runGuestSteppedParsed_eq : runGuestSteppedParsed = runGuestStepped := by
   funext input fuel
-  unfold runGuestSoftwareSteppedParsed runGuestSoftwareStepped
+  unfold runGuestSteppedParsed runGuestStepped
+  rw [guestDeclarations_eq_ast]
+
+/-- The same for the software build. -/
+theorem runGuestSoftwareSteppedParsed_eq :
+    (fun input fuel => runProgramStepped Software.guestDeclarations input fuel) =
+      runGuestSoftwareStepped := by
+  funext input fuel
+  unfold runGuestSoftwareStepped
   rw [Software.guestDeclarations_eq_ast]
 
 end Guest

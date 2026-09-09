@@ -7,12 +7,16 @@
    * EvmAsm/Stateless/SpecRef/IncrementalMpt.lean: compact_to_nibbles,
      _resolve_child_ref, _decode_witness_node, decode_witness_to_mpt.
    * EvmAsm/Stateless/SpecRef/IncrementalMptWrite.lean: IncrementalMpt (mpt_new),
-     mpt_get, mpt_set (_mpt_insert_node / _insert_into_leaf /
-     _create_branch_from_two_leaves / _insert_into_extension / _split_extension /
-     _insert_into_branch, _mpt_delete_node / _delete_from_extension /
-     _delete_from_branch / _collapse_branch), mpt_root, node encoding
+     mpt_get, mpt_set (_mpt_insert_node, with _insert_into_extension /
+     _insert_into_branch folded into its descent loop, _insert_into_leaf /
+     _create_branch_from_two_leaves / _split_extension, _mpt_delete_node with
+     _delete_from_extension (_delete_ext_finish) / _delete_from_branch folded
+     into its descent + unwind loops, _collapse_branch), mpt_root, node encoding
      (_encode_mutable_node -> node_rlp, _encode_mutable_node_to_extended ->
      node_write_ref, _compute_node_hash_and_rlp -> node_hash),
+   The Python recursions (witness decoding, insert, delete, encoding) are run
+   as explicit loops with scratch-arena records so that the call graph of the
+   guest is acyclic; each loop visits nodes in the order the recursion did.
      nibble_list_to_compact, common_prefix_length, encode_account; and
      SeamShell.lean indexedTrieRoot (build_mpt_indexed).
    Python originals: execution-specs ethereum/forks/amsterdam/incremental_mpt.py,
@@ -52,6 +56,7 @@ exception MptErr : 1;
 #define MPT_E_CHILD_REF_LEN  10   /* Unexpected child ref length */
 #define MPT_E_SPLIT_COLLISION 11  /* Unexpected collision during split */
 #define MPT_E_EMPTY_BRANCH   12   /* _collapse_branch: empty branch */
+#define MPT_E_UNCACHED       13   /* internal: child RLP not cached before its parent (cannot happen) */
 #define MPT_E_ACCT_MALFORMED 20   /* account leaf is not a 4-item list of bytes */
 #define MPT_E_ACCT_NONCE     21   /* nonce wider than 8 bytes (guest envelope) */
 #define MPT_E_ACCT_BALANCE   22   /* balance wider than 32 bytes */
@@ -285,7 +290,56 @@ fun 1 node_invalidate(1 nd) {
 /* ---- witness decoding (IncrementalMpt.lean) --------------------------- */
 
 /* _decode_witness_node(node_db, rlp_bytes): node ptr, 0 for the empty node. */
-fun 1 _decode_witness_node(1 db, 1 p, 1 n) {
+/* The recursive pair _decode_witness_node / _resolve_child_ref runs as an
+   explicit machine: a _decode_witness_node activation waiting for a child is a
+   WD_* record in the scratch arena; child results are delivered upward
+   depth-first, left to right, exactly as the recursion did. */
+#define WD_PREV     0    /* enclosing activation (0 = outermost) */
+#define WD_STAGE    8    /* 1 = extension waiting for its child, 2 = branch */
+#define WD_NODE    16    /* branch node under construction */
+#define WD_ARR     24    /* slice array of the node's RLP items */
+#define WD_I       32    /* branch: index of the child being resolved */
+#define WD_OCC     40    /* branch: occupied entries so far */
+#define WD_P       48    /* the node's RLP bytes (cached on the node) */
+#define WD_N       56
+#define WD_NIB     64    /* extension: key segment nibbles */
+#define WD_NIBLEN  72
+#define WD_HASH    80    /* hash to record on the child once decoded (0 = none) */
+#define WD_SIZE    88
+
+/* _resolve_child_ref, up to the point where a node has to be decoded:
+   <0, node, 0, 0> when the child is known at once (0 = empty, or a fresh
+   hashed node); <1, p, n, hash> when the node at (p, n) must be decoded and,
+   if hash != 0, hash recorded on the result. */
+fun {1,1,1,1} _resolve_step(1 db, 1 p, 1 n) {
+  var {1,1,1,1} it = <0, 0, 0, 0>;
+  var e = 0;
+  try it = rlp_item(p, n)
+  catch RlpErr => e {
+    mpt_fail(MPT_E_RLP);
+  }
+  if it.0 == 0 {
+    if it.2 == 0 {
+      return <0, 0, 0, 0>;
+    }
+    if it.2 != 32 {
+      mpt_fail(MPT_E_CHILD_REF_LEN);
+    }
+    var {1,1,1} r = nodedb_lookup(db, it.1);
+    if r.0 == 0 {
+      var 1 hn = node_new_hashed(it.1);
+      return <0, hn, 0, 0>;
+    }
+    return <1, r.1, r.2, it.1>;
+  }
+  return <1, p, n, 0>;
+}
+
+/* _decode_witness_node up to its first child: <0, node> when it completes
+   without children (empty node or leaf); <1, rec> when children are needed,
+   rec being the activation record (WD_STAGE 1: resolve item 1; WD_STAGE 2:
+   resolve items 0..15 in turn). */
+fun {1,1} _decode_step(1 db, 1 p, 1 n) {
   var {1,1,1,1} it = <0, 0, 0, 0>;
   var e = 0;
   try it = rlp_decode_fully(p, n)
@@ -294,7 +348,7 @@ fun 1 _decode_witness_node(1 db, 1 p, 1 n) {
   }
   if it.0 == 0 {
     if it.2 == 0 {
-      return 0;
+      return <0, 0>;
     }
     mpt_fail(MPT_E_NODE_SHAPE);
   }
@@ -314,83 +368,161 @@ fun 1 _decode_witness_node(1 db, 1 p, 1 n) {
       var 1 lf = node_new_leaf(cn.0, cn.1, vi.1, vi.2);
       st lf + NODE_RLP, p;
       st lf + NODE_RLP_LEN, n;
-      return lf;
+      return <0, lf>;
     }
     if cn.1 == 0 {
       mpt_fail(MPT_E_EXT_EMPTY);
     }
-    var 1 ch = _resolve_child_ref(db, SLICE_PTR(arr, 1), SLICE_LEN(arr, 1));
-    if ch == 0 {
-      mpt_fail(MPT_E_EXT_CHILD);
-    }
-    var ck = lds 1 (ch + NODE_KIND);
-    if (ck != NODE_BRANCH) && (ck != NODE_HASHED) {
-      mpt_fail(MPT_E_EXT_CHILD);
-    }
-    var 1 ex = node_new_ext(cn.0, cn.1, ch);
-    st ex + NODE_RLP, p;
-    st ex + NODE_RLP_LEN, n;
-    return ex;
+    var 1 rec = scratch_alloc(WD_SIZE);
+    st rec + WD_STAGE, 1;
+    st rec + WD_ARR, arr;
+    st rec + WD_P, p;
+    st rec + WD_N, n;
+    st rec + WD_NIB, cn.0;
+    st rec + WD_NIBLEN, cn.1;
+    return <1, rec>;
   }
   if sl.1 != 17 {
     mpt_fail(MPT_E_NODE_SHAPE);
   }
   var 1 br = node_new_branch();
-  var occ = 0;
-  var i = 0;
-  while i < 16 {
-    var 1 c = _resolve_child_ref(db, SLICE_PTR(arr, i), SLICE_LEN(arr, i));
-    st br + NODE_CHILDREN + i * 8, c;
-    if c != 0 {
-      occ = occ + 1;
-    }
-    i = i + 1;
-  }
-  var {1,1,1,1} bv = rlp_item(SLICE_PTR(arr, 16), SLICE_LEN(arr, 16));
-  if bv.0 == 0 {
-    /* a nested-list 17th item degrades to b"" (Python), i.e. stays empty */
-    st br + BR_VAL, bv.1;
-    st br + BR_VAL_LEN, bv.2;
-    if bv.2 != 0 {
-      occ = occ + 1;
-    }
-  }
-  if occ <+ 2 {
-    mpt_fail(MPT_E_BRANCH_OCC);
-  }
-  st br + NODE_RLP, p;
-  st br + NODE_RLP_LEN, n;
-  return br;
+  var 1 rec2 = scratch_alloc(WD_SIZE);
+  st rec2 + WD_STAGE, 2;
+  st rec2 + WD_NODE, br;
+  st rec2 + WD_ARR, arr;
+  st rec2 + WD_I, 0;
+  st rec2 + WD_OCC, 0;
+  st rec2 + WD_P, p;
+  st rec2 + WD_N, n;
+  return <1, rec2>;
 }
 
-/* _resolve_child_ref on the encoded item at (p, n): empty -> 0; 32-byte hash
-   -> DB preimage decode (absent -> hashed placeholder); inline list -> decode. */
-fun 1 _resolve_child_ref(1 db, 1 p, 1 n) {
-  var {1,1,1,1} it = <0, 0, 0, 0>;
-  var e = 0;
-  try it = rlp_item(p, n)
-  catch RlpErr => e {
-    mpt_fail(MPT_E_RLP);
+/* The machine.  mode 1: decode the node at (cur_p, cur_n); mode 2: resolve
+   item `slot` of the innermost activation; mode 0: deliver `result` to it. */
+fun 1 _decode_witness_node_body(1 db, 1 p, 1 n) {
+  var top = 0;
+  var result = 0;
+  var cur_p = p;
+  var cur_n = n;
+  var mode = 1;
+  var slot = 0;
+  var go = 1;
+  while go != 0 {
+    if mode == 1 {
+      var {1,1} d = _decode_step(db, cur_p, cur_n);
+      if d.0 == 0 {
+        result = d.1;
+        mode = 0;
+      } else {
+        st d.1 + WD_PREV, top;
+        top = d.1;
+        if (lds 1 (top + WD_STAGE)) == 1 {
+          slot = 1;
+        } else {
+          slot = 0;
+        }
+        mode = 2;
+      }
+    } else {
+      if mode == 2 {
+        var arr = lds 1 (top + WD_ARR);
+        var {1,1,1,1} r = _resolve_step(db, SLICE_PTR(arr, slot), SLICE_LEN(arr, slot));
+        if r.0 == 0 {
+          st top + WD_HASH, 0;
+          result = r.1;
+          mode = 0;
+        } else {
+          st top + WD_HASH, r.3;
+          cur_p = r.1;
+          cur_n = r.2;
+          mode = 1;
+        }
+      } else {
+        if top == 0 {
+          go = 0;
+        } else {
+          var hash = lds 1 (top + WD_HASH);
+          if (hash != 0) && (result != 0) {
+            st result + NODE_HASH, hash;
+          }
+          if (lds 1 (top + WD_STAGE)) == 1 {
+            if result == 0 {
+              mpt_fail(MPT_E_EXT_CHILD);
+            }
+            var ck = lds 1 (result + NODE_KIND);
+            if (ck != NODE_BRANCH) && (ck != NODE_HASHED) {
+              mpt_fail(MPT_E_EXT_CHILD);
+            }
+            var 1 ex = node_new_ext(lds 1 (top + WD_NIB), lds 1 (top + WD_NIBLEN), result);
+            st ex + NODE_RLP, lds 1 (top + WD_P);
+            st ex + NODE_RLP_LEN, lds 1 (top + WD_N);
+            top = lds 1 (top + WD_PREV);
+            result = ex;
+          } else {
+            var br = lds 1 (top + WD_NODE);
+            var i = lds 1 (top + WD_I);
+            st br + NODE_CHILDREN + i * 8, result;
+            if result != 0 {
+              st top + WD_OCC, (lds 1 (top + WD_OCC)) + 1;
+            }
+            i = i + 1;
+            if i < 16 {
+              st top + WD_I, i;
+              slot = i;
+              mode = 2;
+            } else {
+              var arr2 = lds 1 (top + WD_ARR);
+              var {1,1,1,1} bv = rlp_item(SLICE_PTR(arr2, 16), SLICE_LEN(arr2, 16));
+              var occ = lds 1 (top + WD_OCC);
+              if bv.0 == 0 {
+                st br + BR_VAL, bv.1;
+                st br + BR_VAL_LEN, bv.2;
+                if bv.2 != 0 {
+                  occ = occ + 1;
+                }
+              }
+              if occ <+ 2 {
+                mpt_fail(MPT_E_BRANCH_OCC);
+              }
+              st br + NODE_RLP, lds 1 (top + WD_P);
+              st br + NODE_RLP_LEN, lds 1 (top + WD_N);
+              top = lds 1 (top + WD_PREV);
+              result = br;
+            }
+          }
+        }
+      }
+    }
   }
-  if it.0 == 0 {
-    if it.2 == 0 {
-      return 0;
-    }
-    if it.2 != 32 {
-      mpt_fail(MPT_E_CHILD_REF_LEN);
-    }
-    var {1,1,1} r = nodedb_lookup(db, it.1);
-    if r.0 == 0 {
-      return node_new_hashed(it.1);
-    }
-    var 1 nd = _decode_witness_node(db, r.1, r.2);
-    if nd != 0 {
-      st nd + NODE_HASH, it.1;
-    }
-    return nd;
-  }
-  return _decode_witness_node(db, p, n);
+  return result;
 }
+
+fun 1 _decode_witness_node_mpt(1 db, 1 p, 1 n, 1 mark) {
+  var e = 0;
+  var nd = 0;
+  try nd = _decode_witness_node_body(db, p, n)
+  catch MptErr => e {
+    scratch_release(mark);
+    throw MptErr e;
+  }
+  return nd;
+}
+
+/* _decode_witness_node(node_db, rlp_bytes): node ptr, 0 for the empty node.
+   The scratch arena is restored on every exit, including exceptions. */
+fun 1 _decode_witness_node(1 db, 1 p, 1 n) {
+  var 1 mark = scratch_mark();
+  var e = 0;
+  var nd = 0;
+  try nd = _decode_witness_node_mpt(db, p, n, mark)
+  catch RlpErr => e {
+    scratch_release(mark);
+    throw RlpErr e;
+  }
+  scratch_release(mark);
+  return nd;
+}
+
 
 /* decode_witness_to_mpt: root node ptr, 0 for EMPTY_TRIE_ROOT. */
 fun 1 decode_witness_to_mpt(1 db, 1 root_hash) {
@@ -568,51 +700,78 @@ fun 1 _split_extension(1 node, 1 rk, 1 rl, 1 vptr, 1 vlen, 1 pl) {
   return br;
 }
 
-fun 1 _insert_into_extension(1 node, 1 key, 1 klen, 1 level, 1 vptr, 1 vlen) {
-  var seg = lds 1 (node + NODE_NIB);
-  var sl = lds 1 (node + NODE_NIB_LEN);
-  var 1 pl = common_prefix_length(seg, sl, key + level, klen - level);
-  if pl == sl {
-    var 1 c = _mpt_insert_node(lds 1 (node + NODE_CHILD), key, klen, level + pl, vptr, vlen);
-    st node + NODE_CHILD, c;
-    return node;
-  }
-  var 1 br = _split_extension(node, key + level, klen - level, vptr, vlen, pl);
-  if pl >+ 0 {
-    return node_new_ext(seg, pl, br);
-  }
-  return br;
-}
 
-fun 1 _insert_into_branch(1 node, 1 key, 1 klen, 1 level, 1 vptr, 1 vlen) {
-  if level == klen {
-    st node + BR_VAL, vptr;
-    st node + BR_VAL_LEN, vlen;
-    return node;
-  }
-  var idx = ld8 (key + level);
-  var 1 c = _mpt_insert_node(NODE_CHILD_AT(node, idx), key, klen, level + 1, vptr, vlen);
-  st node + NODE_CHILDREN + idx * 8, c;
-  return node;
-}
 
 /* _mpt_insert_node: key = nibble array (klen nibbles), consumed up to level. */
+/* mpt_set descent (the former _mpt_insert_node / _insert_into_extension /
+   _insert_into_branch recursion).  Walking down an extension or a branch on
+   the key path leaves that node in place -- its parent slot already holds it
+   -- so descending only moves the slot that receives the subtree result. */
 fun 1 _mpt_insert_node(1 node, 1 key, 1 klen, 1 level, 1 vptr, 1 vlen) {
-  if node == 0 {
-    return node_new_leaf(key + level, klen - level, vptr, vlen);
+  var result = 0;
+  var slot = 0;
+  var go = 1;
+  while go != 0 {
+    var r = 0;
+    var next_node = 0;
+    var next_slot = 0;
+    var next_level = 0;
+    go = 0;
+    if node == 0 {
+      r = node_new_leaf(key + level, klen - level, vptr, vlen);
+    } else {
+      var k = lds 1 (node + NODE_KIND);
+      if k == NODE_HASHED {
+        mpt_fail(MPT_E_HASHED);
+      }
+      node_invalidate(node);
+      if k == NODE_LEAF {
+        r = _insert_into_leaf(node, key + level, klen - level, vptr, vlen);
+      } else {
+        if k == NODE_EXT {
+          var seg = lds 1 (node + NODE_NIB);
+          var sl = lds 1 (node + NODE_NIB_LEN);
+          var 1 pl = common_prefix_length(seg, sl, key + level, klen - level);
+          if pl == sl {
+            r = node;
+            next_node = lds 1 (node + NODE_CHILD);
+            next_slot = node + NODE_CHILD;
+            next_level = level + pl;
+            go = 1;
+          } else {
+            var 1 br = _split_extension(node, key + level, klen - level, vptr, vlen, pl);
+            if pl >+ 0 {
+              r = node_new_ext(seg, pl, br);
+            } else {
+              r = br;
+            }
+          }
+        } else {
+          if level == klen {
+            st node + BR_VAL, vptr;
+            st node + BR_VAL_LEN, vlen;
+            r = node;
+          } else {
+            var idx = ld8 (key + level);
+            r = node;
+            next_node = NODE_CHILD_AT(node, idx);
+            next_slot = node + NODE_CHILDREN + idx * 8;
+            next_level = level + 1;
+            go = 1;
+          }
+        }
+      }
+    }
+    if slot == 0 {
+      result = r;
+    } else {
+      st slot, r;
+    }
+    node = next_node;
+    slot = next_slot;
+    level = next_level;
   }
-  var k = lds 1 (node + NODE_KIND);
-  if k == NODE_HASHED {
-    mpt_fail(MPT_E_HASHED);
-  }
-  node_invalidate(node);
-  if k == NODE_LEAF {
-    return _insert_into_leaf(node, key + level, klen - level, vptr, vlen);
-  }
-  if k == NODE_EXT {
-    return _insert_into_extension(node, key, klen, level, vptr, vlen);
-  }
-  return _insert_into_branch(node, key, klen, level, vptr, vlen);
+  return result;
 }
 
 /* ---- deletion --------------------------------------------------------- */
@@ -655,14 +814,12 @@ fun 1 _collapse_branch(1 node) {
   return node;
 }
 
-fun 1 _delete_from_extension(1 node, 1 key, 1 klen, 1 level) {
-  var seg = lds 1 (node + NODE_NIB);
-  var sl = lds 1 (node + NODE_NIB_LEN);
-  var 1 pl = common_prefix_length(seg, sl, key + level, klen - level);
-  if pl <+ sl {
-    return node;
-  }
-  var 1 nc = _mpt_delete_node(lds 1 (node + NODE_CHILD), key, klen, level + sl);
+
+
+/* _mpt_delete_node: the updated node for this position (may be 0). */
+/* Unwinding step of the former _delete_from_extension: node is the extension,
+   seg / sl its key segment, nc the new child. */
+fun 1 _delete_ext_finish(1 node, 1 seg, 1 sl, 1 nc) {
   if nc == 0 {
     return 0;
   }
@@ -682,44 +839,107 @@ fun 1 _delete_from_extension(1 node, 1 key, 1 klen, 1 level) {
   return node_new_leaf(cat, cl, lds 1 (nc + NODE_VAL), lds 1 (nc + NODE_VAL_LEN));
 }
 
-fun 1 _delete_from_branch(1 node, 1 key, 1 klen, 1 level) {
-  if level == klen {
-    if (lds 1 (node + BR_VAL_LEN)) == 0 {
-      return node;
-    }
-    st node + BR_VAL, 0;
-    st node + BR_VAL_LEN, 0;
-  } else {
-    var idx = ld8 (key + level);
-    var 1 nc = _mpt_delete_node(NODE_CHILD_AT(node, idx), key, klen, level + 1);
-    st node + NODE_CHILDREN + idx * 8, nc;
-  }
-  return _collapse_branch(node);
-}
+/* Descent record of the former _mpt_delete_node recursion. */
+#define DL_PREV 0
+#define DL_NODE 8
+#define DL_KIND 16
+#define DL_SEG 24     /* extension: key segment */
+#define DL_SL 32      /* extension: segment length; branch: child index */
+#define DL_SIZE 40
 
-/* _mpt_delete_node: the updated node for this position (may be 0). */
-fun 1 _mpt_delete_node(1 node, 1 key, 1 klen, 1 level) {
-  if node == 0 {
-    return 0;
-  }
-  var k = lds 1 (node + NODE_KIND);
-  if k == NODE_HASHED {
-    mpt_fail(MPT_E_HASHED);
-  }
-  node_invalidate(node);
-  if k == NODE_LEAF {
-    if (lds 1 (node + NODE_NIB_LEN)) == klen - level {
-      var 1 eq = memeq(lds 1 (node + NODE_NIB), key + level, klen - level);
-      if eq != 0 {
-        return 0;
+/* Walk down the key path recording one DL_* record per extension / branch
+   passed, then unwind applying their post-actions innermost first, as the
+   recursion returned. */
+fun 1 _mpt_delete_node_body(1 node, 1 key, 1 klen, 1 level) {
+  var top = 0;
+  var res = 0;
+  var go = 1;
+  while go != 0 {
+    go = 0;
+    if node == 0 {
+      res = 0;
+    } else {
+      var k = lds 1 (node + NODE_KIND);
+      if k == NODE_HASHED {
+        mpt_fail(MPT_E_HASHED);
+      }
+      node_invalidate(node);
+      if k == NODE_LEAF {
+        res = node;
+        if (lds 1 (node + NODE_NIB_LEN)) == klen - level {
+          var 1 eq = memeq(lds 1 (node + NODE_NIB), key + level, klen - level);
+          if eq != 0 {
+            res = 0;
+          }
+        }
+      } else {
+        if k == NODE_EXT {
+          var seg = lds 1 (node + NODE_NIB);
+          var sl = lds 1 (node + NODE_NIB_LEN);
+          var 1 pl = common_prefix_length(seg, sl, key + level, klen - level);
+          if pl <+ sl {
+            res = node;
+          } else {
+            var 1 fr = scratch_alloc(DL_SIZE);
+            st fr + DL_PREV, top;
+            st fr + DL_NODE, node;
+            st fr + DL_KIND, NODE_EXT;
+            st fr + DL_SEG, seg;
+            st fr + DL_SL, sl;
+            top = fr;
+            node = lds 1 (node + NODE_CHILD);
+            level = level + sl;
+            go = 1;
+          }
+        } else {
+          if level == klen {
+            if (lds 1 (node + BR_VAL_LEN)) == 0 {
+              res = node;
+            } else {
+              st node + BR_VAL, 0;
+              st node + BR_VAL_LEN, 0;
+              res = _collapse_branch(node);
+            }
+          } else {
+            var idx = ld8 (key + level);
+            var 1 fr2 = scratch_alloc(DL_SIZE);
+            st fr2 + DL_PREV, top;
+            st fr2 + DL_NODE, node;
+            st fr2 + DL_KIND, NODE_BRANCH;
+            st fr2 + DL_SL, idx;
+            top = fr2;
+            node = NODE_CHILD_AT(node, idx);
+            level = level + 1;
+            go = 1;
+          }
+        }
       }
     }
-    return node;
   }
-  if k == NODE_EXT {
-    return _delete_from_extension(node, key, klen, level);
+  while top != 0 {
+    var fnode = lds 1 (top + DL_NODE);
+    if (lds 1 (top + DL_KIND)) == NODE_EXT {
+      res = _delete_ext_finish(fnode, lds 1 (top + DL_SEG), lds 1 (top + DL_SL), res);
+    } else {
+      st fnode + NODE_CHILDREN + (lds 1 (top + DL_SL)) * 8, res;
+      res = _collapse_branch(fnode);
+    }
+    top = lds 1 (top + DL_PREV);
   }
-  return _delete_from_branch(node, key, klen, level);
+  return res;
+}
+
+fun 1 _mpt_delete_node(1 node, 1 key, 1 klen, 1 level) {
+  var 1 mark = scratch_mark();
+  var e = 0;
+  var res = 0;
+  try res = _mpt_delete_node_body(node, key, klen, level)
+  catch MptErr => e {
+    scratch_release(mark);
+    throw MptErr e;
+  }
+  scratch_release(mark);
+  return res;
 }
 
 /* mpt_set: val_ptr == 0 or val_len == 0 (the trie default) deletes. */
@@ -738,15 +958,23 @@ fun 1 mpt_set(1 m, 1 key, 1 klen, 1 vptr, 1 vlen) {
 /* ---- node encoding ---------------------------------------------------- */
 
 /* rlp.encode(_encode_mutable_node(node)) as <ptr, len>, cached in the node. */
-fun {1,1} node_rlp(1 node) {
-  var cached = lds 1 (node + NODE_RLP);
-  if cached != 0 {
-    return <cached, lds 1 (node + NODE_RLP_LEN)>;
-  }
+/* node_rlp used to reach children through node_ref_len / node_write_ref.
+   Now node_rlp first fills the RLP cache of every uncached descendant
+   (_node_rlp_fill, an explicit post-order traversal whose allocations happen
+   in the order the recursion made them), and the reference helpers only read
+   cached encodings. */
+#define NR_PREV     0
+#define NR_NODE     8
+#define NR_I       16    /* next child to visit */
+#define NR_CBUF    24    /* compact path buffer (leaf / extension) */
+#define NR_CLEN    32
+#define NR_PAYLOAD 40    /* payload length accumulated before the children */
+#define NR_SIZE    48
+
+/* The part of node_rlp before any child is consulted: the compact path and
+   its encoded length (leaf / extension) and the leaf value length. */
+fun 1 _node_rlp_begin(1 fr, 1 node) {
   var k = lds 1 (node + NODE_KIND);
-  if k == NODE_HASHED {
-    mpt_fail(MPT_E_HASHED);
-  }
   var payload = 0;
   var cbuf = 0;
   var clen = 0;
@@ -763,11 +991,25 @@ fun {1,1} node_rlp(1 node) {
     if k == NODE_LEAF {
       var 1 vl = rlp_value_encoded_len(lds 1 (node + NODE_VAL), lds 1 (node + NODE_VAL_LEN));
       payload = payload + vl;
-    } else {
-      var 1 rl = node_ref_len(lds 1 (node + NODE_CHILD));
-      payload = payload + rl;
     }
-  } else {
+  }
+  st fr + NR_CBUF, cbuf;
+  st fr + NR_CLEN, clen;
+  st fr + NR_PAYLOAD, payload;
+  return 0;
+}
+
+/* The rest of node_rlp, once every child has a cached encoding. */
+fun 1 _node_rlp_finish(1 fr, 1 node) {
+  var k = lds 1 (node + NODE_KIND);
+  var payload = lds 1 (fr + NR_PAYLOAD);
+  var cbuf = lds 1 (fr + NR_CBUF);
+  var clen = lds 1 (fr + NR_CLEN);
+  if k == NODE_EXT {
+    var 1 rl = node_ref_len(lds 1 (node + NODE_CHILD));
+    payload = payload + rl;
+  }
+  if k == NODE_BRANCH {
     var i = 0;
     while i < 16 {
       var 1 rl2 = node_ref_len(NODE_CHILD_AT(node, i));
@@ -803,7 +1045,82 @@ fun {1,1} node_rlp(1 node) {
   }
   st node + NODE_RLP, buf;
   st node + NODE_RLP_LEN, off;
-  return <buf, off>;
+  return 0;
+}
+
+/* A child whose encoding the recursion would have computed on demand. */
+fun 1 _node_needs_rlp(1 child) {
+  if child == 0 {
+    return 0;
+  }
+  if (lds 1 (child + NODE_KIND)) == NODE_HASHED {
+    return 0;
+  }
+  if (lds 1 (child + NODE_RLP)) != 0 {
+    return 0;
+  }
+  return 1;
+}
+
+/* Fill the RLP cache of node (uncached, not hashed) and of every uncached
+   descendant, children before parents, left to right. */
+fun 1 _node_rlp_fill(1 node) {
+  var 1 mark = scratch_mark();
+  var 1 fr = scratch_alloc(NR_SIZE);
+  st fr + NR_PREV, 0;
+  st fr + NR_NODE, node;
+  st fr + NR_I, 0;
+  _node_rlp_begin(fr, node);
+  var top = fr;
+  while top != 0 {
+    var nd = lds 1 (top + NR_NODE);
+    var k = lds 1 (nd + NODE_KIND);
+    var child = 0;
+    var found = 0;
+    if k == NODE_EXT {
+      if (lds 1 (top + NR_I)) == 0 {
+        st top + NR_I, 1;
+        child = lds 1 (nd + NODE_CHILD);
+        found = _node_needs_rlp(child);
+      }
+    } else {
+      if k == NODE_BRANCH {
+        var i = lds 1 (top + NR_I);
+        while (i < 16) && (found == 0) {
+          child = NODE_CHILD_AT(nd, i);
+          i = i + 1;
+          found = _node_needs_rlp(child);
+        }
+        st top + NR_I, i;
+      }
+    }
+    if found != 0 {
+      var 1 cf = scratch_alloc(NR_SIZE);
+      st cf + NR_PREV, top;
+      st cf + NR_NODE, child;
+      st cf + NR_I, 0;
+      _node_rlp_begin(cf, child);
+      top = cf;
+    } else {
+      _node_rlp_finish(top, nd);
+      top = lds 1 (top + NR_PREV);
+    }
+  }
+  scratch_release(mark);
+  return 0;
+}
+
+/* _encode_mutable_node: <rlp ptr, len>, cached on the node. */
+fun {1,1} node_rlp(1 node) {
+  var cached = lds 1 (node + NODE_RLP);
+  if cached != 0 {
+    return <cached, lds 1 (node + NODE_RLP_LEN)>;
+  }
+  if (lds 1 (node + NODE_KIND)) == NODE_HASHED {
+    mpt_fail(MPT_E_HASHED);
+  }
+  _node_rlp_fill(node);
+  return <lds 1 (node + NODE_RLP), lds 1 (node + NODE_RLP_LEN)>;
 }
 
 /* Encoded length of a byte-string value (empty -> 0x80). */
@@ -816,6 +1133,7 @@ fun 1 rlp_value_encoded_len(1 p, 1 n) {
 }
 
 /* Length of _encode_mutable_node_to_extended(child) once RLP-encoded. */
+/* Encoded size of a child reference; the child's RLP is already cached. */
 fun 1 node_ref_len(1 child) {
   if child == 0 {
     return 1;
@@ -823,15 +1141,35 @@ fun 1 node_ref_len(1 child) {
   if (lds 1 (child + NODE_KIND)) == NODE_HASHED {
     return 33;
   }
-  var {1,1} r = node_rlp(child);
-  if r.1 <+ 32 {
-    return r.1;
+  if (lds 1 (child + NODE_RLP)) == 0 {
+    mpt_fail(MPT_E_UNCACHED);
+  }
+  var rl = lds 1 (child + NODE_RLP_LEN);
+  if rl <+ 32 {
+    return rl;
   }
   return 33;
 }
 
+/* keccak of a node whose RLP is already cached. */
+fun 1 node_hash_cached(1 node) {
+  var cached = lds 1 (node + NODE_HASH);
+  if cached != 0 {
+    return cached;
+  }
+  if (lds 1 (node + NODE_RLP)) == 0 {
+    mpt_fail(MPT_E_UNCACHED);
+  }
+  var 1 h = alloc(32);
+  keccak256(lds 1 (node + NODE_RLP), lds 1 (node + NODE_RLP_LEN), h);
+  st node + NODE_HASH, h;
+  return h;
+}
+
 /* Write _encode_mutable_node_to_extended(child) at dst; returns the length:
    inline RLP when < 32 bytes, otherwise 0xa0 || keccak(rlp). */
+/* _encode_mutable_node_to_extended: write a child reference at dst; the
+   child's RLP is already cached. */
 fun 1 node_write_ref(1 child, 1 dst) {
   if child == 0 {
     st8 dst, 128;
@@ -842,12 +1180,16 @@ fun 1 node_write_ref(1 child, 1 dst) {
     memcpy(dst + 1, lds 1 (child + NODE_HASH), 32);
     return 33;
   }
-  var {1,1} r = node_rlp(child);
-  if r.1 <+ 32 {
-    memcpy(dst, r.0, r.1);
-    return r.1;
+  if (lds 1 (child + NODE_RLP)) == 0 {
+    mpt_fail(MPT_E_UNCACHED);
   }
-  var 1 h = node_hash(child);
+  var rp = lds 1 (child + NODE_RLP);
+  var rl = lds 1 (child + NODE_RLP_LEN);
+  if rl <+ 32 {
+    memcpy(dst, rp, rl);
+    return rl;
+  }
+  var 1 h = node_hash_cached(child);
   st8 dst, 160;
   memcpy(dst + 1, h, 32);
   return 33;

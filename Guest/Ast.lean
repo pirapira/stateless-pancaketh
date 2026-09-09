@@ -2940,9 +2940,9 @@ def guestFn_rlp_decode_fully : Decl (BitVec 64) :=
             (Prog.return (Exp.var VarKind.local "it"))))
       returnShape := (Shape.comb [Shape.one, Shape.one, Shape.one, Shape.one]) }
 
-def guestFn_rlp_item_total : Decl (BitVec 64) :=
+def guestFn_rlp_item_header : Decl (BitVec 64) :=
   Decl.function
-    { name := "rlp_item_total"
+    { name := "rlp_item_header"
       inline := false
       exported := false
       params := [("p", Shape.one), ("len", Shape.one)]
@@ -2954,7 +2954,7 @@ def guestFn_rlp_item_total : Decl (BitVec 64) :=
           (Prog.dec "b" Shape.one (Exp.loadByte (Exp.var VarKind.local "p"))
             (Prog.seq
               (Prog.ite (Exp.cmp Cmp.lower (Exp.var VarKind.local "b") (Exp.const (BitVec.ofNat 64 128)))
-                (Prog.return (Exp.const (BitVec.ofNat 64 1)))
+                (Prog.return (Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 1)), (Exp.const (BitVec.ofNat 64 0))]))
                 Prog.skip)
               (Prog.seq
               (Prog.ite (Exp.cmp Cmp.notLower (Exp.const (BitVec.ofNat 64 183)) (Exp.var VarKind.local "b"))
@@ -2969,7 +2969,7 @@ def guestFn_rlp_item_total : Decl (BitVec 64) :=
                         (Prog.call (some (none, none)) "rlp_fail" [(Exp.const (BitVec.ofNat 64 4))])
                         Prog.skip)
                       Prog.skip)
-                    (Prog.return (Exp.op BinOp.add [(Exp.const (BitVec.ofNat 64 1)), (Exp.var VarKind.local "n")])))))
+                    (Prog.return (Exp.rStruct [(Exp.const (BitVec.ofNat 64 1)), (Exp.var VarKind.local "n"), (Exp.const (BitVec.ofNat 64 0))])))))
                 Prog.skip)
               (Prog.seq
               (Prog.ite (Exp.cmp Cmp.notLower (Exp.const (BitVec.ofNat 64 191)) (Exp.var VarKind.local "b"))
@@ -2987,7 +2987,7 @@ def guestFn_rlp_item_total : Decl (BitVec 64) :=
                         (Prog.ite (Exp.cmp Cmp.lower (Exp.op BinOp.sub [(Exp.op BinOp.sub [(Exp.var VarKind.local "len"), (Exp.const (BitVec.ofNat 64 1))]), (Exp.var VarKind.local "ll")]) (Exp.var VarKind.local "n"))
                           (Prog.call (some (none, none)) "rlp_fail" [(Exp.const (BitVec.ofNat 64 3))])
                           Prog.skip)
-                        (Prog.return (Exp.op BinOp.add [(Exp.const (BitVec.ofNat 64 1)), (Exp.var VarKind.local "ll"), (Exp.var VarKind.local "n")])))))))
+                        (Prog.return (Exp.rStruct [(Exp.op BinOp.add [(Exp.const (BitVec.ofNat 64 1)), (Exp.var VarKind.local "ll")]), (Exp.var VarKind.local "n"), (Exp.const (BitVec.ofNat 64 0))])))))))
                 Prog.skip)
               (Prog.seq
               (Prog.ite (Exp.cmp Cmp.notLower (Exp.const (BitVec.ofNat 64 247)) (Exp.var VarKind.local "b"))
@@ -2996,9 +2996,7 @@ def guestFn_rlp_item_total : Decl (BitVec 64) :=
                     (Prog.ite (Exp.cmp Cmp.lower (Exp.op BinOp.sub [(Exp.var VarKind.local "len"), (Exp.const (BitVec.ofNat 64 1))]) (Exp.var VarKind.local "n"))
                       (Prog.call (some (none, none)) "rlp_fail" [(Exp.const (BitVec.ofNat 64 3))])
                       Prog.skip)
-                    (Prog.seq
-                    (Prog.call (some (none, none)) "rlp_list_count" [(Exp.op BinOp.add [(Exp.var VarKind.local "p"), (Exp.const (BitVec.ofNat 64 1))]), (Exp.var VarKind.local "n")])
-                    (Prog.return (Exp.op BinOp.add [(Exp.const (BitVec.ofNat 64 1)), (Exp.var VarKind.local "n")])))))
+                    (Prog.return (Exp.rStruct [(Exp.const (BitVec.ofNat 64 1)), (Exp.var VarKind.local "n"), (Exp.const (BitVec.ofNat 64 1))]))))
                 Prog.skip)
               (Prog.dec "ll" Shape.one (Exp.op BinOp.sub [(Exp.var VarKind.local "b"), (Exp.const (BitVec.ofNat 64 247))])
                 (Prog.seq
@@ -3014,9 +3012,82 @@ def guestFn_rlp_item_total : Decl (BitVec 64) :=
                       (Prog.ite (Exp.cmp Cmp.lower (Exp.op BinOp.sub [(Exp.op BinOp.sub [(Exp.var VarKind.local "len"), (Exp.const (BitVec.ofNat 64 1))]), (Exp.var VarKind.local "ll")]) (Exp.var VarKind.local "n"))
                         (Prog.call (some (none, none)) "rlp_fail" [(Exp.const (BitVec.ofNat 64 3))])
                         Prog.skip)
-                      (Prog.seq
-                      (Prog.call (some (none, none)) "rlp_list_count" [(Exp.op BinOp.add [(Exp.var VarKind.local "p"), (Exp.const (BitVec.ofNat 64 1)), (Exp.var VarKind.local "ll")]), (Exp.var VarKind.local "n")])
-                      (Prog.return (Exp.op BinOp.add [(Exp.const (BitVec.ofNat 64 1)), (Exp.var VarKind.local "ll"), (Exp.var VarKind.local "n")]))))))))))))))
+                      (Prog.return (Exp.rStruct [(Exp.op BinOp.add [(Exp.const (BitVec.ofNat 64 1)), (Exp.var VarKind.local "ll")]), (Exp.var VarKind.local "n"), (Exp.const (BitVec.ofNat 64 1))])))))))))))))
+      returnShape := (Shape.comb [Shape.one, Shape.one, Shape.one]) }
+
+def guestFn__rlp_validate_items_body : Decl (BitVec 64) :=
+  Decl.function
+    { name := "_rlp_validate_items_body"
+      inline := false
+      exported := false
+      params := [("p", Shape.one), ("len", Shape.one)]
+      body :=
+        (Prog.dec "top" Shape.one (Exp.const (BitVec.ofNat 64 0))
+          (Prog.dec "pos" Shape.one (Exp.var VarKind.local "p")
+            (Prog.dec "end" Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "p"), (Exp.var VarKind.local "len")])
+              (Prog.dec "go" Shape.one (Exp.const (BitVec.ofNat 64 1))
+                (Prog.seq
+                  (Prog.while (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "go") (Exp.const (BitVec.ofNat 64 0)))
+                    (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "pos") (Exp.var VarKind.local "end"))
+                      (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "top") (Exp.const (BitVec.ofNat 64 0)))
+                        (Prog.assign VarKind.local "go" (Exp.const (BitVec.ofNat 64 0)))
+                        (Prog.seq
+                          (Prog.assign VarKind.local "pos" (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 0))])))
+                          (Prog.seq
+                          (Prog.assign VarKind.local "end" (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 8))])))
+                          (Prog.assign VarKind.local "top" (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 16))]))))))
+                      (Prog.decCall "h" (Shape.comb [Shape.one, Shape.one, Shape.one]) "rlp_item_header" [(Exp.var VarKind.local "pos"), (Exp.op BinOp.sub [(Exp.var VarKind.local "end"), (Exp.var VarKind.local "pos")])]
+                        (Prog.dec "payload" Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "pos"), (Exp.rField 0 (Exp.var VarKind.local "h"))])
+                          (Prog.dec "after" Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "payload"), (Exp.rField 1 (Exp.var VarKind.local "h"))])
+                            (Prog.ite (Exp.cmp Cmp.notEqual (Exp.rField 2 (Exp.var VarKind.local "h")) (Exp.const (BitVec.ofNat 64 0)))
+                              (Prog.decCall "rec" Shape.one "scratch_alloc" [(Exp.const (BitVec.ofNat 64 24))]
+                                (Prog.seq
+                                  (Prog.store (Exp.var VarKind.local "rec") (Exp.var VarKind.local "after"))
+                                  (Prog.seq
+                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 8))]) (Exp.var VarKind.local "end"))
+                                  (Prog.seq
+                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 16))]) (Exp.var VarKind.local "top"))
+                                  (Prog.seq
+                                  (Prog.assign VarKind.local "top" (Exp.var VarKind.local "rec"))
+                                  (Prog.seq
+                                  (Prog.assign VarKind.local "pos" (Exp.var VarKind.local "payload"))
+                                  (Prog.assign VarKind.local "end" (Exp.var VarKind.local "after"))))))))
+                              (Prog.assign VarKind.local "pos" (Exp.var VarKind.local "after"))))))))
+                  (Prog.return (Exp.const (BitVec.ofNat 64 0))))))))
+      returnShape := Shape.one }
+
+def guestFn_rlp_validate_items : Decl (BitVec 64) :=
+  Decl.function
+    { name := "rlp_validate_items"
+      inline := false
+      exported := false
+      params := [("p", Shape.one), ("len", Shape.one)]
+      body :=
+        (Prog.decCall "mark" Shape.one "scratch_mark" []
+          (Prog.dec "e" Shape.one (Exp.const (BitVec.ofNat 64 0))
+            (Prog.seq
+              (Prog.call (some (none, (some ("RlpErr", "e",
+                  (Prog.seq
+                    (Prog.call (some (none, none)) "scratch_release" [(Exp.var VarKind.local "mark")])
+                    (Prog.raise "RlpErr" (Exp.var VarKind.local "e"))))))) "_rlp_validate_items_body" [(Exp.var VarKind.local "p"), (Exp.var VarKind.local "len")])
+              (Prog.seq
+              (Prog.call (some (none, none)) "scratch_release" [(Exp.var VarKind.local "mark")])
+              (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))
+      returnShape := Shape.one }
+
+def guestFn_rlp_item_total : Decl (BitVec 64) :=
+  Decl.function
+    { name := "rlp_item_total"
+      inline := false
+      exported := false
+      params := [("p", Shape.one), ("len", Shape.one)]
+      body :=
+        (Prog.decCall "h" (Shape.comb [Shape.one, Shape.one, Shape.one]) "rlp_item_header" [(Exp.var VarKind.local "p"), (Exp.var VarKind.local "len")]
+          (Prog.seq
+            (Prog.ite (Exp.cmp Cmp.notEqual (Exp.rField 2 (Exp.var VarKind.local "h")) (Exp.const (BitVec.ofNat 64 0)))
+              (Prog.call (some (none, none)) "rlp_validate_items" [(Exp.op BinOp.add [(Exp.var VarKind.local "p"), (Exp.rField 0 (Exp.var VarKind.local "h"))]), (Exp.rField 1 (Exp.var VarKind.local "h"))])
+              Prog.skip)
+            (Prog.return (Exp.op BinOp.add [(Exp.rField 0 (Exp.var VarKind.local "h")), (Exp.rField 1 (Exp.var VarKind.local "h"))]))))
       returnShape := Shape.one }
 
 def guestFn_rlp_list_count : Decl (BitVec 64) :=
@@ -7480,9 +7551,42 @@ def guestFn_node_invalidate : Decl (BitVec 64) :=
           (Prog.return (Exp.const (BitVec.ofNat 64 0))))))
       returnShape := Shape.one }
 
-def guestFn__decode_witness_node : Decl (BitVec 64) :=
+def guestFn__resolve_step : Decl (BitVec 64) :=
   Decl.function
-    { name := "_decode_witness_node"
+    { name := "_resolve_step"
+      inline := false
+      exported := false
+      params := [("db", Shape.one), ("p", Shape.one), ("n", Shape.one)]
+      body :=
+        (Prog.dec "it" (Shape.comb [Shape.one, Shape.one, Shape.one, Shape.one]) (Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))])
+          (Prog.dec "e" Shape.one (Exp.const (BitVec.ofNat 64 0))
+            (Prog.seq
+              (Prog.call (some ((some (VarKind.local, "it")), (some ("RlpErr", "e",
+                  (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 3))]))))) "rlp_item" [(Exp.var VarKind.local "p"), (Exp.var VarKind.local "n")])
+              (Prog.seq
+              (Prog.ite (Exp.cmp Cmp.equal (Exp.rField 0 (Exp.var VarKind.local "it")) (Exp.const (BitVec.ofNat 64 0)))
+                (Prog.seq
+                  (Prog.ite (Exp.cmp Cmp.equal (Exp.rField 2 (Exp.var VarKind.local "it")) (Exp.const (BitVec.ofNat 64 0)))
+                    (Prog.return (Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))]))
+                    Prog.skip)
+                  (Prog.seq
+                  (Prog.ite (Exp.cmp Cmp.notEqual (Exp.rField 2 (Exp.var VarKind.local "it")) (Exp.const (BitVec.ofNat 64 32)))
+                    (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 10))])
+                    Prog.skip)
+                  (Prog.decCall "r" (Shape.comb [Shape.one, Shape.one, Shape.one]) "nodedb_lookup" [(Exp.var VarKind.local "db"), (Exp.rField 1 (Exp.var VarKind.local "it"))]
+                    (Prog.seq
+                      (Prog.ite (Exp.cmp Cmp.equal (Exp.rField 0 (Exp.var VarKind.local "r")) (Exp.const (BitVec.ofNat 64 0)))
+                        (Prog.decCall "hn" Shape.one "node_new_hashed" [(Exp.rField 1 (Exp.var VarKind.local "it"))]
+                          (Prog.return (Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.var VarKind.local "hn"), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))])))
+                        Prog.skip)
+                      (Prog.return (Exp.rStruct [(Exp.const (BitVec.ofNat 64 1)), (Exp.rField 1 (Exp.var VarKind.local "r")), (Exp.rField 2 (Exp.var VarKind.local "r")), (Exp.rField 1 (Exp.var VarKind.local "it"))]))))))
+                Prog.skip)
+              (Prog.return (Exp.rStruct [(Exp.const (BitVec.ofNat 64 1)), (Exp.var VarKind.local "p"), (Exp.var VarKind.local "n"), (Exp.const (BitVec.ofNat 64 0))]))))))
+      returnShape := (Shape.comb [Shape.one, Shape.one, Shape.one, Shape.one]) }
+
+def guestFn__decode_step : Decl (BitVec 64) :=
+  Decl.function
+    { name := "_decode_step"
       inline := false
       exported := false
       params := [("db", Shape.one), ("p", Shape.one), ("n", Shape.one)]
@@ -7496,7 +7600,7 @@ def guestFn__decode_witness_node : Decl (BitVec 64) :=
               (Prog.ite (Exp.cmp Cmp.equal (Exp.rField 0 (Exp.var VarKind.local "it")) (Exp.const (BitVec.ofNat 64 0)))
                 (Prog.seq
                   (Prog.ite (Exp.cmp Cmp.equal (Exp.rField 2 (Exp.var VarKind.local "it")) (Exp.const (BitVec.ofNat 64 0)))
-                    (Prog.return (Exp.const (BitVec.ofNat 64 0)))
+                    (Prog.return (Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))]))
                     Prog.skip)
                   (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 4))]))
                 Prog.skip)
@@ -7522,103 +7626,200 @@ def guestFn__decode_witness_node : Decl (BitVec 64) :=
                                         (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "lf"), (Exp.const (BitVec.ofNat 64 8))]) (Exp.var VarKind.local "p"))
                                         (Prog.seq
                                         (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "lf"), (Exp.const (BitVec.ofNat 64 16))]) (Exp.var VarKind.local "n"))
-                                        (Prog.return (Exp.var VarKind.local "lf")))))))
+                                        (Prog.return (Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.var VarKind.local "lf")])))))))
                                 Prog.skip)
                               (Prog.seq
                               (Prog.ite (Exp.cmp Cmp.equal (Exp.rField 1 (Exp.var VarKind.local "cn")) (Exp.const (BitVec.ofNat 64 0)))
                                 (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 7))])
                                 Prog.skip)
-                              (Prog.decCall "ch" Shape.one "_resolve_child_ref" [(Exp.var VarKind.local "db"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "arr"), (Exp.panOp PanOp.mul [(Exp.const (BitVec.ofNat 64 1)), (Exp.const (BitVec.ofNat 64 16))])])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "arr"), (Exp.panOp PanOp.mul [(Exp.const (BitVec.ofNat 64 1)), (Exp.const (BitVec.ofNat 64 16))]), (Exp.const (BitVec.ofNat 64 8))]))]
+                              (Prog.decCall "rec" Shape.one "scratch_alloc" [(Exp.const (BitVec.ofNat 64 88))]
                                 (Prog.seq
-                                  (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "ch") (Exp.const (BitVec.ofNat 64 0)))
-                                    (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 8))])
-                                    Prog.skip)
-                                  (Prog.dec "ck" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "ch"), (Exp.const (BitVec.ofNat 64 0))]))
-                                    (Prog.seq
-                                      (Prog.ite (Exp.op BinOp.and [(Exp.cmp Cmp.notEqual (Exp.const (BitVec.ofNat 64 0)) (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "ck") (Exp.const (BitVec.ofNat 64 3)))), (Exp.cmp Cmp.notEqual (Exp.const (BitVec.ofNat 64 0)) (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "ck") (Exp.const (BitVec.ofNat 64 0))))])
-                                        (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 8))])
-                                        Prog.skip)
-                                      (Prog.decCall "ex" Shape.one "node_new_ext" [(Exp.rField 0 (Exp.var VarKind.local "cn")), (Exp.rField 1 (Exp.var VarKind.local "cn")), (Exp.var VarKind.local "ch")]
-                                        (Prog.seq
-                                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "ex"), (Exp.const (BitVec.ofNat 64 8))]) (Exp.var VarKind.local "p"))
-                                          (Prog.seq
-                                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "ex"), (Exp.const (BitVec.ofNat 64 16))]) (Exp.var VarKind.local "n"))
-                                          (Prog.return (Exp.var VarKind.local "ex"))))))))))))))
+                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 8))]) (Exp.const (BitVec.ofNat 64 1)))
+                                  (Prog.seq
+                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 24))]) (Exp.var VarKind.local "arr"))
+                                  (Prog.seq
+                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 48))]) (Exp.var VarKind.local "p"))
+                                  (Prog.seq
+                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 56))]) (Exp.var VarKind.local "n"))
+                                  (Prog.seq
+                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 64))]) (Exp.rField 0 (Exp.var VarKind.local "cn")))
+                                  (Prog.seq
+                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 72))]) (Exp.rField 1 (Exp.var VarKind.local "cn")))
+                                  (Prog.return (Exp.rStruct [(Exp.const (BitVec.ofNat 64 1)), (Exp.var VarKind.local "rec")]))))))))))))))
                       Prog.skip)
                     (Prog.seq
                     (Prog.ite (Exp.cmp Cmp.notEqual (Exp.rField 1 (Exp.var VarKind.local "sl")) (Exp.const (BitVec.ofNat 64 17)))
                       (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 4))])
                       Prog.skip)
                     (Prog.decCall "br" Shape.one "node_new_branch" []
-                      (Prog.dec "occ" Shape.one (Exp.const (BitVec.ofNat 64 0))
-                        (Prog.dec "i" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                      (Prog.decCall "rec2" Shape.one "scratch_alloc" [(Exp.const (BitVec.ofNat 64 88))]
+                        (Prog.seq
+                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec2"), (Exp.const (BitVec.ofNat 64 8))]) (Exp.const (BitVec.ofNat 64 2)))
                           (Prog.seq
-                            (Prog.while (Exp.cmp Cmp.less (Exp.var VarKind.local "i") (Exp.const (BitVec.ofNat 64 16)))
-                              (Prog.decCall "c" Shape.one "_resolve_child_ref" [(Exp.var VarKind.local "db"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "arr"), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 16))])])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "arr"), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 16))]), (Exp.const (BitVec.ofNat 64 8))]))]
-                                (Prog.seq
-                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "br"), (Exp.const (BitVec.ofNat 64 32)), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 8))])]) (Exp.var VarKind.local "c"))
-                                  (Prog.seq
-                                  (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "c") (Exp.const (BitVec.ofNat 64 0)))
-                                    (Prog.assign VarKind.local "occ" (Exp.op BinOp.add [(Exp.var VarKind.local "occ"), (Exp.const (BitVec.ofNat 64 1))]))
-                                    Prog.skip)
-                                  (Prog.assign VarKind.local "i" (Exp.op BinOp.add [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 1))]))))))
-                            (Prog.decCall "bv" (Shape.comb [Shape.one, Shape.one, Shape.one, Shape.one]) "rlp_item" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "arr"), (Exp.panOp PanOp.mul [(Exp.const (BitVec.ofNat 64 16)), (Exp.const (BitVec.ofNat 64 16))])])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "arr"), (Exp.panOp PanOp.mul [(Exp.const (BitVec.ofNat 64 16)), (Exp.const (BitVec.ofNat 64 16))]), (Exp.const (BitVec.ofNat 64 8))]))]
-                              (Prog.seq
-                                (Prog.ite (Exp.cmp Cmp.equal (Exp.rField 0 (Exp.var VarKind.local "bv")) (Exp.const (BitVec.ofNat 64 0)))
-                                  (Prog.seq
-                                    (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "br"), (Exp.const (BitVec.ofNat 64 160))]) (Exp.rField 1 (Exp.var VarKind.local "bv")))
-                                    (Prog.seq
-                                    (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "br"), (Exp.const (BitVec.ofNat 64 168))]) (Exp.rField 2 (Exp.var VarKind.local "bv")))
-                                    (Prog.ite (Exp.cmp Cmp.notEqual (Exp.rField 2 (Exp.var VarKind.local "bv")) (Exp.const (BitVec.ofNat 64 0)))
-                                      (Prog.assign VarKind.local "occ" (Exp.op BinOp.add [(Exp.var VarKind.local "occ"), (Exp.const (BitVec.ofNat 64 1))]))
-                                      Prog.skip)))
-                                  Prog.skip)
-                                (Prog.seq
-                                (Prog.ite (Exp.cmp Cmp.lower (Exp.var VarKind.local "occ") (Exp.const (BitVec.ofNat 64 2)))
-                                  (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 9))])
-                                  Prog.skip)
-                                (Prog.seq
-                                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "br"), (Exp.const (BitVec.ofNat 64 8))]) (Exp.var VarKind.local "p"))
-                                (Prog.seq
-                                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "br"), (Exp.const (BitVec.ofNat 64 16))]) (Exp.var VarKind.local "n"))
-                                (Prog.return (Exp.var VarKind.local "br")))))))))))))))))))
-      returnShape := Shape.one }
+                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec2"), (Exp.const (BitVec.ofNat 64 16))]) (Exp.var VarKind.local "br"))
+                          (Prog.seq
+                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec2"), (Exp.const (BitVec.ofNat 64 24))]) (Exp.var VarKind.local "arr"))
+                          (Prog.seq
+                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec2"), (Exp.const (BitVec.ofNat 64 32))]) (Exp.const (BitVec.ofNat 64 0)))
+                          (Prog.seq
+                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec2"), (Exp.const (BitVec.ofNat 64 40))]) (Exp.const (BitVec.ofNat 64 0)))
+                          (Prog.seq
+                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec2"), (Exp.const (BitVec.ofNat 64 48))]) (Exp.var VarKind.local "p"))
+                          (Prog.seq
+                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec2"), (Exp.const (BitVec.ofNat 64 56))]) (Exp.var VarKind.local "n"))
+                          (Prog.return (Exp.rStruct [(Exp.const (BitVec.ofNat 64 1)), (Exp.var VarKind.local "rec2")])))))))))))))))))))
+      returnShape := (Shape.comb [Shape.one, Shape.one]) }
 
-def guestFn__resolve_child_ref : Decl (BitVec 64) :=
+def guestFn__decode_witness_node_body : Decl (BitVec 64) :=
   Decl.function
-    { name := "_resolve_child_ref"
+    { name := "_decode_witness_node_body"
       inline := false
       exported := false
       params := [("db", Shape.one), ("p", Shape.one), ("n", Shape.one)]
       body :=
-        (Prog.dec "it" (Shape.comb [Shape.one, Shape.one, Shape.one, Shape.one]) (Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))])
-          (Prog.dec "e" Shape.one (Exp.const (BitVec.ofNat 64 0))
+        (Prog.dec "top" Shape.one (Exp.const (BitVec.ofNat 64 0))
+          (Prog.dec "result" Shape.one (Exp.const (BitVec.ofNat 64 0))
+            (Prog.dec "cur_p" Shape.one (Exp.var VarKind.local "p")
+              (Prog.dec "cur_n" Shape.one (Exp.var VarKind.local "n")
+                (Prog.dec "mode" Shape.one (Exp.const (BitVec.ofNat 64 1))
+                  (Prog.dec "slot" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                    (Prog.dec "go" Shape.one (Exp.const (BitVec.ofNat 64 1))
+                      (Prog.seq
+                        (Prog.while (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "go") (Exp.const (BitVec.ofNat 64 0)))
+                          (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "mode") (Exp.const (BitVec.ofNat 64 1)))
+                            (Prog.decCall "d" (Shape.comb [Shape.one, Shape.one]) "_decode_step" [(Exp.var VarKind.local "db"), (Exp.var VarKind.local "cur_p"), (Exp.var VarKind.local "cur_n")]
+                              (Prog.ite (Exp.cmp Cmp.equal (Exp.rField 0 (Exp.var VarKind.local "d")) (Exp.const (BitVec.ofNat 64 0)))
+                                (Prog.seq
+                                  (Prog.assign VarKind.local "result" (Exp.rField 1 (Exp.var VarKind.local "d")))
+                                  (Prog.assign VarKind.local "mode" (Exp.const (BitVec.ofNat 64 0))))
+                                (Prog.seq
+                                  (Prog.store (Exp.op BinOp.add [(Exp.rField 1 (Exp.var VarKind.local "d")), (Exp.const (BitVec.ofNat 64 0))]) (Exp.var VarKind.local "top"))
+                                  (Prog.seq
+                                  (Prog.assign VarKind.local "top" (Exp.rField 1 (Exp.var VarKind.local "d")))
+                                  (Prog.seq
+                                  (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 8))])) (Exp.const (BitVec.ofNat 64 1)))
+                                    (Prog.assign VarKind.local "slot" (Exp.const (BitVec.ofNat 64 1)))
+                                    (Prog.assign VarKind.local "slot" (Exp.const (BitVec.ofNat 64 0))))
+                                  (Prog.assign VarKind.local "mode" (Exp.const (BitVec.ofNat 64 2))))))))
+                            (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "mode") (Exp.const (BitVec.ofNat 64 2)))
+                              (Prog.dec "arr" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 24))]))
+                                (Prog.decCall "r" (Shape.comb [Shape.one, Shape.one, Shape.one, Shape.one]) "_resolve_step" [(Exp.var VarKind.local "db"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "arr"), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "slot"), (Exp.const (BitVec.ofNat 64 16))])])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "arr"), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "slot"), (Exp.const (BitVec.ofNat 64 16))]), (Exp.const (BitVec.ofNat 64 8))]))]
+                                  (Prog.ite (Exp.cmp Cmp.equal (Exp.rField 0 (Exp.var VarKind.local "r")) (Exp.const (BitVec.ofNat 64 0)))
+                                    (Prog.seq
+                                      (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 80))]) (Exp.const (BitVec.ofNat 64 0)))
+                                      (Prog.seq
+                                      (Prog.assign VarKind.local "result" (Exp.rField 1 (Exp.var VarKind.local "r")))
+                                      (Prog.assign VarKind.local "mode" (Exp.const (BitVec.ofNat 64 0)))))
+                                    (Prog.seq
+                                      (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 80))]) (Exp.rField 3 (Exp.var VarKind.local "r")))
+                                      (Prog.seq
+                                      (Prog.assign VarKind.local "cur_p" (Exp.rField 1 (Exp.var VarKind.local "r")))
+                                      (Prog.seq
+                                      (Prog.assign VarKind.local "cur_n" (Exp.rField 2 (Exp.var VarKind.local "r")))
+                                      (Prog.assign VarKind.local "mode" (Exp.const (BitVec.ofNat 64 1)))))))))
+                              (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "top") (Exp.const (BitVec.ofNat 64 0)))
+                                (Prog.assign VarKind.local "go" (Exp.const (BitVec.ofNat 64 0)))
+                                (Prog.dec "hash" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 80))]))
+                                  (Prog.seq
+                                    (Prog.ite (Exp.op BinOp.and [(Exp.cmp Cmp.notEqual (Exp.const (BitVec.ofNat 64 0)) (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "hash") (Exp.const (BitVec.ofNat 64 0)))), (Exp.cmp Cmp.notEqual (Exp.const (BitVec.ofNat 64 0)) (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "result") (Exp.const (BitVec.ofNat 64 0))))])
+                                      (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "result"), (Exp.const (BitVec.ofNat 64 24))]) (Exp.var VarKind.local "hash"))
+                                      Prog.skip)
+                                    (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 8))])) (Exp.const (BitVec.ofNat 64 1)))
+                                      (Prog.seq
+                                        (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "result") (Exp.const (BitVec.ofNat 64 0)))
+                                          (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 8))])
+                                          Prog.skip)
+                                        (Prog.dec "ck" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "result"), (Exp.const (BitVec.ofNat 64 0))]))
+                                          (Prog.seq
+                                            (Prog.ite (Exp.op BinOp.and [(Exp.cmp Cmp.notEqual (Exp.const (BitVec.ofNat 64 0)) (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "ck") (Exp.const (BitVec.ofNat 64 3)))), (Exp.cmp Cmp.notEqual (Exp.const (BitVec.ofNat 64 0)) (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "ck") (Exp.const (BitVec.ofNat 64 0))))])
+                                              (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 8))])
+                                              Prog.skip)
+                                            (Prog.decCall "ex" Shape.one "node_new_ext" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 64))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 72))])), (Exp.var VarKind.local "result")]
+                                              (Prog.seq
+                                                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "ex"), (Exp.const (BitVec.ofNat 64 8))]) (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 48))])))
+                                                (Prog.seq
+                                                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "ex"), (Exp.const (BitVec.ofNat 64 16))]) (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 56))])))
+                                                (Prog.seq
+                                                (Prog.assign VarKind.local "top" (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 0))])))
+                                                (Prog.assign VarKind.local "result" (Exp.var VarKind.local "ex")))))))))
+                                      (Prog.dec "br" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 16))]))
+                                        (Prog.dec "i" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 32))]))
+                                          (Prog.seq
+                                            (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "br"), (Exp.const (BitVec.ofNat 64 32)), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 8))])]) (Exp.var VarKind.local "result"))
+                                            (Prog.seq
+                                            (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "result") (Exp.const (BitVec.ofNat 64 0)))
+                                              (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 40))]) (Exp.op BinOp.add [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 40))])), (Exp.const (BitVec.ofNat 64 1))]))
+                                              Prog.skip)
+                                            (Prog.seq
+                                            (Prog.assign VarKind.local "i" (Exp.op BinOp.add [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 1))]))
+                                            (Prog.ite (Exp.cmp Cmp.less (Exp.var VarKind.local "i") (Exp.const (BitVec.ofNat 64 16)))
+                                              (Prog.seq
+                                                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 32))]) (Exp.var VarKind.local "i"))
+                                                (Prog.seq
+                                                (Prog.assign VarKind.local "slot" (Exp.var VarKind.local "i"))
+                                                (Prog.assign VarKind.local "mode" (Exp.const (BitVec.ofNat 64 2)))))
+                                              (Prog.dec "arr2" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 24))]))
+                                                (Prog.decCall "bv" (Shape.comb [Shape.one, Shape.one, Shape.one, Shape.one]) "rlp_item" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "arr2"), (Exp.panOp PanOp.mul [(Exp.const (BitVec.ofNat 64 16)), (Exp.const (BitVec.ofNat 64 16))])])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "arr2"), (Exp.panOp PanOp.mul [(Exp.const (BitVec.ofNat 64 16)), (Exp.const (BitVec.ofNat 64 16))]), (Exp.const (BitVec.ofNat 64 8))]))]
+                                                  (Prog.dec "occ" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 40))]))
+                                                    (Prog.seq
+                                                      (Prog.ite (Exp.cmp Cmp.equal (Exp.rField 0 (Exp.var VarKind.local "bv")) (Exp.const (BitVec.ofNat 64 0)))
+                                                        (Prog.seq
+                                                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "br"), (Exp.const (BitVec.ofNat 64 160))]) (Exp.rField 1 (Exp.var VarKind.local "bv")))
+                                                          (Prog.seq
+                                                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "br"), (Exp.const (BitVec.ofNat 64 168))]) (Exp.rField 2 (Exp.var VarKind.local "bv")))
+                                                          (Prog.ite (Exp.cmp Cmp.notEqual (Exp.rField 2 (Exp.var VarKind.local "bv")) (Exp.const (BitVec.ofNat 64 0)))
+                                                            (Prog.assign VarKind.local "occ" (Exp.op BinOp.add [(Exp.var VarKind.local "occ"), (Exp.const (BitVec.ofNat 64 1))]))
+                                                            Prog.skip)))
+                                                        Prog.skip)
+                                                      (Prog.seq
+                                                      (Prog.ite (Exp.cmp Cmp.lower (Exp.var VarKind.local "occ") (Exp.const (BitVec.ofNat 64 2)))
+                                                        (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 9))])
+                                                        Prog.skip)
+                                                      (Prog.seq
+                                                      (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "br"), (Exp.const (BitVec.ofNat 64 8))]) (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 48))])))
+                                                      (Prog.seq
+                                                      (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "br"), (Exp.const (BitVec.ofNat 64 16))]) (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 56))])))
+                                                      (Prog.seq
+                                                      (Prog.assign VarKind.local "top" (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 0))])))
+                                                      (Prog.assign VarKind.local "result" (Exp.var VarKind.local "br")))))))))))))))))))))))
+                        (Prog.return (Exp.var VarKind.local "result"))))))))))
+      returnShape := Shape.one }
+
+def guestFn__decode_witness_node_mpt : Decl (BitVec 64) :=
+  Decl.function
+    { name := "_decode_witness_node_mpt"
+      inline := false
+      exported := false
+      params := [("db", Shape.one), ("p", Shape.one), ("n", Shape.one), ("mark", Shape.one)]
+      body :=
+        (Prog.dec "e" Shape.one (Exp.const (BitVec.ofNat 64 0))
+          (Prog.dec "nd" Shape.one (Exp.const (BitVec.ofNat 64 0))
             (Prog.seq
-              (Prog.call (some ((some (VarKind.local, "it")), (some ("RlpErr", "e",
-                  (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 3))]))))) "rlp_item" [(Exp.var VarKind.local "p"), (Exp.var VarKind.local "n")])
-              (Prog.seq
-              (Prog.ite (Exp.cmp Cmp.equal (Exp.rField 0 (Exp.var VarKind.local "it")) (Exp.const (BitVec.ofNat 64 0)))
-                (Prog.seq
-                  (Prog.ite (Exp.cmp Cmp.equal (Exp.rField 2 (Exp.var VarKind.local "it")) (Exp.const (BitVec.ofNat 64 0)))
-                    (Prog.return (Exp.const (BitVec.ofNat 64 0)))
-                    Prog.skip)
+              (Prog.call (some ((some (VarKind.local, "nd")), (some ("MptErr", "e",
                   (Prog.seq
-                  (Prog.ite (Exp.cmp Cmp.notEqual (Exp.rField 2 (Exp.var VarKind.local "it")) (Exp.const (BitVec.ofNat 64 32)))
-                    (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 10))])
-                    Prog.skip)
-                  (Prog.decCall "r" (Shape.comb [Shape.one, Shape.one, Shape.one]) "nodedb_lookup" [(Exp.var VarKind.local "db"), (Exp.rField 1 (Exp.var VarKind.local "it"))]
+                    (Prog.call (some (none, none)) "scratch_release" [(Exp.var VarKind.local "mark")])
+                    (Prog.raise "MptErr" (Exp.var VarKind.local "e"))))))) "_decode_witness_node_body" [(Exp.var VarKind.local "db"), (Exp.var VarKind.local "p"), (Exp.var VarKind.local "n")])
+              (Prog.return (Exp.var VarKind.local "nd")))))
+      returnShape := Shape.one }
+
+def guestFn__decode_witness_node : Decl (BitVec 64) :=
+  Decl.function
+    { name := "_decode_witness_node"
+      inline := false
+      exported := false
+      params := [("db", Shape.one), ("p", Shape.one), ("n", Shape.one)]
+      body :=
+        (Prog.decCall "mark" Shape.one "scratch_mark" []
+          (Prog.dec "e" Shape.one (Exp.const (BitVec.ofNat 64 0))
+            (Prog.dec "nd" Shape.one (Exp.const (BitVec.ofNat 64 0))
+              (Prog.seq
+                (Prog.call (some ((some (VarKind.local, "nd")), (some ("RlpErr", "e",
                     (Prog.seq
-                      (Prog.ite (Exp.cmp Cmp.equal (Exp.rField 0 (Exp.var VarKind.local "r")) (Exp.const (BitVec.ofNat 64 0)))
-                        (Prog.call none "node_new_hashed" [(Exp.rField 1 (Exp.var VarKind.local "it"))])
-                        Prog.skip)
-                      (Prog.decCall "nd" Shape.one "_decode_witness_node" [(Exp.var VarKind.local "db"), (Exp.rField 1 (Exp.var VarKind.local "r")), (Exp.rField 2 (Exp.var VarKind.local "r"))]
-                        (Prog.seq
-                          (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "nd") (Exp.const (BitVec.ofNat 64 0)))
-                            (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "nd"), (Exp.const (BitVec.ofNat 64 24))]) (Exp.rField 1 (Exp.var VarKind.local "it")))
-                            Prog.skip)
-                          (Prog.return (Exp.var VarKind.local "nd"))))))))
-                Prog.skip)
-              (Prog.call none "_decode_witness_node" [(Exp.var VarKind.local "db"), (Exp.var VarKind.local "p"), (Exp.var VarKind.local "n")])))))
+                      (Prog.call (some (none, none)) "scratch_release" [(Exp.var VarKind.local "mark")])
+                      (Prog.raise "RlpErr" (Exp.var VarKind.local "e"))))))) "_decode_witness_node_mpt" [(Exp.var VarKind.local "db"), (Exp.var VarKind.local "p"), (Exp.var VarKind.local "n"), (Exp.var VarKind.local "mark")])
+                (Prog.seq
+                (Prog.call (some (none, none)) "scratch_release" [(Exp.var VarKind.local "mark")])
+                (Prog.return (Exp.var VarKind.local "nd")))))))
       returnShape := Shape.one }
 
 def guestFn_decode_witness_to_mpt : Decl (BitVec 64) :=
@@ -7871,53 +8072,6 @@ def guestFn__split_extension : Decl (BitVec 64) :=
                         (Prog.return (Exp.var VarKind.local "br")))))))))))
       returnShape := Shape.one }
 
-def guestFn__insert_into_extension : Decl (BitVec 64) :=
-  Decl.function
-    { name := "_insert_into_extension"
-      inline := false
-      exported := false
-      params := [("node", Shape.one), ("key", Shape.one), ("klen", Shape.one), ("level", Shape.one), ("vptr", Shape.one), ("vlen", Shape.one)]
-      body :=
-        (Prog.dec "seg" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32))]))
-          (Prog.dec "sl" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 40))]))
-            (Prog.decCall "pl" Shape.one "common_prefix_length" [(Exp.var VarKind.local "seg"), (Exp.var VarKind.local "sl"), (Exp.op BinOp.add [(Exp.var VarKind.local "key"), (Exp.var VarKind.local "level")]), (Exp.op BinOp.sub [(Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")])]
-              (Prog.seq
-                (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "pl") (Exp.var VarKind.local "sl"))
-                  (Prog.decCall "c" Shape.one "_mpt_insert_node" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 48))])), (Exp.var VarKind.local "key"), (Exp.var VarKind.local "klen"), (Exp.op BinOp.add [(Exp.var VarKind.local "level"), (Exp.var VarKind.local "pl")]), (Exp.var VarKind.local "vptr"), (Exp.var VarKind.local "vlen")]
-                    (Prog.seq
-                      (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 48))]) (Exp.var VarKind.local "c"))
-                      (Prog.return (Exp.var VarKind.local "node"))))
-                  Prog.skip)
-                (Prog.decCall "br" Shape.one "_split_extension" [(Exp.var VarKind.local "node"), (Exp.op BinOp.add [(Exp.var VarKind.local "key"), (Exp.var VarKind.local "level")]), (Exp.op BinOp.sub [(Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")]), (Exp.var VarKind.local "vptr"), (Exp.var VarKind.local "vlen"), (Exp.var VarKind.local "pl")]
-                  (Prog.seq
-                    (Prog.ite (Exp.cmp Cmp.lower (Exp.const (BitVec.ofNat 64 0)) (Exp.var VarKind.local "pl"))
-                      (Prog.call none "node_new_ext" [(Exp.var VarKind.local "seg"), (Exp.var VarKind.local "pl"), (Exp.var VarKind.local "br")])
-                      Prog.skip)
-                    (Prog.return (Exp.var VarKind.local "br"))))))))
-      returnShape := Shape.one }
-
-def guestFn__insert_into_branch : Decl (BitVec 64) :=
-  Decl.function
-    { name := "_insert_into_branch"
-      inline := false
-      exported := false
-      params := [("node", Shape.one), ("key", Shape.one), ("klen", Shape.one), ("level", Shape.one), ("vptr", Shape.one), ("vlen", Shape.one)]
-      body :=
-        (Prog.seq
-          (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "level") (Exp.var VarKind.local "klen"))
-            (Prog.seq
-              (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 160))]) (Exp.var VarKind.local "vptr"))
-              (Prog.seq
-              (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 168))]) (Exp.var VarKind.local "vlen"))
-              (Prog.return (Exp.var VarKind.local "node"))))
-            Prog.skip)
-          (Prog.dec "idx" Shape.one (Exp.loadByte (Exp.op BinOp.add [(Exp.var VarKind.local "key"), (Exp.var VarKind.local "level")]))
-            (Prog.decCall "c" Shape.one "_mpt_insert_node" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32)), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "idx"), (Exp.const (BitVec.ofNat 64 8))])])), (Exp.var VarKind.local "key"), (Exp.var VarKind.local "klen"), (Exp.op BinOp.add [(Exp.var VarKind.local "level"), (Exp.const (BitVec.ofNat 64 1))]), (Exp.var VarKind.local "vptr"), (Exp.var VarKind.local "vlen")]
-              (Prog.seq
-                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32)), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "idx"), (Exp.const (BitVec.ofNat 64 8))])]) (Exp.var VarKind.local "c"))
-                (Prog.return (Exp.var VarKind.local "node"))))))
-      returnShape := Shape.one }
-
 def guestFn__mpt_insert_node : Decl (BitVec 64) :=
   Decl.function
     { name := "_mpt_insert_node"
@@ -7925,26 +8079,73 @@ def guestFn__mpt_insert_node : Decl (BitVec 64) :=
       exported := false
       params := [("node", Shape.one), ("key", Shape.one), ("klen", Shape.one), ("level", Shape.one), ("vptr", Shape.one), ("vlen", Shape.one)]
       body :=
-        (Prog.seq
-          (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "node") (Exp.const (BitVec.ofNat 64 0)))
-            (Prog.call none "node_new_leaf" [(Exp.op BinOp.add [(Exp.var VarKind.local "key"), (Exp.var VarKind.local "level")]), (Exp.op BinOp.sub [(Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")]), (Exp.var VarKind.local "vptr"), (Exp.var VarKind.local "vlen")])
-            Prog.skip)
-          (Prog.dec "k" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 0))]))
-            (Prog.seq
-              (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 0)))
-                (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 2))])
-                Prog.skip)
+        (Prog.dec "result" Shape.one (Exp.const (BitVec.ofNat 64 0))
+          (Prog.dec "slot" Shape.one (Exp.const (BitVec.ofNat 64 0))
+            (Prog.dec "go" Shape.one (Exp.const (BitVec.ofNat 64 1))
               (Prog.seq
-              (Prog.call (some (none, none)) "node_invalidate" [(Exp.var VarKind.local "node")])
-              (Prog.seq
-              (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 1)))
-                (Prog.call none "_insert_into_leaf" [(Exp.var VarKind.local "node"), (Exp.op BinOp.add [(Exp.var VarKind.local "key"), (Exp.var VarKind.local "level")]), (Exp.op BinOp.sub [(Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")]), (Exp.var VarKind.local "vptr"), (Exp.var VarKind.local "vlen")])
-                Prog.skip)
-              (Prog.seq
-              (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 2)))
-                (Prog.call none "_insert_into_extension" [(Exp.var VarKind.local "node"), (Exp.var VarKind.local "key"), (Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level"), (Exp.var VarKind.local "vptr"), (Exp.var VarKind.local "vlen")])
-                Prog.skip)
-              (Prog.call none "_insert_into_branch" [(Exp.var VarKind.local "node"), (Exp.var VarKind.local "key"), (Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level"), (Exp.var VarKind.local "vptr"), (Exp.var VarKind.local "vlen")])))))))
+                (Prog.while (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "go") (Exp.const (BitVec.ofNat 64 0)))
+                  (Prog.dec "r" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                    (Prog.dec "next_node" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                      (Prog.dec "next_slot" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                        (Prog.dec "next_level" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                          (Prog.seq
+                            (Prog.assign VarKind.local "go" (Exp.const (BitVec.ofNat 64 0)))
+                            (Prog.seq
+                            (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "node") (Exp.const (BitVec.ofNat 64 0)))
+                              (Prog.call (some ((some (VarKind.local, "r")), none)) "node_new_leaf" [(Exp.op BinOp.add [(Exp.var VarKind.local "key"), (Exp.var VarKind.local "level")]), (Exp.op BinOp.sub [(Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")]), (Exp.var VarKind.local "vptr"), (Exp.var VarKind.local "vlen")])
+                              (Prog.dec "k" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 0))]))
+                                (Prog.seq
+                                  (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 0)))
+                                    (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 2))])
+                                    Prog.skip)
+                                  (Prog.seq
+                                  (Prog.call (some (none, none)) "node_invalidate" [(Exp.var VarKind.local "node")])
+                                  (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 1)))
+                                    (Prog.call (some ((some (VarKind.local, "r")), none)) "_insert_into_leaf" [(Exp.var VarKind.local "node"), (Exp.op BinOp.add [(Exp.var VarKind.local "key"), (Exp.var VarKind.local "level")]), (Exp.op BinOp.sub [(Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")]), (Exp.var VarKind.local "vptr"), (Exp.var VarKind.local "vlen")])
+                                    (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 2)))
+                                      (Prog.dec "seg" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32))]))
+                                        (Prog.dec "sl" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 40))]))
+                                          (Prog.decCall "pl" Shape.one "common_prefix_length" [(Exp.var VarKind.local "seg"), (Exp.var VarKind.local "sl"), (Exp.op BinOp.add [(Exp.var VarKind.local "key"), (Exp.var VarKind.local "level")]), (Exp.op BinOp.sub [(Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")])]
+                                            (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "pl") (Exp.var VarKind.local "sl"))
+                                              (Prog.seq
+                                                (Prog.assign VarKind.local "r" (Exp.var VarKind.local "node"))
+                                                (Prog.seq
+                                                (Prog.assign VarKind.local "next_node" (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 48))])))
+                                                (Prog.seq
+                                                (Prog.assign VarKind.local "next_slot" (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 48))]))
+                                                (Prog.seq
+                                                (Prog.assign VarKind.local "next_level" (Exp.op BinOp.add [(Exp.var VarKind.local "level"), (Exp.var VarKind.local "pl")]))
+                                                (Prog.assign VarKind.local "go" (Exp.const (BitVec.ofNat 64 1)))))))
+                                              (Prog.decCall "br" Shape.one "_split_extension" [(Exp.var VarKind.local "node"), (Exp.op BinOp.add [(Exp.var VarKind.local "key"), (Exp.var VarKind.local "level")]), (Exp.op BinOp.sub [(Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")]), (Exp.var VarKind.local "vptr"), (Exp.var VarKind.local "vlen"), (Exp.var VarKind.local "pl")]
+                                                (Prog.ite (Exp.cmp Cmp.lower (Exp.const (BitVec.ofNat 64 0)) (Exp.var VarKind.local "pl"))
+                                                  (Prog.call (some ((some (VarKind.local, "r")), none)) "node_new_ext" [(Exp.var VarKind.local "seg"), (Exp.var VarKind.local "pl"), (Exp.var VarKind.local "br")])
+                                                  (Prog.assign VarKind.local "r" (Exp.var VarKind.local "br"))))))))
+                                      (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "level") (Exp.var VarKind.local "klen"))
+                                        (Prog.seq
+                                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 160))]) (Exp.var VarKind.local "vptr"))
+                                          (Prog.seq
+                                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 168))]) (Exp.var VarKind.local "vlen"))
+                                          (Prog.assign VarKind.local "r" (Exp.var VarKind.local "node"))))
+                                        (Prog.dec "idx" Shape.one (Exp.loadByte (Exp.op BinOp.add [(Exp.var VarKind.local "key"), (Exp.var VarKind.local "level")]))
+                                          (Prog.seq
+                                            (Prog.assign VarKind.local "r" (Exp.var VarKind.local "node"))
+                                            (Prog.seq
+                                            (Prog.assign VarKind.local "next_node" (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32)), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "idx"), (Exp.const (BitVec.ofNat 64 8))])])))
+                                            (Prog.seq
+                                            (Prog.assign VarKind.local "next_slot" (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32)), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "idx"), (Exp.const (BitVec.ofNat 64 8))])]))
+                                            (Prog.seq
+                                            (Prog.assign VarKind.local "next_level" (Exp.op BinOp.add [(Exp.var VarKind.local "level"), (Exp.const (BitVec.ofNat 64 1))]))
+                                            (Prog.assign VarKind.local "go" (Exp.const (BitVec.ofNat 64 1)))))))))))))))
+                            (Prog.seq
+                            (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "slot") (Exp.const (BitVec.ofNat 64 0)))
+                              (Prog.assign VarKind.local "result" (Exp.var VarKind.local "r"))
+                              (Prog.store (Exp.var VarKind.local "slot") (Exp.var VarKind.local "r")))
+                            (Prog.seq
+                            (Prog.assign VarKind.local "node" (Exp.var VarKind.local "next_node"))
+                            (Prog.seq
+                            (Prog.assign VarKind.local "slot" (Exp.var VarKind.local "next_slot"))
+                            (Prog.assign VarKind.local "level" (Exp.var VarKind.local "next_level"))))))))))))
+                (Prog.return (Exp.var VarKind.local "result"))))))
       returnShape := Shape.one }
 
 def guestFn__collapse_branch : Decl (BitVec 64) :=
@@ -8000,65 +8201,129 @@ def guestFn__collapse_branch : Decl (BitVec 64) :=
                     (Prog.return (Exp.var VarKind.local "node")))))))))
       returnShape := Shape.one }
 
-def guestFn__delete_from_extension : Decl (BitVec 64) :=
+def guestFn__delete_ext_finish : Decl (BitVec 64) :=
   Decl.function
-    { name := "_delete_from_extension"
+    { name := "_delete_ext_finish"
       inline := false
       exported := false
-      params := [("node", Shape.one), ("key", Shape.one), ("klen", Shape.one), ("level", Shape.one)]
-      body :=
-        (Prog.dec "seg" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32))]))
-          (Prog.dec "sl" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 40))]))
-            (Prog.decCall "pl" Shape.one "common_prefix_length" [(Exp.var VarKind.local "seg"), (Exp.var VarKind.local "sl"), (Exp.op BinOp.add [(Exp.var VarKind.local "key"), (Exp.var VarKind.local "level")]), (Exp.op BinOp.sub [(Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")])]
-              (Prog.seq
-                (Prog.ite (Exp.cmp Cmp.lower (Exp.var VarKind.local "pl") (Exp.var VarKind.local "sl"))
-                  (Prog.return (Exp.var VarKind.local "node"))
-                  Prog.skip)
-                (Prog.decCall "nc" Shape.one "_mpt_delete_node" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 48))])), (Exp.var VarKind.local "key"), (Exp.var VarKind.local "klen"), (Exp.op BinOp.add [(Exp.var VarKind.local "level"), (Exp.var VarKind.local "sl")])]
-                  (Prog.seq
-                    (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "nc") (Exp.const (BitVec.ofNat 64 0)))
-                      (Prog.return (Exp.const (BitVec.ofNat 64 0)))
-                      Prog.skip)
-                    (Prog.dec "ck" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nc"), (Exp.const (BitVec.ofNat 64 0))]))
-                      (Prog.seq
-                        (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "ck") (Exp.const (BitVec.ofNat 64 3)))
-                          (Prog.seq
-                            (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 48))]) (Exp.var VarKind.local "nc"))
-                            (Prog.return (Exp.var VarKind.local "node")))
-                          Prog.skip)
-                        (Prog.seq
-                        (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "ck") (Exp.const (BitVec.ofNat 64 0)))
-                          (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 2))])
-                          Prog.skip)
-                        (Prog.decCall "cat" Shape.one "nibbles_concat" [(Exp.var VarKind.local "seg"), (Exp.var VarKind.local "sl"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nc"), (Exp.const (BitVec.ofNat 64 32))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nc"), (Exp.const (BitVec.ofNat 64 40))]))]
-                          (Prog.dec "cl" Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "sl"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nc"), (Exp.const (BitVec.ofNat 64 40))]))])
-                            (Prog.seq
-                              (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "ck") (Exp.const (BitVec.ofNat 64 2)))
-                                (Prog.call none "node_new_ext" [(Exp.var VarKind.local "cat"), (Exp.var VarKind.local "cl"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nc"), (Exp.const (BitVec.ofNat 64 48))]))])
-                                Prog.skip)
-                              (Prog.call none "node_new_leaf" [(Exp.var VarKind.local "cat"), (Exp.var VarKind.local "cl"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nc"), (Exp.const (BitVec.ofNat 64 48))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nc"), (Exp.const (BitVec.ofNat 64 56))]))])))))))))))))
-      returnShape := Shape.one }
-
-def guestFn__delete_from_branch : Decl (BitVec 64) :=
-  Decl.function
-    { name := "_delete_from_branch"
-      inline := false
-      exported := false
-      params := [("node", Shape.one), ("key", Shape.one), ("klen", Shape.one), ("level", Shape.one)]
+      params := [("node", Shape.one), ("seg", Shape.one), ("sl", Shape.one), ("nc", Shape.one)]
       body :=
         (Prog.seq
-          (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "level") (Exp.var VarKind.local "klen"))
+          (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "nc") (Exp.const (BitVec.ofNat 64 0)))
+            (Prog.return (Exp.const (BitVec.ofNat 64 0)))
+            Prog.skip)
+          (Prog.dec "ck" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nc"), (Exp.const (BitVec.ofNat 64 0))]))
             (Prog.seq
-              (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 168))])) (Exp.const (BitVec.ofNat 64 0)))
-                (Prog.return (Exp.var VarKind.local "node"))
+              (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "ck") (Exp.const (BitVec.ofNat 64 3)))
+                (Prog.seq
+                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 48))]) (Exp.var VarKind.local "nc"))
+                  (Prog.return (Exp.var VarKind.local "node")))
                 Prog.skip)
               (Prog.seq
-              (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 160))]) (Exp.const (BitVec.ofNat 64 0)))
-              (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 168))]) (Exp.const (BitVec.ofNat 64 0)))))
-            (Prog.dec "idx" Shape.one (Exp.loadByte (Exp.op BinOp.add [(Exp.var VarKind.local "key"), (Exp.var VarKind.local "level")]))
-              (Prog.decCall "nc" Shape.one "_mpt_delete_node" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32)), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "idx"), (Exp.const (BitVec.ofNat 64 8))])])), (Exp.var VarKind.local "key"), (Exp.var VarKind.local "klen"), (Exp.op BinOp.add [(Exp.var VarKind.local "level"), (Exp.const (BitVec.ofNat 64 1))])]
-                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32)), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "idx"), (Exp.const (BitVec.ofNat 64 8))])]) (Exp.var VarKind.local "nc")))))
-          (Prog.call none "_collapse_branch" [(Exp.var VarKind.local "node")]))
+              (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "ck") (Exp.const (BitVec.ofNat 64 0)))
+                (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 2))])
+                Prog.skip)
+              (Prog.decCall "cat" Shape.one "nibbles_concat" [(Exp.var VarKind.local "seg"), (Exp.var VarKind.local "sl"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nc"), (Exp.const (BitVec.ofNat 64 32))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nc"), (Exp.const (BitVec.ofNat 64 40))]))]
+                (Prog.dec "cl" Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "sl"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nc"), (Exp.const (BitVec.ofNat 64 40))]))])
+                  (Prog.seq
+                    (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "ck") (Exp.const (BitVec.ofNat 64 2)))
+                      (Prog.call none "node_new_ext" [(Exp.var VarKind.local "cat"), (Exp.var VarKind.local "cl"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nc"), (Exp.const (BitVec.ofNat 64 48))]))])
+                      Prog.skip)
+                    (Prog.call none "node_new_leaf" [(Exp.var VarKind.local "cat"), (Exp.var VarKind.local "cl"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nc"), (Exp.const (BitVec.ofNat 64 48))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nc"), (Exp.const (BitVec.ofNat 64 56))]))]))))))))
+      returnShape := Shape.one }
+
+def guestFn__mpt_delete_node_body : Decl (BitVec 64) :=
+  Decl.function
+    { name := "_mpt_delete_node_body"
+      inline := false
+      exported := false
+      params := [("node", Shape.one), ("key", Shape.one), ("klen", Shape.one), ("level", Shape.one)]
+      body :=
+        (Prog.dec "top" Shape.one (Exp.const (BitVec.ofNat 64 0))
+          (Prog.dec "res" Shape.one (Exp.const (BitVec.ofNat 64 0))
+            (Prog.dec "go" Shape.one (Exp.const (BitVec.ofNat 64 1))
+              (Prog.seq
+                (Prog.while (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "go") (Exp.const (BitVec.ofNat 64 0)))
+                  (Prog.seq
+                    (Prog.assign VarKind.local "go" (Exp.const (BitVec.ofNat 64 0)))
+                    (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "node") (Exp.const (BitVec.ofNat 64 0)))
+                      (Prog.assign VarKind.local "res" (Exp.const (BitVec.ofNat 64 0)))
+                      (Prog.dec "k" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 0))]))
+                        (Prog.seq
+                          (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 0)))
+                            (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 2))])
+                            Prog.skip)
+                          (Prog.seq
+                          (Prog.call (some (none, none)) "node_invalidate" [(Exp.var VarKind.local "node")])
+                          (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 1)))
+                            (Prog.seq
+                              (Prog.assign VarKind.local "res" (Exp.var VarKind.local "node"))
+                              (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 40))])) (Exp.op BinOp.sub [(Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")]))
+                                (Prog.decCall "eq" Shape.one "memeq" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32))])), (Exp.op BinOp.add [(Exp.var VarKind.local "key"), (Exp.var VarKind.local "level")]), (Exp.op BinOp.sub [(Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")])]
+                                  (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "eq") (Exp.const (BitVec.ofNat 64 0)))
+                                    (Prog.assign VarKind.local "res" (Exp.const (BitVec.ofNat 64 0)))
+                                    Prog.skip))
+                                Prog.skip))
+                            (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 2)))
+                              (Prog.dec "seg" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32))]))
+                                (Prog.dec "sl" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 40))]))
+                                  (Prog.decCall "pl" Shape.one "common_prefix_length" [(Exp.var VarKind.local "seg"), (Exp.var VarKind.local "sl"), (Exp.op BinOp.add [(Exp.var VarKind.local "key"), (Exp.var VarKind.local "level")]), (Exp.op BinOp.sub [(Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")])]
+                                    (Prog.ite (Exp.cmp Cmp.lower (Exp.var VarKind.local "pl") (Exp.var VarKind.local "sl"))
+                                      (Prog.assign VarKind.local "res" (Exp.var VarKind.local "node"))
+                                      (Prog.decCall "fr" Shape.one "scratch_alloc" [(Exp.const (BitVec.ofNat 64 40))]
+                                        (Prog.seq
+                                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "fr"), (Exp.const (BitVec.ofNat 64 0))]) (Exp.var VarKind.local "top"))
+                                          (Prog.seq
+                                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "fr"), (Exp.const (BitVec.ofNat 64 8))]) (Exp.var VarKind.local "node"))
+                                          (Prog.seq
+                                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "fr"), (Exp.const (BitVec.ofNat 64 16))]) (Exp.const (BitVec.ofNat 64 2)))
+                                          (Prog.seq
+                                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "fr"), (Exp.const (BitVec.ofNat 64 24))]) (Exp.var VarKind.local "seg"))
+                                          (Prog.seq
+                                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "fr"), (Exp.const (BitVec.ofNat 64 32))]) (Exp.var VarKind.local "sl"))
+                                          (Prog.seq
+                                          (Prog.assign VarKind.local "top" (Exp.var VarKind.local "fr"))
+                                          (Prog.seq
+                                          (Prog.assign VarKind.local "node" (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 48))])))
+                                          (Prog.seq
+                                          (Prog.assign VarKind.local "level" (Exp.op BinOp.add [(Exp.var VarKind.local "level"), (Exp.var VarKind.local "sl")]))
+                                          (Prog.assign VarKind.local "go" (Exp.const (BitVec.ofNat 64 1))))))))))))))))
+                              (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "level") (Exp.var VarKind.local "klen"))
+                                (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 168))])) (Exp.const (BitVec.ofNat 64 0)))
+                                  (Prog.assign VarKind.local "res" (Exp.var VarKind.local "node"))
+                                  (Prog.seq
+                                    (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 160))]) (Exp.const (BitVec.ofNat 64 0)))
+                                    (Prog.seq
+                                    (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 168))]) (Exp.const (BitVec.ofNat 64 0)))
+                                    (Prog.call (some ((some (VarKind.local, "res")), none)) "_collapse_branch" [(Exp.var VarKind.local "node")]))))
+                                (Prog.dec "idx" Shape.one (Exp.loadByte (Exp.op BinOp.add [(Exp.var VarKind.local "key"), (Exp.var VarKind.local "level")]))
+                                  (Prog.decCall "fr2" Shape.one "scratch_alloc" [(Exp.const (BitVec.ofNat 64 40))]
+                                    (Prog.seq
+                                      (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "fr2"), (Exp.const (BitVec.ofNat 64 0))]) (Exp.var VarKind.local "top"))
+                                      (Prog.seq
+                                      (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "fr2"), (Exp.const (BitVec.ofNat 64 8))]) (Exp.var VarKind.local "node"))
+                                      (Prog.seq
+                                      (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "fr2"), (Exp.const (BitVec.ofNat 64 16))]) (Exp.const (BitVec.ofNat 64 3)))
+                                      (Prog.seq
+                                      (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "fr2"), (Exp.const (BitVec.ofNat 64 32))]) (Exp.var VarKind.local "idx"))
+                                      (Prog.seq
+                                      (Prog.assign VarKind.local "top" (Exp.var VarKind.local "fr2"))
+                                      (Prog.seq
+                                      (Prog.assign VarKind.local "node" (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32)), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "idx"), (Exp.const (BitVec.ofNat 64 8))])])))
+                                      (Prog.seq
+                                      (Prog.assign VarKind.local "level" (Exp.op BinOp.add [(Exp.var VarKind.local "level"), (Exp.const (BitVec.ofNat 64 1))]))
+                                      (Prog.assign VarKind.local "go" (Exp.const (BitVec.ofNat 64 1)))))))))))))))))))))
+                (Prog.seq
+                (Prog.while (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "top") (Exp.const (BitVec.ofNat 64 0)))
+                  (Prog.dec "fnode" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 8))]))
+                    (Prog.seq
+                      (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 16))])) (Exp.const (BitVec.ofNat 64 2)))
+                        (Prog.call (some ((some (VarKind.local, "res")), none)) "_delete_ext_finish" [(Exp.var VarKind.local "fnode"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 24))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 32))])), (Exp.var VarKind.local "res")])
+                        (Prog.seq
+                          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "fnode"), (Exp.const (BitVec.ofNat 64 32)), (Exp.panOp PanOp.mul [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 32))])), (Exp.const (BitVec.ofNat 64 8))])]) (Exp.var VarKind.local "res"))
+                          (Prog.call (some ((some (VarKind.local, "res")), none)) "_collapse_branch" [(Exp.var VarKind.local "fnode")])))
+                      (Prog.assign VarKind.local "top" (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 0))]))))))
+                (Prog.return (Exp.var VarKind.local "res")))))))
       returnShape := Shape.one }
 
 def guestFn__mpt_delete_node : Decl (BitVec 64) :=
@@ -8068,33 +8333,17 @@ def guestFn__mpt_delete_node : Decl (BitVec 64) :=
       exported := false
       params := [("node", Shape.one), ("key", Shape.one), ("klen", Shape.one), ("level", Shape.one)]
       body :=
-        (Prog.seq
-          (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "node") (Exp.const (BitVec.ofNat 64 0)))
-            (Prog.return (Exp.const (BitVec.ofNat 64 0)))
-            Prog.skip)
-          (Prog.dec "k" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 0))]))
-            (Prog.seq
-              (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 0)))
-                (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 2))])
-                Prog.skip)
+        (Prog.decCall "mark" Shape.one "scratch_mark" []
+          (Prog.dec "e" Shape.one (Exp.const (BitVec.ofNat 64 0))
+            (Prog.dec "res" Shape.one (Exp.const (BitVec.ofNat 64 0))
               (Prog.seq
-              (Prog.call (some (none, none)) "node_invalidate" [(Exp.var VarKind.local "node")])
-              (Prog.seq
-              (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 1)))
+                (Prog.call (some ((some (VarKind.local, "res")), (some ("MptErr", "e",
+                    (Prog.seq
+                      (Prog.call (some (none, none)) "scratch_release" [(Exp.var VarKind.local "mark")])
+                      (Prog.raise "MptErr" (Exp.var VarKind.local "e"))))))) "_mpt_delete_node_body" [(Exp.var VarKind.local "node"), (Exp.var VarKind.local "key"), (Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")])
                 (Prog.seq
-                  (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 40))])) (Exp.op BinOp.sub [(Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")]))
-                    (Prog.decCall "eq" Shape.one "memeq" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32))])), (Exp.op BinOp.add [(Exp.var VarKind.local "key"), (Exp.var VarKind.local "level")]), (Exp.op BinOp.sub [(Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")])]
-                      (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "eq") (Exp.const (BitVec.ofNat 64 0)))
-                        (Prog.return (Exp.const (BitVec.ofNat 64 0)))
-                        Prog.skip))
-                    Prog.skip)
-                  (Prog.return (Exp.var VarKind.local "node")))
-                Prog.skip)
-              (Prog.seq
-              (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 2)))
-                (Prog.call none "_delete_from_extension" [(Exp.var VarKind.local "node"), (Exp.var VarKind.local "key"), (Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")])
-                Prog.skip)
-              (Prog.call none "_delete_from_branch" [(Exp.var VarKind.local "node"), (Exp.var VarKind.local "key"), (Exp.var VarKind.local "klen"), (Exp.var VarKind.local "level")])))))))
+                (Prog.call (some (none, none)) "scratch_release" [(Exp.var VarKind.local "mark")])
+                (Prog.return (Exp.var VarKind.local "res")))))))
       returnShape := Shape.one }
 
 def guestFn_mpt_set : Decl (BitVec 64) :=
@@ -8115,6 +8364,190 @@ def guestFn_mpt_set : Decl (BitVec 64) :=
               (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))
       returnShape := Shape.one }
 
+def guestFn__node_rlp_begin : Decl (BitVec 64) :=
+  Decl.function
+    { name := "_node_rlp_begin"
+      inline := false
+      exported := false
+      params := [("fr", Shape.one), ("node", Shape.one)]
+      body :=
+        (Prog.dec "k" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 0))]))
+          (Prog.dec "payload" Shape.one (Exp.const (BitVec.ofNat 64 0))
+            (Prog.dec "cbuf" Shape.one (Exp.const (BitVec.ofNat 64 0))
+              (Prog.dec "clen" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                (Prog.seq
+                  (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 3)))
+                    (Prog.dec "nlen" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 40))]))
+                      (Prog.seq
+                        (Prog.call (some ((some (VarKind.local, "cbuf")), none)) "alloc" [(Exp.op BinOp.add [(Exp.shift Shift.lsr (Exp.var VarKind.local "nlen") (Exp.const (BitVec.ofNat 64 1))), (Exp.const (BitVec.ofNat 64 2))])])
+                        (Prog.dec "isl" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                          (Prog.seq
+                            (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 1)))
+                              (Prog.assign VarKind.local "isl" (Exp.const (BitVec.ofNat 64 1)))
+                              Prog.skip)
+                            (Prog.seq
+                            (Prog.call (some ((some (VarKind.local, "clen")), none)) "nibble_list_to_compact" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32))])), (Exp.var VarKind.local "nlen"), (Exp.var VarKind.local "isl"), (Exp.var VarKind.local "cbuf")])
+                            (Prog.decCall "el" Shape.one "rlp_bytes_encoded_len" [(Exp.loadByte (Exp.var VarKind.local "cbuf")), (Exp.var VarKind.local "clen")]
+                              (Prog.seq
+                                (Prog.assign VarKind.local "payload" (Exp.var VarKind.local "el"))
+                                (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 1)))
+                                  (Prog.decCall "vl" Shape.one "rlp_value_encoded_len" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 48))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 56))]))]
+                                    (Prog.assign VarKind.local "payload" (Exp.op BinOp.add [(Exp.var VarKind.local "payload"), (Exp.var VarKind.local "vl")])))
+                                  Prog.skip))))))))
+                    Prog.skip)
+                  (Prog.seq
+                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "fr"), (Exp.const (BitVec.ofNat 64 24))]) (Exp.var VarKind.local "cbuf"))
+                  (Prog.seq
+                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "fr"), (Exp.const (BitVec.ofNat 64 32))]) (Exp.var VarKind.local "clen"))
+                  (Prog.seq
+                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "fr"), (Exp.const (BitVec.ofNat 64 40))]) (Exp.var VarKind.local "payload"))
+                  (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))))))
+      returnShape := Shape.one }
+
+def guestFn__node_rlp_finish : Decl (BitVec 64) :=
+  Decl.function
+    { name := "_node_rlp_finish"
+      inline := false
+      exported := false
+      params := [("fr", Shape.one), ("node", Shape.one)]
+      body :=
+        (Prog.dec "k" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 0))]))
+          (Prog.dec "payload" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "fr"), (Exp.const (BitVec.ofNat 64 40))]))
+            (Prog.dec "cbuf" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "fr"), (Exp.const (BitVec.ofNat 64 24))]))
+              (Prog.dec "clen" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "fr"), (Exp.const (BitVec.ofNat 64 32))]))
+                (Prog.seq
+                  (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 2)))
+                    (Prog.decCall "rl" Shape.one "node_ref_len" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 48))]))]
+                      (Prog.assign VarKind.local "payload" (Exp.op BinOp.add [(Exp.var VarKind.local "payload"), (Exp.var VarKind.local "rl")])))
+                    Prog.skip)
+                  (Prog.seq
+                  (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 3)))
+                    (Prog.dec "i" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                      (Prog.seq
+                        (Prog.while (Exp.cmp Cmp.less (Exp.var VarKind.local "i") (Exp.const (BitVec.ofNat 64 16)))
+                          (Prog.decCall "rl2" Shape.one "node_ref_len" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32)), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 8))])]))]
+                            (Prog.seq
+                              (Prog.assign VarKind.local "payload" (Exp.op BinOp.add [(Exp.var VarKind.local "payload"), (Exp.var VarKind.local "rl2")]))
+                              (Prog.assign VarKind.local "i" (Exp.op BinOp.add [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 1))])))))
+                        (Prog.decCall "vl2" Shape.one "rlp_value_encoded_len" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 160))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 168))]))]
+                          (Prog.assign VarKind.local "payload" (Exp.op BinOp.add [(Exp.var VarKind.local "payload"), (Exp.var VarKind.local "vl2")])))))
+                    Prog.skip)
+                  (Prog.decCall "hl" Shape.one "rlp_list_header_len" [(Exp.var VarKind.local "payload")]
+                    (Prog.decCall "buf" Shape.one "alloc" [(Exp.op BinOp.add [(Exp.var VarKind.local "hl"), (Exp.var VarKind.local "payload")])]
+                      (Prog.seq
+                        (Prog.call (some (none, none)) "rlp_encode_list_header" [(Exp.var VarKind.local "buf"), (Exp.var VarKind.local "payload")])
+                        (Prog.dec "off" Shape.one (Exp.var VarKind.local "hl")
+                          (Prog.seq
+                            (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 3)))
+                              (Prog.decCall "w" Shape.one "rlp_encode_bytes" [(Exp.op BinOp.add [(Exp.var VarKind.local "buf"), (Exp.var VarKind.local "off")]), (Exp.var VarKind.local "cbuf"), (Exp.var VarKind.local "clen")]
+                                (Prog.seq
+                                  (Prog.assign VarKind.local "off" (Exp.op BinOp.add [(Exp.var VarKind.local "off"), (Exp.var VarKind.local "w")]))
+                                  (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 1)))
+                                    (Prog.decCall "w2" Shape.one "rlp_encode_bytes" [(Exp.op BinOp.add [(Exp.var VarKind.local "buf"), (Exp.var VarKind.local "off")]), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 48))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 56))]))]
+                                      (Prog.assign VarKind.local "off" (Exp.op BinOp.add [(Exp.var VarKind.local "off"), (Exp.var VarKind.local "w2")])))
+                                    (Prog.decCall "w3" Shape.one "node_write_ref" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 48))])), (Exp.op BinOp.add [(Exp.var VarKind.local "buf"), (Exp.var VarKind.local "off")])]
+                                      (Prog.assign VarKind.local "off" (Exp.op BinOp.add [(Exp.var VarKind.local "off"), (Exp.var VarKind.local "w3")]))))))
+                              (Prog.dec "j" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                                (Prog.seq
+                                  (Prog.while (Exp.cmp Cmp.less (Exp.var VarKind.local "j") (Exp.const (BitVec.ofNat 64 16)))
+                                    (Prog.decCall "w4" Shape.one "node_write_ref" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32)), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "j"), (Exp.const (BitVec.ofNat 64 8))])])), (Exp.op BinOp.add [(Exp.var VarKind.local "buf"), (Exp.var VarKind.local "off")])]
+                                      (Prog.seq
+                                        (Prog.assign VarKind.local "off" (Exp.op BinOp.add [(Exp.var VarKind.local "off"), (Exp.var VarKind.local "w4")]))
+                                        (Prog.assign VarKind.local "j" (Exp.op BinOp.add [(Exp.var VarKind.local "j"), (Exp.const (BitVec.ofNat 64 1))])))))
+                                  (Prog.decCall "w5" Shape.one "rlp_encode_bytes" [(Exp.op BinOp.add [(Exp.var VarKind.local "buf"), (Exp.var VarKind.local "off")]), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 160))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 168))]))]
+                                    (Prog.assign VarKind.local "off" (Exp.op BinOp.add [(Exp.var VarKind.local "off"), (Exp.var VarKind.local "w5")]))))))
+                            (Prog.seq
+                            (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 8))]) (Exp.var VarKind.local "buf"))
+                            (Prog.seq
+                            (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 16))]) (Exp.var VarKind.local "off"))
+                            (Prog.return (Exp.const (BitVec.ofNat 64 0))))))))))))))))
+      returnShape := Shape.one }
+
+def guestFn__node_needs_rlp : Decl (BitVec 64) :=
+  Decl.function
+    { name := "_node_needs_rlp"
+      inline := false
+      exported := false
+      params := [("child", Shape.one)]
+      body :=
+        (Prog.seq
+          (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "child") (Exp.const (BitVec.ofNat 64 0)))
+            (Prog.return (Exp.const (BitVec.ofNat 64 0)))
+            Prog.skip)
+          (Prog.seq
+          (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 0))])) (Exp.const (BitVec.ofNat 64 0)))
+            (Prog.return (Exp.const (BitVec.ofNat 64 0)))
+            Prog.skip)
+          (Prog.seq
+          (Prog.ite (Exp.cmp Cmp.notEqual (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 8))])) (Exp.const (BitVec.ofNat 64 0)))
+            (Prog.return (Exp.const (BitVec.ofNat 64 0)))
+            Prog.skip)
+          (Prog.return (Exp.const (BitVec.ofNat 64 1))))))
+      returnShape := Shape.one }
+
+def guestFn__node_rlp_fill : Decl (BitVec 64) :=
+  Decl.function
+    { name := "_node_rlp_fill"
+      inline := false
+      exported := false
+      params := [("node", Shape.one)]
+      body :=
+        (Prog.decCall "mark" Shape.one "scratch_mark" []
+          (Prog.decCall "fr" Shape.one "scratch_alloc" [(Exp.const (BitVec.ofNat 64 48))]
+            (Prog.seq
+              (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "fr"), (Exp.const (BitVec.ofNat 64 0))]) (Exp.const (BitVec.ofNat 64 0)))
+              (Prog.seq
+              (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "fr"), (Exp.const (BitVec.ofNat 64 8))]) (Exp.var VarKind.local "node"))
+              (Prog.seq
+              (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "fr"), (Exp.const (BitVec.ofNat 64 16))]) (Exp.const (BitVec.ofNat 64 0)))
+              (Prog.seq
+              (Prog.call (some (none, none)) "_node_rlp_begin" [(Exp.var VarKind.local "fr"), (Exp.var VarKind.local "node")])
+              (Prog.dec "top" Shape.one (Exp.var VarKind.local "fr")
+                (Prog.seq
+                  (Prog.while (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "top") (Exp.const (BitVec.ofNat 64 0)))
+                    (Prog.dec "nd" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 8))]))
+                      (Prog.dec "k" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nd"), (Exp.const (BitVec.ofNat 64 0))]))
+                        (Prog.dec "child" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                          (Prog.dec "found" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                            (Prog.seq
+                              (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 2)))
+                                (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 16))])) (Exp.const (BitVec.ofNat 64 0)))
+                                  (Prog.seq
+                                    (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 16))]) (Exp.const (BitVec.ofNat 64 1)))
+                                    (Prog.seq
+                                    (Prog.assign VarKind.local "child" (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nd"), (Exp.const (BitVec.ofNat 64 48))])))
+                                    (Prog.call (some ((some (VarKind.local, "found")), none)) "_node_needs_rlp" [(Exp.var VarKind.local "child")])))
+                                  Prog.skip)
+                                (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 3)))
+                                  (Prog.dec "i" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 16))]))
+                                    (Prog.seq
+                                      (Prog.while (Exp.op BinOp.and [(Exp.cmp Cmp.notEqual (Exp.const (BitVec.ofNat 64 0)) (Exp.cmp Cmp.less (Exp.var VarKind.local "i") (Exp.const (BitVec.ofNat 64 16)))), (Exp.cmp Cmp.notEqual (Exp.const (BitVec.ofNat 64 0)) (Exp.cmp Cmp.equal (Exp.var VarKind.local "found") (Exp.const (BitVec.ofNat 64 0))))])
+                                        (Prog.seq
+                                          (Prog.assign VarKind.local "child" (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "nd"), (Exp.const (BitVec.ofNat 64 32)), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 8))])])))
+                                          (Prog.seq
+                                          (Prog.assign VarKind.local "i" (Exp.op BinOp.add [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 1))]))
+                                          (Prog.call (some ((some (VarKind.local, "found")), none)) "_node_needs_rlp" [(Exp.var VarKind.local "child")]))))
+                                      (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 16))]) (Exp.var VarKind.local "i"))))
+                                  Prog.skip))
+                              (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "found") (Exp.const (BitVec.ofNat 64 0)))
+                                (Prog.decCall "cf" Shape.one "scratch_alloc" [(Exp.const (BitVec.ofNat 64 48))]
+                                  (Prog.seq
+                                    (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "cf"), (Exp.const (BitVec.ofNat 64 0))]) (Exp.var VarKind.local "top"))
+                                    (Prog.seq
+                                    (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "cf"), (Exp.const (BitVec.ofNat 64 8))]) (Exp.var VarKind.local "child"))
+                                    (Prog.seq
+                                    (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "cf"), (Exp.const (BitVec.ofNat 64 16))]) (Exp.const (BitVec.ofNat 64 0)))
+                                    (Prog.seq
+                                    (Prog.call (some (none, none)) "_node_rlp_begin" [(Exp.var VarKind.local "cf"), (Exp.var VarKind.local "child")])
+                                    (Prog.assign VarKind.local "top" (Exp.var VarKind.local "cf")))))))
+                                (Prog.seq
+                                  (Prog.call (some (none, none)) "_node_rlp_finish" [(Exp.var VarKind.local "top"), (Exp.var VarKind.local "nd")])
+                                  (Prog.assign VarKind.local "top" (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "top"), (Exp.const (BitVec.ofNat 64 0))])))))))))))
+                  (Prog.seq
+                  (Prog.call (some (none, none)) "scratch_release" [(Exp.var VarKind.local "mark")])
+                  (Prog.return (Exp.const (BitVec.ofNat 64 0))))))))))))
+      returnShape := Shape.one }
+
 def guestFn_node_rlp : Decl (BitVec 64) :=
   Decl.function
     { name := "node_rlp"
@@ -8127,72 +8560,13 @@ def guestFn_node_rlp : Decl (BitVec 64) :=
             (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "cached") (Exp.const (BitVec.ofNat 64 0)))
               (Prog.return (Exp.rStruct [(Exp.var VarKind.local "cached"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 16))]))]))
               Prog.skip)
-            (Prog.dec "k" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 0))]))
-              (Prog.seq
-                (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 0)))
-                  (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 2))])
-                  Prog.skip)
-                (Prog.dec "payload" Shape.one (Exp.const (BitVec.ofNat 64 0))
-                  (Prog.dec "cbuf" Shape.one (Exp.const (BitVec.ofNat 64 0))
-                    (Prog.dec "clen" Shape.one (Exp.const (BitVec.ofNat 64 0))
-                      (Prog.seq
-                        (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 3)))
-                          (Prog.dec "nlen" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 40))]))
-                            (Prog.seq
-                              (Prog.call (some ((some (VarKind.local, "cbuf")), none)) "alloc" [(Exp.op BinOp.add [(Exp.shift Shift.lsr (Exp.var VarKind.local "nlen") (Exp.const (BitVec.ofNat 64 1))), (Exp.const (BitVec.ofNat 64 2))])])
-                              (Prog.dec "isl" Shape.one (Exp.const (BitVec.ofNat 64 0))
-                                (Prog.seq
-                                  (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 1)))
-                                    (Prog.assign VarKind.local "isl" (Exp.const (BitVec.ofNat 64 1)))
-                                    Prog.skip)
-                                  (Prog.seq
-                                  (Prog.call (some ((some (VarKind.local, "clen")), none)) "nibble_list_to_compact" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32))])), (Exp.var VarKind.local "nlen"), (Exp.var VarKind.local "isl"), (Exp.var VarKind.local "cbuf")])
-                                  (Prog.decCall "el" Shape.one "rlp_bytes_encoded_len" [(Exp.loadByte (Exp.var VarKind.local "cbuf")), (Exp.var VarKind.local "clen")]
-                                    (Prog.seq
-                                      (Prog.assign VarKind.local "payload" (Exp.var VarKind.local "el"))
-                                      (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 1)))
-                                        (Prog.decCall "vl" Shape.one "rlp_value_encoded_len" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 48))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 56))]))]
-                                          (Prog.assign VarKind.local "payload" (Exp.op BinOp.add [(Exp.var VarKind.local "payload"), (Exp.var VarKind.local "vl")])))
-                                        (Prog.decCall "rl" Shape.one "node_ref_len" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 48))]))]
-                                          (Prog.assign VarKind.local "payload" (Exp.op BinOp.add [(Exp.var VarKind.local "payload"), (Exp.var VarKind.local "rl")])))))))))))
-                          (Prog.dec "i" Shape.one (Exp.const (BitVec.ofNat 64 0))
-                            (Prog.seq
-                              (Prog.while (Exp.cmp Cmp.less (Exp.var VarKind.local "i") (Exp.const (BitVec.ofNat 64 16)))
-                                (Prog.decCall "rl2" Shape.one "node_ref_len" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32)), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 8))])]))]
-                                  (Prog.seq
-                                    (Prog.assign VarKind.local "payload" (Exp.op BinOp.add [(Exp.var VarKind.local "payload"), (Exp.var VarKind.local "rl2")]))
-                                    (Prog.assign VarKind.local "i" (Exp.op BinOp.add [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 1))])))))
-                              (Prog.decCall "vl2" Shape.one "rlp_value_encoded_len" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 160))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 168))]))]
-                                (Prog.assign VarKind.local "payload" (Exp.op BinOp.add [(Exp.var VarKind.local "payload"), (Exp.var VarKind.local "vl2")]))))))
-                        (Prog.decCall "hl" Shape.one "rlp_list_header_len" [(Exp.var VarKind.local "payload")]
-                          (Prog.decCall "buf" Shape.one "alloc" [(Exp.op BinOp.add [(Exp.var VarKind.local "hl"), (Exp.var VarKind.local "payload")])]
-                            (Prog.seq
-                              (Prog.call (some (none, none)) "rlp_encode_list_header" [(Exp.var VarKind.local "buf"), (Exp.var VarKind.local "payload")])
-                              (Prog.dec "off" Shape.one (Exp.var VarKind.local "hl")
-                                (Prog.seq
-                                  (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 3)))
-                                    (Prog.decCall "w" Shape.one "rlp_encode_bytes" [(Exp.op BinOp.add [(Exp.var VarKind.local "buf"), (Exp.var VarKind.local "off")]), (Exp.var VarKind.local "cbuf"), (Exp.var VarKind.local "clen")]
-                                      (Prog.seq
-                                        (Prog.assign VarKind.local "off" (Exp.op BinOp.add [(Exp.var VarKind.local "off"), (Exp.var VarKind.local "w")]))
-                                        (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "k") (Exp.const (BitVec.ofNat 64 1)))
-                                          (Prog.decCall "w2" Shape.one "rlp_encode_bytes" [(Exp.op BinOp.add [(Exp.var VarKind.local "buf"), (Exp.var VarKind.local "off")]), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 48))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 56))]))]
-                                            (Prog.assign VarKind.local "off" (Exp.op BinOp.add [(Exp.var VarKind.local "off"), (Exp.var VarKind.local "w2")])))
-                                          (Prog.decCall "w3" Shape.one "node_write_ref" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 48))])), (Exp.op BinOp.add [(Exp.var VarKind.local "buf"), (Exp.var VarKind.local "off")])]
-                                            (Prog.assign VarKind.local "off" (Exp.op BinOp.add [(Exp.var VarKind.local "off"), (Exp.var VarKind.local "w3")]))))))
-                                    (Prog.dec "j" Shape.one (Exp.const (BitVec.ofNat 64 0))
-                                      (Prog.seq
-                                        (Prog.while (Exp.cmp Cmp.less (Exp.var VarKind.local "j") (Exp.const (BitVec.ofNat 64 16)))
-                                          (Prog.decCall "w4" Shape.one "node_write_ref" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 32)), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "j"), (Exp.const (BitVec.ofNat 64 8))])])), (Exp.op BinOp.add [(Exp.var VarKind.local "buf"), (Exp.var VarKind.local "off")])]
-                                            (Prog.seq
-                                              (Prog.assign VarKind.local "off" (Exp.op BinOp.add [(Exp.var VarKind.local "off"), (Exp.var VarKind.local "w4")]))
-                                              (Prog.assign VarKind.local "j" (Exp.op BinOp.add [(Exp.var VarKind.local "j"), (Exp.const (BitVec.ofNat 64 1))])))))
-                                        (Prog.decCall "w5" Shape.one "rlp_encode_bytes" [(Exp.op BinOp.add [(Exp.var VarKind.local "buf"), (Exp.var VarKind.local "off")]), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 160))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 168))]))]
-                                          (Prog.assign VarKind.local "off" (Exp.op BinOp.add [(Exp.var VarKind.local "off"), (Exp.var VarKind.local "w5")]))))))
-                                  (Prog.seq
-                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 8))]) (Exp.var VarKind.local "buf"))
-                                  (Prog.seq
-                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 16))]) (Exp.var VarKind.local "off"))
-                                  (Prog.return (Exp.rStruct [(Exp.var VarKind.local "buf"), (Exp.var VarKind.local "off")])))))))))))))))))
+            (Prog.seq
+            (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 0))])) (Exp.const (BitVec.ofNat 64 0)))
+              (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 2))])
+              Prog.skip)
+            (Prog.seq
+            (Prog.call (some (none, none)) "_node_rlp_fill" [(Exp.var VarKind.local "node")])
+            (Prog.return (Exp.rStruct [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 8))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 16))]))]))))))
       returnShape := (Shape.comb [Shape.one, Shape.one]) }
 
 def guestFn_rlp_value_encoded_len : Decl (BitVec 64) :=
@@ -8225,12 +8599,40 @@ def guestFn_node_ref_len : Decl (BitVec 64) :=
           (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 0))])) (Exp.const (BitVec.ofNat 64 0)))
             (Prog.return (Exp.const (BitVec.ofNat 64 33)))
             Prog.skip)
-          (Prog.decCall "r" (Shape.comb [Shape.one, Shape.one]) "node_rlp" [(Exp.var VarKind.local "child")]
+          (Prog.seq
+          (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 8))])) (Exp.const (BitVec.ofNat 64 0)))
+            (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 13))])
+            Prog.skip)
+          (Prog.dec "rl" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 16))]))
             (Prog.seq
-              (Prog.ite (Exp.cmp Cmp.lower (Exp.rField 1 (Exp.var VarKind.local "r")) (Exp.const (BitVec.ofNat 64 32)))
-                (Prog.return (Exp.rField 1 (Exp.var VarKind.local "r")))
+              (Prog.ite (Exp.cmp Cmp.lower (Exp.var VarKind.local "rl") (Exp.const (BitVec.ofNat 64 32)))
+                (Prog.return (Exp.var VarKind.local "rl"))
                 Prog.skip)
-              (Prog.return (Exp.const (BitVec.ofNat 64 33)))))))
+              (Prog.return (Exp.const (BitVec.ofNat 64 33))))))))
+      returnShape := Shape.one }
+
+def guestFn_node_hash_cached : Decl (BitVec 64) :=
+  Decl.function
+    { name := "node_hash_cached"
+      inline := false
+      exported := false
+      params := [("node", Shape.one)]
+      body :=
+        (Prog.dec "cached" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 24))]))
+          (Prog.seq
+            (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "cached") (Exp.const (BitVec.ofNat 64 0)))
+              (Prog.return (Exp.var VarKind.local "cached"))
+              Prog.skip)
+            (Prog.seq
+            (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 8))])) (Exp.const (BitVec.ofNat 64 0)))
+              (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 13))])
+              Prog.skip)
+            (Prog.decCall "h" Shape.one "alloc" [(Exp.const (BitVec.ofNat 64 32))]
+              (Prog.seq
+                (Prog.call (some (none, none)) "keccak256" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 8))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 16))])), (Exp.var VarKind.local "h")])
+                (Prog.seq
+                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "node"), (Exp.const (BitVec.ofNat 64 24))]) (Exp.var VarKind.local "h"))
+                (Prog.return (Exp.var VarKind.local "h"))))))))
       returnShape := Shape.one }
 
 def guestFn_node_write_ref : Decl (BitVec 64) :=
@@ -8254,19 +8656,24 @@ def guestFn_node_write_ref : Decl (BitVec 64) :=
               (Prog.call (some (none, none)) "memcpy" [(Exp.op BinOp.add [(Exp.var VarKind.local "dst"), (Exp.const (BitVec.ofNat 64 1))]), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 24))])), (Exp.const (BitVec.ofNat 64 32))])
               (Prog.return (Exp.const (BitVec.ofNat 64 33)))))
             Prog.skip)
-          (Prog.decCall "r" (Shape.comb [Shape.one, Shape.one]) "node_rlp" [(Exp.var VarKind.local "child")]
-            (Prog.seq
-              (Prog.ite (Exp.cmp Cmp.lower (Exp.rField 1 (Exp.var VarKind.local "r")) (Exp.const (BitVec.ofNat 64 32)))
-                (Prog.seq
-                  (Prog.call (some (none, none)) "memcpy" [(Exp.var VarKind.local "dst"), (Exp.rField 0 (Exp.var VarKind.local "r")), (Exp.rField 1 (Exp.var VarKind.local "r"))])
-                  (Prog.return (Exp.rField 1 (Exp.var VarKind.local "r"))))
-                Prog.skip)
-              (Prog.decCall "h" Shape.one "node_hash" [(Exp.var VarKind.local "child")]
-                (Prog.seq
-                  (Prog.storeByte (Exp.var VarKind.local "dst") (Exp.const (BitVec.ofNat 64 160)))
+          (Prog.seq
+          (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 8))])) (Exp.const (BitVec.ofNat 64 0)))
+            (Prog.call (some (none, none)) "mpt_fail" [(Exp.const (BitVec.ofNat 64 13))])
+            Prog.skip)
+          (Prog.dec "rp" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 8))]))
+            (Prog.dec "rl" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 16))]))
+              (Prog.seq
+                (Prog.ite (Exp.cmp Cmp.lower (Exp.var VarKind.local "rl") (Exp.const (BitVec.ofNat 64 32)))
                   (Prog.seq
-                  (Prog.call (some (none, none)) "memcpy" [(Exp.op BinOp.add [(Exp.var VarKind.local "dst"), (Exp.const (BitVec.ofNat 64 1))]), (Exp.var VarKind.local "h"), (Exp.const (BitVec.ofNat 64 32))])
-                  (Prog.return (Exp.const (BitVec.ofNat 64 33))))))))))
+                    (Prog.call (some (none, none)) "memcpy" [(Exp.var VarKind.local "dst"), (Exp.var VarKind.local "rp"), (Exp.var VarKind.local "rl")])
+                    (Prog.return (Exp.var VarKind.local "rl")))
+                  Prog.skip)
+                (Prog.decCall "h" Shape.one "node_hash_cached" [(Exp.var VarKind.local "child")]
+                  (Prog.seq
+                    (Prog.storeByte (Exp.var VarKind.local "dst") (Exp.const (BitVec.ofNat 64 160)))
+                    (Prog.seq
+                    (Prog.call (some (none, none)) "memcpy" [(Exp.op BinOp.add [(Exp.var VarKind.local "dst"), (Exp.const (BitVec.ofNat 64 1))]), (Exp.var VarKind.local "h"), (Exp.const (BitVec.ofNat 64 32))])
+                    (Prog.return (Exp.const (BitVec.ofNat 64 33))))))))))))
       returnShape := Shape.one }
 
 def guestFn_node_hash : Decl (BitVec 64) :=
@@ -14223,6 +14630,9 @@ def guestFn_op_slotnum : Decl (BitVec 64) :=
               (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))
       returnShape := Shape.one }
 
+def guestGlobal_cur_cont : Decl (BitVec 64) :=
+  Decl.decl Shape.one "cur_cont" (Exp.const (BitVec.ofNat 64 0))
+
 def guestGlobal_transfer_topic : Decl (BitVec 64) :=
   Decl.decl Shape.one "transfer_topic" (Exp.const (BitVec.ofNat 64 0))
 
@@ -15325,27 +15735,58 @@ def guestFn_op_dispatch : Decl (BitVec 64) :=
           (Prog.return (Exp.const (BitVec.ofNat 64 0))))))))))))))))))))
       returnShape := Shape.one }
 
-def guestFn_execute_loop : Decl (BitVec 64) :=
+def guestFn_frame_open : Decl (BitVec 64) :=
   Decl.function
-    { name := "execute_loop"
+    { name := "frame_open"
       inline := false
       exported := false
-      params := []
+      params := [("msg", Shape.one), ("kind", Shape.one)]
       body :=
-        (Prog.seq
-          (Prog.while (Exp.cmp Cmp.notEqual (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 104))])) (Exp.const (BitVec.ofNat 64 0)))
-            (Prog.dec "pc" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 0))]))
+        (Prog.dec "parent" Shape.one (Exp.var VarKind.global "ev")
+          (Prog.decCall "child" Shape.one "frame_new" [(Exp.var VarKind.local "msg")]
+            (Prog.decCall "rec" Shape.one "scratch_alloc" [(Exp.const (BitVec.ofNat 64 104))]
               (Prog.seq
-                (Prog.ite (Exp.cmp Cmp.notLower (Exp.var VarKind.local "pc") (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 56))])))
-                  Prog.break
-                  Prog.skip)
-                (Prog.call (some (none, none)) "op_dispatch" [(Exp.loadByte (Exp.op BinOp.add [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 48))])), (Exp.var VarKind.local "pc")]))]))))
-          (Prog.return (Exp.const (BitVec.ofNat 64 0))))
+                (Prog.call (some (none, none)) "memzero" [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 104))])
+                (Prog.seq
+                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 0))]) (Exp.var VarKind.local "parent"))
+                (Prog.seq
+                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 8))]) (Exp.var VarKind.global "cur_cont"))
+                (Prog.seq
+                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 16))]) (Exp.var VarKind.local "kind"))
+                (Prog.seq
+                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 40))]) (Exp.var VarKind.local "msg"))
+                (Prog.seq
+                (Prog.assign VarKind.global "ev" (Exp.var VarKind.local "child"))
+                (Prog.seq
+                (Prog.assign VarKind.global "cur_cont" (Exp.var VarKind.local "rec"))
+                (Prog.return (Exp.var VarKind.local "child"))))))))))))
       returnShape := Shape.one }
 
-def guestFn_execute_body : Decl (BitVec 64) :=
+def guestFn_frame_exception : Decl (BitVec 64) :=
   Decl.function
-    { name := "execute_body"
+    { name := "frame_exception"
+      inline := false
+      exported := false
+      params := [("err", Shape.one)]
+      body :=
+        (Prog.seq
+          (Prog.call (some (none, none)) "refill_frame_state_gas" [])
+          (Prog.seq
+          (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "err") (Exp.const (BitVec.ofNat 64 1)))
+            (Prog.seq
+              (Prog.call (some (none, none)) "frame_halt" [(Exp.var VarKind.local "err")])
+              (Prog.seq
+              (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 120))]) (Exp.var VarKind.global "evm_empty"))
+              (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 128))]) (Exp.const (BitVec.ofNat 64 0)))))
+            (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 160))]) (Exp.var VarKind.local "err")))
+          (Prog.seq
+          (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "cur_cont"), (Exp.const (BitVec.ofNat 64 32))]) (Exp.const (BitVec.ofNat 64 1)))
+          (Prog.return (Exp.const (BitVec.ofNat 64 0))))))
+      returnShape := Shape.one }
+
+def guestFn_frame_prologue : Decl (BitVec 64) :=
+  Decl.function
+    { name := "frame_prologue"
       inline := false
       exported := false
       params := []
@@ -15375,16 +15816,225 @@ def guestFn_execute_body : Decl (BitVec 64) :=
                           (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 168))])) (Exp.const (BitVec.ofNat 64 0)))
                             (Prog.call (some (none, none)) "run_precompile" [(Exp.var VarKind.local "pi")])
                             Prog.skip)
-                          (Prog.return (Exp.const (BitVec.ofNat 64 0))))
+                          (Prog.return (Exp.const (BitVec.ofNat 64 1))))
                         Prog.skip))
                     Prog.skip)
                   (Prog.seq
                   Prog.skip
+                  (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))))
+      returnShape := Shape.one }
+
+def guestFn_frame_start : Decl (BitVec 64) :=
+  Decl.function
+    { name := "frame_start"
+      inline := false
+      exported := false
+      params := []
+      body :=
+        (Prog.dec "err" Shape.one (Exp.const (BitVec.ofNat 64 0))
+          (Prog.dec "done" Shape.one (Exp.const (BitVec.ofNat 64 0))
+            (Prog.seq
+              (Prog.call (some ((some (VarKind.local, "done")), (some ("EvmErr", "err",
+                  (Prog.call (some (none, none)) "frame_exception" [(Exp.var VarKind.local "err")]))))) "frame_prologue" [])
+              (Prog.seq
+              (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "done") (Exp.const (BitVec.ofNat 64 0)))
+                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "cur_cont"), (Exp.const (BitVec.ofNat 64 32))]) (Exp.const (BitVec.ofNat 64 1)))
+                Prog.skip)
+              (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))
+      returnShape := Shape.one }
+
+def guestFn_frame_epilogue : Decl (BitVec 64) :=
+  Decl.function
+    { name := "frame_epilogue"
+      inline := false
+      exported := false
+      params := []
+      body :=
+        (Prog.seq
+          (Prog.ite (Exp.cmp Cmp.notEqual (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 160))])) (Exp.const (BitVec.ofNat 64 0)))
+            (Prog.call (some (none, none)) "state_restore" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "cur_cont"), (Exp.const (BitVec.ofNat 64 24))]))])
+            Prog.skip)
+          (Prog.return (Exp.const (BitVec.ofNat 64 0))))
+      returnShape := Shape.one }
+
+def guestFn_finish_child : Decl (BitVec 64) :=
+  Decl.function
+    { name := "finish_child"
+      inline := false
+      exported := false
+      params := []
+      body :=
+        (Prog.dec "rec" Shape.one (Exp.var VarKind.global "cur_cont")
+          (Prog.dec "child" Shape.one (Exp.var VarKind.global "ev")
+            (Prog.dec "parent" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 0))]))
+              (Prog.dec "kind" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 16))]))
+                (Prog.dec "msg" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 40))]))
+                  (Prog.dec "new_account_charged" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 64))]))
+                    (Prog.dec "child_mark" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 48))]))
+                      (Prog.dec "child_mem_mark" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 56))]))
+                        (Prog.dec "out_start" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 72))]))
+                          (Prog.dec "out_size" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 80))]))
+                            (Prog.dec "contract_address" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 88))]))
+                              (Prog.seq
+                                (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "kind") (Exp.const (BitVec.ofNat 64 2)))
+                                  (Prog.dec "csnap" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 96))]))
+                                    (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 160))])) (Exp.const (BitVec.ofNat 64 0)))
+                                      (Prog.dec "err" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                                        (Prog.call (some (none, (some ("EvmErr", "err",
+                                            (Prog.seq
+                                              (Prog.call (some (none, none)) "state_restore" [(Exp.var VarKind.local "csnap")])
+                                              (Prog.seq
+                                              (Prog.call (some (none, none)) "refill_frame_state_gas" [])
+                                              (Prog.seq
+                                              (Prog.call (some (none, none)) "frame_halt" [(Exp.var VarKind.local "err")])
+                                              (Prog.seq
+                                              (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 120))]) (Exp.var VarKind.global "evm_empty"))
+                                              (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 128))]) (Exp.const (BitVec.ofNat 64 0))))))))))) "create_finish" [(Exp.var VarKind.local "msg"), (Exp.var VarKind.local "child")]))
+                                      (Prog.call (some (none, none)) "state_restore" [(Exp.var VarKind.local "csnap")])))
+                                  Prog.skip)
+                                (Prog.seq
+                                (Prog.assign VarKind.global "ev" (Exp.var VarKind.local "parent"))
+                                (Prog.seq
+                                (Prog.assign VarKind.global "cur_cont" (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "rec"), (Exp.const (BitVec.ofNat 64 8))])))
+                                (Prog.seq
+                                (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "kind") (Exp.const (BitVec.ofNat 64 2)))
+                                  (Prog.dec "empty" Shape.one (Exp.var VarKind.global "evm_empty")
+                                    (Prog.ite (Exp.cmp Cmp.notEqual (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 160))])) (Exp.const (BitVec.ofNat 64 0)))
+                                      (Prog.seq
+                                        (Prog.call (some (none, none)) "incorporate_child_on_error" [(Exp.var VarKind.local "child")])
+                                        (Prog.seq
+                                        (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "new_account_charged") (Exp.const (BitVec.ofNat 64 0)))
+                                          (Prog.call (some (none, none)) "credit_state_gas_refund" [(Exp.const (BitVec.ofNat 64 183600))])
+                                          Prog.skip)
+                                        (Prog.seq
+                                        (Prog.call (some (none, none)) "set_retdata" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 120))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 128))]))])
+                                        (Prog.call (some (none, none)) "stack_push" [(Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))])]))))
+                                      (Prog.seq
+                                        (Prog.call (some (none, none)) "incorporate_child_on_success" [(Exp.var VarKind.local "child")])
+                                        (Prog.seq
+                                        (Prog.call (some (none, none)) "set_retdata" [(Exp.var VarKind.local "empty"), (Exp.const (BitVec.ofNat 64 0))])
+                                        (Prog.decCall "av" (Shape.comb [Shape.one, Shape.one, Shape.one, Shape.one]) "address_to_u256" [(Exp.var VarKind.local "contract_address")]
+                                          (Prog.call (some (none, none)) "stack_push" [(Exp.var VarKind.local "av")]))))))
+                                  (Prog.seq
+                                    (Prog.ite (Exp.cmp Cmp.notEqual (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 160))])) (Exp.const (BitVec.ofNat 64 0)))
+                                      (Prog.seq
+                                        (Prog.call (some (none, none)) "incorporate_child_on_error" [(Exp.var VarKind.local "child")])
+                                        (Prog.seq
+                                        (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "new_account_charged") (Exp.const (BitVec.ofNat 64 0)))
+                                          (Prog.call (some (none, none)) "credit_state_gas_refund" [(Exp.const (BitVec.ofNat 64 183600))])
+                                          Prog.skip)
+                                        (Prog.seq
+                                        (Prog.call (some (none, none)) "set_retdata" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 120))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 128))]))])
+                                        (Prog.call (some (none, none)) "stack_push" [(Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))])]))))
+                                      (Prog.seq
+                                        (Prog.call (some (none, none)) "incorporate_child_on_success" [(Exp.var VarKind.local "child")])
+                                        (Prog.seq
+                                        (Prog.call (some (none, none)) "set_retdata" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 120))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 128))]))])
+                                        (Prog.call (some (none, none)) "stack_push" [(Exp.rStruct [(Exp.const (BitVec.ofNat 64 1)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))])]))))
+                                    (Prog.decCall "actual" Shape.one "min" [(Exp.var VarKind.local "out_size"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 128))]))]
+                                      (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "actual") (Exp.const (BitVec.ofNat 64 0)))
+                                        (Prog.call (some (none, none)) "memcpy" [(Exp.op BinOp.add [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 24))])), (Exp.var VarKind.local "out_start")]), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 144))])), (Exp.var VarKind.local "actual")])
+                                        Prog.skip))))
+                                (Prog.seq
+                                (Prog.call (some (none, none)) "scratch_release" [(Exp.var VarKind.local "child_mark")])
+                                (Prog.seq
+                                (Prog.call (some (none, none)) "frame_mem_release" [(Exp.var VarKind.local "child_mem_mark")])
+                                (Prog.seq
+                                (Prog.call (some (none, none)) "pc_add" [(Exp.const (BitVec.ofNat 64 1))])
+                                (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))))))))))))))))
+      returnShape := Shape.one }
+
+def guestFn_run_frames : Decl (BitVec 64) :=
+  Decl.function
+    { name := "run_frames"
+      inline := false
+      exported := false
+      params := []
+      body :=
+        (Prog.dec "go" Shape.one (Exp.const (BitVec.ofNat 64 1))
+          (Prog.seq
+            (Prog.while (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "go") (Exp.const (BitVec.ofNat 64 0)))
+              (Prog.dec "done" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                (Prog.seq
+                  (Prog.ite (Exp.cmp Cmp.notEqual (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "cur_cont"), (Exp.const (BitVec.ofNat 64 32))])) (Exp.const (BitVec.ofNat 64 0)))
+                    (Prog.assign VarKind.local "done" (Exp.const (BitVec.ofNat 64 1)))
+                    (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 104))])) (Exp.const (BitVec.ofNat 64 0)))
+                      (Prog.assign VarKind.local "done" (Exp.const (BitVec.ofNat 64 1)))
+                      (Prog.dec "pc" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 0))]))
+                        (Prog.ite (Exp.cmp Cmp.notLower (Exp.var VarKind.local "pc") (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 56))])))
+                          (Prog.assign VarKind.local "done" (Exp.const (BitVec.ofNat 64 1)))
+                          (Prog.dec "err" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                            (Prog.call (some (none, (some ("EvmErr", "err",
+                                (Prog.call (some (none, none)) "frame_exception" [(Exp.var VarKind.local "err")]))))) "op_dispatch" [(Exp.loadByte (Exp.op BinOp.add [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 48))])), (Exp.var VarKind.local "pc")]))]))))))
+                  (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "done") (Exp.const (BitVec.ofNat 64 0)))
+                    (Prog.seq
+                      Prog.skip
+                      (Prog.seq
+                      (Prog.call (some (none, none)) "frame_epilogue" [])
+                      (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "cur_cont"), (Exp.const (BitVec.ofNat 64 16))])) (Exp.const (BitVec.ofNat 64 0)))
+                        (Prog.seq
+                          (Prog.assign VarKind.global "ev" (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "cur_cont"), (Exp.const (BitVec.ofNat 64 0))])))
+                          (Prog.seq
+                          (Prog.assign VarKind.global "cur_cont" (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "cur_cont"), (Exp.const (BitVec.ofNat 64 8))])))
+                          (Prog.assign VarKind.local "go" (Exp.const (BitVec.ofNat 64 0)))))
+                        (Prog.dec "err2" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                          (Prog.call (some (none, (some ("EvmErr", "err2",
+                              (Prog.call (some (none, none)) "frame_exception" [(Exp.var VarKind.local "err2")]))))) "finish_child" [])))))
+                    Prog.skip))))
+            (Prog.return (Exp.const (BitVec.ofNat 64 0)))))
+      returnShape := Shape.one }
+
+def guestFn_start_child : Decl (BitVec 64) :=
+  Decl.function
+    { name := "start_child"
+      inline := false
+      exported := false
+      params := [("cm", Shape.one), ("kind", Shape.one), ("child_mark", Shape.one), ("child_mem_mark", Shape.one), ("new_account_charged", Shape.one), ("out_start", Shape.one), ("out_size", Shape.one), ("contract_address", Shape.one)]
+      body :=
+        (Prog.dec "csnap" Shape.one (Exp.const (BitVec.ofNat 64 0))
+          (Prog.seq
+            (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "kind") (Exp.const (BitVec.ofNat 64 2)))
+              (Prog.seq
+                (Prog.call (some ((some (VarKind.local, "csnap")), none)) "state_snapshot" [])
+                (Prog.dec "target" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "cm"), (Exp.const (BitVec.ofNat 64 32))]))
                   (Prog.seq
-                  (Prog.call (some (none, none)) "execute_loop" [])
-                  (Prog.seq
-                  Prog.skip
-                  (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))))))
+                    (Prog.call (some (none, none)) "destroy_storage" [(Exp.var VarKind.local "target")])
+                    (Prog.seq
+                    (Prog.call (some (none, none)) "mark_account_created" [(Exp.var VarKind.local "target")])
+                    (Prog.call (some (none, none)) "increment_nonce" [(Exp.var VarKind.local "target")])))))
+              Prog.skip)
+            (Prog.seq
+            (Prog.ite (Exp.cmp Cmp.lower (Exp.const (BitVec.ofNat 64 1024)) (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "cm"), (Exp.const (BitVec.ofNat 64 128))])))
+              (Prog.raise "EvmErr" (Exp.const (BitVec.ofNat 64 7)))
+              Prog.skip)
+            (Prog.seq
+            Prog.skip
+            (Prog.seq
+            (Prog.call (some (none, none)) "frame_open" [(Exp.var VarKind.local "cm"), (Exp.var VarKind.local "kind")])
+            (Prog.seq
+            Prog.skip
+            (Prog.seq
+            Prog.skip
+            (Prog.decCall "snapshot" Shape.one "state_snapshot" []
+              (Prog.seq
+                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "cur_cont"), (Exp.const (BitVec.ofNat 64 24))]) (Exp.var VarKind.local "snapshot"))
+                (Prog.seq
+                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "cur_cont"), (Exp.const (BitVec.ofNat 64 96))]) (Exp.var VarKind.local "csnap"))
+                (Prog.seq
+                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "cur_cont"), (Exp.const (BitVec.ofNat 64 48))]) (Exp.var VarKind.local "child_mark"))
+                (Prog.seq
+                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "cur_cont"), (Exp.const (BitVec.ofNat 64 56))]) (Exp.var VarKind.local "child_mem_mark"))
+                (Prog.seq
+                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "cur_cont"), (Exp.const (BitVec.ofNat 64 64))]) (Exp.var VarKind.local "new_account_charged"))
+                (Prog.seq
+                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "cur_cont"), (Exp.const (BitVec.ofNat 64 72))]) (Exp.var VarKind.local "out_start"))
+                (Prog.seq
+                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "cur_cont"), (Exp.const (BitVec.ofNat 64 80))]) (Exp.var VarKind.local "out_size"))
+                (Prog.seq
+                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "cur_cont"), (Exp.const (BitVec.ofNat 64 88))]) (Exp.var VarKind.local "contract_address"))
+                (Prog.seq
+                (Prog.call (some (none, none)) "frame_start" [])
+                (Prog.return (Exp.const (BitVec.ofNat 64 0))))))))))))))))))))
       returnShape := Shape.one }
 
 def guestFn_frame_halt : Decl (BitVec 64) :=
@@ -15448,65 +16098,54 @@ def guestFn_process_message : Decl (BitVec 64) :=
           (Prog.seq
           Prog.skip
           (Prog.dec "parent" Shape.one (Exp.var VarKind.global "ev")
-            (Prog.decCall "child" Shape.one "frame_new" [(Exp.var VarKind.local "msg")]
-              (Prog.seq
-                (Prog.assign VarKind.global "ev" (Exp.var VarKind.local "child"))
+            (Prog.dec "parent_cont" Shape.one (Exp.var VarKind.global "cur_cont")
+              (Prog.decCall "child" Shape.one "frame_open" [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 0))]
                 (Prog.seq
-                Prog.skip
-                (Prog.dec "err" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                  Prog.skip
                   (Prog.seq
-                    (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 128))])) (Exp.const (BitVec.ofNat 64 0)))
-                      (Prog.decCall "prep_snapshot" Shape.one "state_snapshot" []
-                        (Prog.dec "prep_reservoir" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 48))]))
-                          (Prog.dec "perr" Shape.one (Exp.const (BitVec.ofNat 64 0))
-                            (Prog.call (some (none, (some ("EvmErr", "perr",
-                                (Prog.seq
-                                  (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "perr") (Exp.const (BitVec.ofNat 64 1)))
+                  (Prog.ite (Exp.cmp Cmp.equal (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 128))])) (Exp.const (BitVec.ofNat 64 0)))
+                    (Prog.decCall "prep_snapshot" Shape.one "state_snapshot" []
+                      (Prog.dec "prep_reservoir" Shape.one (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 48))]))
+                        (Prog.dec "perr" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                          (Prog.call (some (none, (some ("EvmErr", "perr",
+                              (Prog.seq
+                                (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "perr") (Exp.const (BitVec.ofNat 64 1)))
+                                  (Prog.seq
+                                    (Prog.call (some (none, none)) "scratch_release" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 208))]))])
                                     (Prog.seq
-                                      (Prog.call (some (none, none)) "scratch_release" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 208))]))])
-                                      (Prog.seq
-                                      (Prog.call (some (none, none)) "frame_mem_release" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 224))]))])
-                                      (Prog.seq
-                                      (Prog.assign VarKind.global "ev" (Exp.var VarKind.local "parent"))
-                                      (Prog.raise "EvmErr" (Exp.var VarKind.local "perr")))))
-                                    Prog.skip)
-                                  (Prog.seq
-                                  (Prog.call (some (none, none)) "state_restore" [(Exp.var VarKind.local "prep_snapshot")])
-                                  (Prog.seq
-                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 48))]) (Exp.var VarKind.local "prep_reservoir"))
-                                  (Prog.seq
-                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 200))]) (Exp.const (BitVec.ofNat 64 0)))
-                                  (Prog.seq
-                                  (Prog.call (some (none, none)) "refill_frame_state_gas" [])
-                                  (Prog.seq
-                                  (Prog.call (some (none, none)) "frame_halt" [(Exp.var VarKind.local "perr")])
-                                  (Prog.seq
-                                  (Prog.assign VarKind.global "ev" (Exp.var VarKind.local "parent"))
-                                  (Prog.return (Exp.var VarKind.local "child"))))))))))))) "depth0_prepare" []))))
-                      Prog.skip)
-                    (Prog.seq
-                    Prog.skip
-                    (Prog.decCall "snapshot" Shape.one "state_snapshot" []
-                      (Prog.seq
-                        (Prog.call (some (none, (some ("EvmErr", "err",
-                            (Prog.seq
-                              (Prog.call (some (none, none)) "refill_frame_state_gas" [])
-                              (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "err") (Exp.const (BitVec.ofNat 64 1)))
+                                    (Prog.call (some (none, none)) "frame_mem_release" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 224))]))])
+                                    (Prog.seq
+                                    (Prog.assign VarKind.global "ev" (Exp.var VarKind.local "parent"))
+                                    (Prog.seq
+                                    (Prog.assign VarKind.global "cur_cont" (Exp.var VarKind.local "parent_cont"))
+                                    (Prog.raise "EvmErr" (Exp.var VarKind.local "perr"))))))
+                                  Prog.skip)
                                 (Prog.seq
-                                  (Prog.call (some (none, none)) "frame_halt" [(Exp.var VarKind.local "err")])
-                                  (Prog.seq
-                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 120))]) (Exp.var VarKind.global "evm_empty"))
-                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 128))]) (Exp.const (BitVec.ofNat 64 0)))))
-                                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 160))]) (Exp.var VarKind.local "err")))))))) "execute_body" [])
-                        (Prog.seq
-                        Prog.skip
-                        (Prog.seq
-                        (Prog.ite (Exp.cmp Cmp.notEqual (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 160))])) (Exp.const (BitVec.ofNat 64 0)))
-                          (Prog.call (some (none, none)) "state_restore" [(Exp.var VarKind.local "snapshot")])
-                          Prog.skip)
-                        (Prog.seq
-                        (Prog.assign VarKind.global "ev" (Exp.var VarKind.local "parent"))
-                        (Prog.return (Exp.var VarKind.local "child"))))))))))))))))
+                                (Prog.call (some (none, none)) "state_restore" [(Exp.var VarKind.local "prep_snapshot")])
+                                (Prog.seq
+                                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 48))]) (Exp.var VarKind.local "prep_reservoir"))
+                                (Prog.seq
+                                (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 200))]) (Exp.const (BitVec.ofNat 64 0)))
+                                (Prog.seq
+                                (Prog.call (some (none, none)) "refill_frame_state_gas" [])
+                                (Prog.seq
+                                (Prog.call (some (none, none)) "frame_halt" [(Exp.var VarKind.local "perr")])
+                                (Prog.seq
+                                (Prog.assign VarKind.global "ev" (Exp.var VarKind.local "parent"))
+                                (Prog.seq
+                                (Prog.assign VarKind.global "cur_cont" (Exp.var VarKind.local "parent_cont"))
+                                (Prog.return (Exp.var VarKind.local "child")))))))))))))) "depth0_prepare" []))))
+                    Prog.skip)
+                  (Prog.seq
+                  Prog.skip
+                  (Prog.decCall "snapshot" Shape.one "state_snapshot" []
+                    (Prog.seq
+                      (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "cur_cont"), (Exp.const (BitVec.ofNat 64 24))]) (Exp.var VarKind.local "snapshot"))
+                      (Prog.seq
+                      (Prog.call (some (none, none)) "frame_start" [])
+                      (Prog.seq
+                      (Prog.call (some (none, none)) "run_frames" [])
+                      (Prog.return (Exp.var VarKind.local "child"))))))))))))))
       returnShape := Shape.one }
 
 def guestFn_create_finish : Decl (BitVec 64) :=
@@ -15841,29 +16480,9 @@ def guestFn_generic_create : Decl (BitVec 64) :=
                                               (Prog.decCall "child_mark" Shape.one "scratch_mark" []
                                                 (Prog.decCall "child_mem_mark" Shape.one "frame_mem_mark" []
                                                   (Prog.decCall "cm" Shape.one "child_message" [(Exp.var VarKind.local "sender_address"), (Exp.const (BitVec.ofNat 64 0)), (Exp.var VarKind.local "contract_address"), (Exp.var VarKind.local "create_gas"), (Exp.var VarKind.local "reservoir"), (Exp.var VarKind.local "endowment"), (Exp.var VarKind.local "empty"), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.var VarKind.local "call_data"), (Exp.var VarKind.local "msize"), (Exp.const (BitVec.ofNat 64 1)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))]
-                                                    (Prog.decCall "child" Shape.one "process_create_message" [(Exp.var VarKind.local "cm")]
-                                                      (Prog.seq
-                                                        (Prog.ite (Exp.cmp Cmp.notEqual (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 160))])) (Exp.const (BitVec.ofNat 64 0)))
-                                                          (Prog.seq
-                                                            (Prog.call (some (none, none)) "incorporate_child_on_error" [(Exp.var VarKind.local "child")])
-                                                            (Prog.seq
-                                                            (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "new_account_charged") (Exp.const (BitVec.ofNat 64 0)))
-                                                              (Prog.call (some (none, none)) "credit_state_gas_refund" [(Exp.const (BitVec.ofNat 64 183600))])
-                                                              Prog.skip)
-                                                            (Prog.seq
-                                                            (Prog.call (some (none, none)) "set_retdata" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 120))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 128))]))])
-                                                            (Prog.call (some (none, none)) "stack_push" [(Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))])]))))
-                                                          (Prog.seq
-                                                            (Prog.call (some (none, none)) "incorporate_child_on_success" [(Exp.var VarKind.local "child")])
-                                                            (Prog.seq
-                                                            (Prog.call (some (none, none)) "set_retdata" [(Exp.var VarKind.local "empty"), (Exp.const (BitVec.ofNat 64 0))])
-                                                            (Prog.decCall "av" (Shape.comb [Shape.one, Shape.one, Shape.one, Shape.one]) "address_to_u256" [(Exp.var VarKind.local "contract_address")]
-                                                              (Prog.call (some (none, none)) "stack_push" [(Exp.var VarKind.local "av")])))))
-                                                        (Prog.seq
-                                                        (Prog.call (some (none, none)) "scratch_release" [(Exp.var VarKind.local "child_mark")])
-                                                        (Prog.seq
-                                                        (Prog.call (some (none, none)) "frame_mem_release" [(Exp.var VarKind.local "child_mem_mark")])
-                                                        (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))))))))))))))))))))))))))
+                                                    (Prog.seq
+                                                      (Prog.call (some (none, none)) "start_child" [(Exp.var VarKind.local "cm"), (Exp.const (BitVec.ofNat 64 2)), (Exp.var VarKind.local "child_mark"), (Exp.var VarKind.local "child_mem_mark"), (Exp.var VarKind.local "new_account_charged"), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.var VarKind.local "contract_address")])
+                                                      (Prog.return (Exp.const (BitVec.ofNat 64 1))))))))))))))))))))))))))))
       returnShape := Shape.one }
 
 def guestFn_op_create : Decl (BitVec 64) :=
@@ -15892,11 +16511,12 @@ def guestFn_op_create : Decl (BitVec 64) :=
                                 (Prog.seq
                                   (Prog.call (some (none, none)) "compute_contract_address" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 32))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "a"), (Exp.const (BitVec.ofNat 64 0))])), (Exp.var VarKind.local "ca")])
                                   (Prog.decCall "s" Shape.one "sat_word" [(Exp.var VarKind.local "mstart")]
-                                    (Prog.seq
-                                      (Prog.call (some (none, none)) "generic_create" [(Exp.var VarKind.local "endowment"), (Exp.var VarKind.local "ca"), (Exp.var VarKind.local "s"), (Exp.var VarKind.local "n")])
+                                    (Prog.decCall "started" Shape.one "generic_create" [(Exp.var VarKind.local "endowment"), (Exp.var VarKind.local "ca"), (Exp.var VarKind.local "s"), (Exp.var VarKind.local "n")]
                                       (Prog.seq
-                                      (Prog.call (some (none, none)) "pc_add" [(Exp.const (BitVec.ofNat 64 1))])
-                                      (Prog.return (Exp.const (BitVec.ofNat 64 0))))))))))))))))))))
+                                        (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "started") (Exp.const (BitVec.ofNat 64 0)))
+                                          (Prog.call (some (none, none)) "pc_add" [(Exp.const (BitVec.ofNat 64 1))])
+                                          Prog.skip)
+                                        (Prog.return (Exp.const (BitVec.ofNat 64 0))))))))))))))))))))
       returnShape := Shape.one }
 
 def guestFn_op_create2 : Decl (BitVec 64) :=
@@ -15928,11 +16548,12 @@ def guestFn_op_create2 : Decl (BitVec 64) :=
                                     (Prog.decCall "ca" Shape.one "alloc" [(Exp.const (BitVec.ofNat 64 24))]
                                       (Prog.seq
                                         (Prog.call (some (none, none)) "compute_create2_contract_address" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 32))])), (Exp.var VarKind.local "salt"), (Exp.op BinOp.add [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 24))])), (Exp.var VarKind.local "s")]), (Exp.var VarKind.local "n"), (Exp.var VarKind.local "ca")])
-                                        (Prog.seq
-                                        (Prog.call (some (none, none)) "generic_create" [(Exp.var VarKind.local "endowment"), (Exp.var VarKind.local "ca"), (Exp.var VarKind.local "s"), (Exp.var VarKind.local "n")])
-                                        (Prog.seq
-                                        (Prog.call (some (none, none)) "pc_add" [(Exp.const (BitVec.ofNat 64 1))])
-                                        (Prog.return (Exp.const (BitVec.ofNat 64 0))))))))))))))))))))))
+                                        (Prog.decCall "started" Shape.one "generic_create" [(Exp.var VarKind.local "endowment"), (Exp.var VarKind.local "ca"), (Exp.var VarKind.local "s"), (Exp.var VarKind.local "n")]
+                                          (Prog.seq
+                                            (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "started") (Exp.const (BitVec.ofNat 64 0)))
+                                              (Prog.call (some (none, none)) "pc_add" [(Exp.const (BitVec.ofNat 64 1))])
+                                              Prog.skip)
+                                            (Prog.return (Exp.const (BitVec.ofNat 64 0))))))))))))))))))))))
       returnShape := Shape.one }
 
 def guestFn_generic_call : Decl (BitVec 64) :=
@@ -15964,33 +16585,9 @@ def guestFn_generic_call : Decl (BitVec 64) :=
                   (Prog.decCall "child_mark" Shape.one "scratch_mark" []
                     (Prog.decCall "child_mem_mark" Shape.one "frame_mem_mark" []
                       (Prog.decCall "cm" Shape.one "child_message" [(Exp.var VarKind.local "caller"), (Exp.var VarKind.local "to"), (Exp.var VarKind.local "to"), (Exp.var VarKind.local "gas"), (Exp.var VarKind.local "reservoir"), (Exp.var VarKind.local "value"), (Exp.var VarKind.local "call_data"), (Exp.var VarKind.local "in_size"), (Exp.var VarKind.local "code_address"), (Exp.var VarKind.local "code"), (Exp.var VarKind.local "code_n"), (Exp.var VarKind.local "transfer"), (Exp.var VarKind.local "is_static"), (Exp.var VarKind.local "disable_pre")]
-                        (Prog.decCall "child" Shape.one "process_message" [(Exp.var VarKind.local "cm")]
-                          (Prog.seq
-                            (Prog.ite (Exp.cmp Cmp.notEqual (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 160))])) (Exp.const (BitVec.ofNat 64 0)))
-                              (Prog.seq
-                                (Prog.call (some (none, none)) "incorporate_child_on_error" [(Exp.var VarKind.local "child")])
-                                (Prog.seq
-                                (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "new_account_charged") (Exp.const (BitVec.ofNat 64 0)))
-                                  (Prog.call (some (none, none)) "credit_state_gas_refund" [(Exp.const (BitVec.ofNat 64 183600))])
-                                  Prog.skip)
-                                (Prog.seq
-                                (Prog.call (some (none, none)) "set_retdata" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 120))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 128))]))])
-                                (Prog.call (some (none, none)) "stack_push" [(Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))])]))))
-                              (Prog.seq
-                                (Prog.call (some (none, none)) "incorporate_child_on_success" [(Exp.var VarKind.local "child")])
-                                (Prog.seq
-                                (Prog.call (some (none, none)) "set_retdata" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 120))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 128))]))])
-                                (Prog.call (some (none, none)) "stack_push" [(Exp.rStruct [(Exp.const (BitVec.ofNat 64 1)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))])]))))
-                            (Prog.decCall "actual" Shape.one "min" [(Exp.var VarKind.local "out_size"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "child"), (Exp.const (BitVec.ofNat 64 128))]))]
-                              (Prog.seq
-                                (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "actual") (Exp.const (BitVec.ofNat 64 0)))
-                                  (Prog.call (some (none, none)) "memcpy" [(Exp.op BinOp.add [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 24))])), (Exp.var VarKind.local "out_start")]), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 144))])), (Exp.var VarKind.local "actual")])
-                                  Prog.skip)
-                                (Prog.seq
-                                (Prog.call (some (none, none)) "scratch_release" [(Exp.var VarKind.local "child_mark")])
-                                (Prog.seq
-                                (Prog.call (some (none, none)) "frame_mem_release" [(Exp.var VarKind.local "child_mem_mark")])
-                                (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))))))))))))
+                        (Prog.seq
+                          (Prog.call (some (none, none)) "start_child" [(Exp.var VarKind.local "cm"), (Exp.const (BitVec.ofNat 64 1)), (Exp.var VarKind.local "child_mark"), (Exp.var VarKind.local "child_mem_mark"), (Exp.var VarKind.local "new_account_charged"), (Exp.var VarKind.local "out_start"), (Exp.var VarKind.local "out_size"), (Exp.const (BitVec.ofNat 64 0))])
+                          (Prog.return (Exp.const (BitVec.ofNat 64 1))))))))))))
       returnShape := Shape.one }
 
 def guestFn_calculate_message_call_gas : Decl (BitVec 64) :=
@@ -16102,28 +16699,31 @@ def guestFn_op_call : Decl (BitVec 64) :=
                                                                         (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 72))]) (Exp.const (BitVec.ofNat 64 0)))
                                                                         (Prog.decCall "sender" Shape.one "get_account" [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 32))]))]
                                                                           (Prog.decCall "insufficient" Shape.one "u256_lt" [(Exp.load (Shape.comb [Shape.one, Shape.one, Shape.one, Shape.one]) (Exp.op BinOp.add [(Exp.var VarKind.local "sender"), (Exp.const (BitVec.ofNat 64 8))])), (Exp.var VarKind.local "value")]
-                                                                            (Prog.seq
-                                                                              (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "insufficient") (Exp.const (BitVec.ofNat 64 0)))
-                                                                                (Prog.seq
-                                                                                  (Prog.call (some (none, none)) "stack_push" [(Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))])])
-                                                                                  (Prog.dec "empty" Shape.one (Exp.var VarKind.global "evm_empty")
-                                                                                    (Prog.seq
-                                                                                      (Prog.call (some (none, none)) "set_retdata" [(Exp.var VarKind.local "empty"), (Exp.const (BitVec.ofNat 64 0))])
-                                                                                      (Prog.seq
-                                                                                      (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 64))]) (Exp.op BinOp.add [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 64))])), (Exp.rField 1 (Exp.var VarKind.local "mcg"))]))
-                                                                                      (Prog.seq
-                                                                                      (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 72))]) (Exp.op BinOp.add [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 72))])), (Exp.var VarKind.local "reservoir")]))
-                                                                                      (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "new_account_charged") (Exp.const (BitVec.ofNat 64 0)))
-                                                                                        (Prog.call (some (none, none)) "credit_state_gas_refund" [(Exp.const (BitVec.ofNat 64 183600))])
-                                                                                        Prog.skip))))))
-                                                                                (Prog.decCall "is" Shape.one "sat_word" [(Exp.var VarKind.local "in_start")]
-                                                                                  (Prog.decCall "isz" Shape.one "sat_word" [(Exp.var VarKind.local "in_size")]
-                                                                                    (Prog.decCall "os" Shape.one "sat_word" [(Exp.var VarKind.local "out_start")]
-                                                                                      (Prog.decCall "osz" Shape.one "sat_word" [(Exp.var VarKind.local "out_size")]
-                                                                                        (Prog.call (some (none, none)) "generic_call" [(Exp.rField 1 (Exp.var VarKind.local "mcg")), (Exp.var VarKind.local "reservoir"), (Exp.var VarKind.local "value"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 32))])), (Exp.var VarKind.local "to"), (Exp.var VarKind.local "code_address"), (Exp.const (BitVec.ofNat 64 1)), (Exp.const (BitVec.ofNat 64 0)), (Exp.var VarKind.local "is"), (Exp.var VarKind.local "isz"), (Exp.var VarKind.local "os"), (Exp.var VarKind.local "osz"), (Exp.rField 0 (Exp.var VarKind.local "code")), (Exp.rField 1 (Exp.var VarKind.local "code")), (Exp.rField 0 (Exp.var VarKind.local "dl")), (Exp.var VarKind.local "new_account_charged")]))))))
+                                                                            (Prog.dec "started" Shape.one (Exp.const (BitVec.ofNat 64 0))
                                                                               (Prog.seq
-                                                                              (Prog.call (some (none, none)) "pc_add" [(Exp.const (BitVec.ofNat 64 1))])
-                                                                              (Prog.return (Exp.const (BitVec.ofNat 64 0))))))))))))))))))))))))))))))))))))))))))
+                                                                                (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "insufficient") (Exp.const (BitVec.ofNat 64 0)))
+                                                                                  (Prog.seq
+                                                                                    (Prog.call (some (none, none)) "stack_push" [(Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))])])
+                                                                                    (Prog.dec "empty" Shape.one (Exp.var VarKind.global "evm_empty")
+                                                                                      (Prog.seq
+                                                                                        (Prog.call (some (none, none)) "set_retdata" [(Exp.var VarKind.local "empty"), (Exp.const (BitVec.ofNat 64 0))])
+                                                                                        (Prog.seq
+                                                                                        (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 64))]) (Exp.op BinOp.add [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 64))])), (Exp.rField 1 (Exp.var VarKind.local "mcg"))]))
+                                                                                        (Prog.seq
+                                                                                        (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 72))]) (Exp.op BinOp.add [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 72))])), (Exp.var VarKind.local "reservoir")]))
+                                                                                        (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "new_account_charged") (Exp.const (BitVec.ofNat 64 0)))
+                                                                                          (Prog.call (some (none, none)) "credit_state_gas_refund" [(Exp.const (BitVec.ofNat 64 183600))])
+                                                                                          Prog.skip))))))
+                                                                                  (Prog.decCall "is" Shape.one "sat_word" [(Exp.var VarKind.local "in_start")]
+                                                                                    (Prog.decCall "isz" Shape.one "sat_word" [(Exp.var VarKind.local "in_size")]
+                                                                                      (Prog.decCall "os" Shape.one "sat_word" [(Exp.var VarKind.local "out_start")]
+                                                                                        (Prog.decCall "osz" Shape.one "sat_word" [(Exp.var VarKind.local "out_size")]
+                                                                                          (Prog.call (some ((some (VarKind.local, "started")), none)) "generic_call" [(Exp.rField 1 (Exp.var VarKind.local "mcg")), (Exp.var VarKind.local "reservoir"), (Exp.var VarKind.local "value"), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 32))])), (Exp.var VarKind.local "to"), (Exp.var VarKind.local "code_address"), (Exp.const (BitVec.ofNat 64 1)), (Exp.const (BitVec.ofNat 64 0)), (Exp.var VarKind.local "is"), (Exp.var VarKind.local "isz"), (Exp.var VarKind.local "os"), (Exp.var VarKind.local "osz"), (Exp.rField 0 (Exp.var VarKind.local "code")), (Exp.rField 1 (Exp.var VarKind.local "code")), (Exp.rField 0 (Exp.var VarKind.local "dl")), (Exp.var VarKind.local "new_account_charged")]))))))
+                                                                                (Prog.seq
+                                                                                (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "started") (Exp.const (BitVec.ofNat 64 0)))
+                                                                                  (Prog.call (some (none, none)) "pc_add" [(Exp.const (BitVec.ofNat 64 1))])
+                                                                                  Prog.skip)
+                                                                                (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))))))))))))))))))))))))))))))))))))))
       returnShape := Shape.one }
 
 def guestFn_op_callcode : Decl (BitVec 64) :=
@@ -16191,24 +16791,27 @@ def guestFn_op_callcode : Decl (BitVec 64) :=
                                                                     (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 72))]) (Exp.const (BitVec.ofNat 64 0)))
                                                                     (Prog.decCall "sender" Shape.one "get_account" [(Exp.var VarKind.local "to")]
                                                                       (Prog.decCall "insufficient" Shape.one "u256_lt" [(Exp.load (Shape.comb [Shape.one, Shape.one, Shape.one, Shape.one]) (Exp.op BinOp.add [(Exp.var VarKind.local "sender"), (Exp.const (BitVec.ofNat 64 8))])), (Exp.var VarKind.local "value")]
-                                                                        (Prog.seq
-                                                                          (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "insufficient") (Exp.const (BitVec.ofNat 64 0)))
-                                                                            (Prog.seq
-                                                                              (Prog.call (some (none, none)) "stack_push" [(Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))])])
-                                                                              (Prog.dec "empty" Shape.one (Exp.var VarKind.global "evm_empty")
-                                                                                (Prog.seq
-                                                                                  (Prog.call (some (none, none)) "set_retdata" [(Exp.var VarKind.local "empty"), (Exp.const (BitVec.ofNat 64 0))])
-                                                                                  (Prog.seq
-                                                                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 64))]) (Exp.op BinOp.add [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 64))])), (Exp.rField 1 (Exp.var VarKind.local "mcg"))]))
-                                                                                  (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 72))]) (Exp.op BinOp.add [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 72))])), (Exp.var VarKind.local "reservoir")]))))))
-                                                                            (Prog.decCall "is" Shape.one "sat_word" [(Exp.var VarKind.local "in_start")]
-                                                                              (Prog.decCall "isz" Shape.one "sat_word" [(Exp.var VarKind.local "in_size")]
-                                                                                (Prog.decCall "os" Shape.one "sat_word" [(Exp.var VarKind.local "out_start")]
-                                                                                  (Prog.decCall "osz" Shape.one "sat_word" [(Exp.var VarKind.local "out_size")]
-                                                                                    (Prog.call (some (none, none)) "generic_call" [(Exp.rField 1 (Exp.var VarKind.local "mcg")), (Exp.var VarKind.local "reservoir"), (Exp.var VarKind.local "value"), (Exp.var VarKind.local "to"), (Exp.var VarKind.local "to"), (Exp.var VarKind.local "code_address"), (Exp.const (BitVec.ofNat 64 1)), (Exp.const (BitVec.ofNat 64 0)), (Exp.var VarKind.local "is"), (Exp.var VarKind.local "isz"), (Exp.var VarKind.local "os"), (Exp.var VarKind.local "osz"), (Exp.rField 0 (Exp.var VarKind.local "code")), (Exp.rField 1 (Exp.var VarKind.local "code")), (Exp.rField 0 (Exp.var VarKind.local "dl")), (Exp.const (BitVec.ofNat 64 0))]))))))
+                                                                        (Prog.dec "started" Shape.one (Exp.const (BitVec.ofNat 64 0))
                                                                           (Prog.seq
-                                                                          (Prog.call (some (none, none)) "pc_add" [(Exp.const (BitVec.ofNat 64 1))])
-                                                                          (Prog.return (Exp.const (BitVec.ofNat 64 0))))))))))))))))))))))))))))))))))))))))
+                                                                            (Prog.ite (Exp.cmp Cmp.notEqual (Exp.var VarKind.local "insufficient") (Exp.const (BitVec.ofNat 64 0)))
+                                                                              (Prog.seq
+                                                                                (Prog.call (some (none, none)) "stack_push" [(Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))])])
+                                                                                (Prog.dec "empty" Shape.one (Exp.var VarKind.global "evm_empty")
+                                                                                  (Prog.seq
+                                                                                    (Prog.call (some (none, none)) "set_retdata" [(Exp.var VarKind.local "empty"), (Exp.const (BitVec.ofNat 64 0))])
+                                                                                    (Prog.seq
+                                                                                    (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 64))]) (Exp.op BinOp.add [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 64))])), (Exp.rField 1 (Exp.var VarKind.local "mcg"))]))
+                                                                                    (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 72))]) (Exp.op BinOp.add [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "ev"), (Exp.const (BitVec.ofNat 64 72))])), (Exp.var VarKind.local "reservoir")]))))))
+                                                                              (Prog.decCall "is" Shape.one "sat_word" [(Exp.var VarKind.local "in_start")]
+                                                                                (Prog.decCall "isz" Shape.one "sat_word" [(Exp.var VarKind.local "in_size")]
+                                                                                  (Prog.decCall "os" Shape.one "sat_word" [(Exp.var VarKind.local "out_start")]
+                                                                                    (Prog.decCall "osz" Shape.one "sat_word" [(Exp.var VarKind.local "out_size")]
+                                                                                      (Prog.call (some ((some (VarKind.local, "started")), none)) "generic_call" [(Exp.rField 1 (Exp.var VarKind.local "mcg")), (Exp.var VarKind.local "reservoir"), (Exp.var VarKind.local "value"), (Exp.var VarKind.local "to"), (Exp.var VarKind.local "to"), (Exp.var VarKind.local "code_address"), (Exp.const (BitVec.ofNat 64 1)), (Exp.const (BitVec.ofNat 64 0)), (Exp.var VarKind.local "is"), (Exp.var VarKind.local "isz"), (Exp.var VarKind.local "os"), (Exp.var VarKind.local "osz"), (Exp.rField 0 (Exp.var VarKind.local "code")), (Exp.rField 1 (Exp.var VarKind.local "code")), (Exp.rField 0 (Exp.var VarKind.local "dl")), (Exp.const (BitVec.ofNat 64 0))]))))))
+                                                                            (Prog.seq
+                                                                            (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "started") (Exp.const (BitVec.ofNat 64 0)))
+                                                                              (Prog.call (some (none, none)) "pc_add" [(Exp.const (BitVec.ofNat 64 1))])
+                                                                              Prog.skip)
+                                                                            (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))))))))))))))))))))))))))))))))))))
       returnShape := Shape.one }
 
 def guestFn_op_delegatecall : Decl (BitVec 64) :=
@@ -16270,11 +16873,12 @@ def guestFn_op_delegatecall : Decl (BitVec 64) :=
                                                             (Prog.decCall "isz" Shape.one "sat_word" [(Exp.var VarKind.local "in_size")]
                                                               (Prog.decCall "os" Shape.one "sat_word" [(Exp.var VarKind.local "out_start")]
                                                                 (Prog.decCall "osz" Shape.one "sat_word" [(Exp.var VarKind.local "out_size")]
-                                                                  (Prog.seq
-                                                                    (Prog.call (some (none, none)) "generic_call" [(Exp.rField 1 (Exp.var VarKind.local "mcg")), (Exp.var VarKind.local "reservoir"), (Exp.load (Shape.comb [Shape.one, Shape.one, Shape.one, Shape.one]) (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 56))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 16))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 32))])), (Exp.var VarKind.local "code_address"), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.var VarKind.local "is"), (Exp.var VarKind.local "isz"), (Exp.var VarKind.local "os"), (Exp.var VarKind.local "osz"), (Exp.rField 0 (Exp.var VarKind.local "code")), (Exp.rField 1 (Exp.var VarKind.local "code")), (Exp.rField 0 (Exp.var VarKind.local "dl")), (Exp.const (BitVec.ofNat 64 0))])
+                                                                  (Prog.decCall "started" Shape.one "generic_call" [(Exp.rField 1 (Exp.var VarKind.local "mcg")), (Exp.var VarKind.local "reservoir"), (Exp.load (Shape.comb [Shape.one, Shape.one, Shape.one, Shape.one]) (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 56))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 16))])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 32))])), (Exp.var VarKind.local "code_address"), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.var VarKind.local "is"), (Exp.var VarKind.local "isz"), (Exp.var VarKind.local "os"), (Exp.var VarKind.local "osz"), (Exp.rField 0 (Exp.var VarKind.local "code")), (Exp.rField 1 (Exp.var VarKind.local "code")), (Exp.rField 0 (Exp.var VarKind.local "dl")), (Exp.const (BitVec.ofNat 64 0))]
                                                                     (Prog.seq
-                                                                    (Prog.call (some (none, none)) "pc_add" [(Exp.const (BitVec.ofNat 64 1))])
-                                                                    (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))))))))))))))))))))))))))))))))
+                                                                      (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "started") (Exp.const (BitVec.ofNat 64 0)))
+                                                                        (Prog.call (some (none, none)) "pc_add" [(Exp.const (BitVec.ofNat 64 1))])
+                                                                        Prog.skip)
+                                                                      (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))))))))))))))))))))))))))))))))
       returnShape := Shape.one }
 
 def guestFn_op_staticcall : Decl (BitVec 64) :=
@@ -16336,11 +16940,12 @@ def guestFn_op_staticcall : Decl (BitVec 64) :=
                                                             (Prog.decCall "isz" Shape.one "sat_word" [(Exp.var VarKind.local "in_size")]
                                                               (Prog.decCall "os" Shape.one "sat_word" [(Exp.var VarKind.local "out_start")]
                                                                 (Prog.decCall "osz" Shape.one "sat_word" [(Exp.var VarKind.local "out_size")]
-                                                                  (Prog.seq
-                                                                    (Prog.call (some (none, none)) "generic_call" [(Exp.rField 1 (Exp.var VarKind.local "mcg")), (Exp.var VarKind.local "reservoir"), (Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))]), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 32))])), (Exp.var VarKind.local "to"), (Exp.var VarKind.local "code_address"), (Exp.const (BitVec.ofNat 64 1)), (Exp.const (BitVec.ofNat 64 1)), (Exp.var VarKind.local "is"), (Exp.var VarKind.local "isz"), (Exp.var VarKind.local "os"), (Exp.var VarKind.local "osz"), (Exp.rField 0 (Exp.var VarKind.local "code")), (Exp.rField 1 (Exp.var VarKind.local "code")), (Exp.rField 0 (Exp.var VarKind.local "dl")), (Exp.const (BitVec.ofNat 64 0))])
+                                                                  (Prog.decCall "started" Shape.one "generic_call" [(Exp.rField 1 (Exp.var VarKind.local "mcg")), (Exp.var VarKind.local "reservoir"), (Exp.rStruct [(Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0)), (Exp.const (BitVec.ofNat 64 0))]), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "msg"), (Exp.const (BitVec.ofNat 64 32))])), (Exp.var VarKind.local "to"), (Exp.var VarKind.local "code_address"), (Exp.const (BitVec.ofNat 64 1)), (Exp.const (BitVec.ofNat 64 1)), (Exp.var VarKind.local "is"), (Exp.var VarKind.local "isz"), (Exp.var VarKind.local "os"), (Exp.var VarKind.local "osz"), (Exp.rField 0 (Exp.var VarKind.local "code")), (Exp.rField 1 (Exp.var VarKind.local "code")), (Exp.rField 0 (Exp.var VarKind.local "dl")), (Exp.const (BitVec.ofNat 64 0))]
                                                                     (Prog.seq
-                                                                    (Prog.call (some (none, none)) "pc_add" [(Exp.const (BitVec.ofNat 64 1))])
-                                                                    (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))))))))))))))))))))))))))))))))
+                                                                      (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "started") (Exp.const (BitVec.ofNat 64 0)))
+                                                                        (Prog.call (some (none, none)) "pc_add" [(Exp.const (BitVec.ofNat 64 1))])
+                                                                        Prog.skip)
+                                                                      (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))))))))))))))))))))))))))))))))
       returnShape := Shape.one }
 
 def guestFn_process_message_call : Decl (BitVec 64) :=
@@ -29732,6 +30337,9 @@ def guestAst : List (Decl (BitVec 64)) :=
     guestFn_rlp_read_length,
     guestFn_rlp_item,
     guestFn_rlp_decode_fully,
+    guestFn_rlp_item_header,
+    guestFn__rlp_validate_items_body,
+    guestFn_rlp_validate_items,
     guestFn_rlp_item_total,
     guestFn_rlp_list_count,
     guestFn_rlp_item_total_unchecked,
@@ -29878,8 +30486,11 @@ def guestAst : List (Decl (BitVec 64)) :=
     guestFn_node_new_ext,
     guestFn_node_new_branch,
     guestFn_node_invalidate,
+    guestFn__resolve_step,
+    guestFn__decode_step,
+    guestFn__decode_witness_node_body,
+    guestFn__decode_witness_node_mpt,
     guestFn__decode_witness_node,
-    guestFn__resolve_child_ref,
     guestFn_decode_witness_to_mpt,
     guestFn_trie_walk,
     guestFn_trie_lookup,
@@ -29890,17 +30501,20 @@ def guestAst : List (Decl (BitVec 64)) :=
     guestFn__create_branch_from_two_leaves,
     guestFn__insert_into_leaf,
     guestFn__split_extension,
-    guestFn__insert_into_extension,
-    guestFn__insert_into_branch,
     guestFn__mpt_insert_node,
     guestFn__collapse_branch,
-    guestFn__delete_from_extension,
-    guestFn__delete_from_branch,
+    guestFn__delete_ext_finish,
+    guestFn__mpt_delete_node_body,
     guestFn__mpt_delete_node,
     guestFn_mpt_set,
+    guestFn__node_rlp_begin,
+    guestFn__node_rlp_finish,
+    guestFn__node_needs_rlp,
+    guestFn__node_rlp_fill,
     guestFn_node_rlp,
     guestFn_rlp_value_encoded_len,
     guestFn_node_ref_len,
+    guestFn_node_hash_cached,
     guestFn_node_write_ref,
     guestFn_node_hash,
     guestFn_mpt_root,
@@ -30163,6 +30777,7 @@ def guestAst : List (Decl (BitVec 64)) :=
     guestFn_op_chainid,
     guestFn_op_prevrandao,
     guestFn_op_slotnum,
+    guestGlobal_cur_cont,
     guestGlobal_transfer_topic,
     guestGlobal_vm_system_address,
     guestGlobal_null_address,
@@ -30178,8 +30793,14 @@ def guestAst : List (Decl (BitVec 64)) :=
     guestFn_set_delegation,
     guestFn_prepare_dispatch,
     guestFn_op_dispatch,
-    guestFn_execute_loop,
-    guestFn_execute_body,
+    guestFn_frame_open,
+    guestFn_frame_exception,
+    guestFn_frame_prologue,
+    guestFn_frame_start,
+    guestFn_frame_epilogue,
+    guestFn_finish_child,
+    guestFn_run_frames,
+    guestFn_start_child,
     guestFn_frame_halt,
     guestFn_depth0_prepare,
     guestFn_process_message,

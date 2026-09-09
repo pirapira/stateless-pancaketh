@@ -1,4 +1,4 @@
-import Flapjack.PanSteppedSemantics
+import Flapjack.PanValueFfiSemantics
 import Flapjack.RiscV.PanSemantics
 import Flapjack.RiscV.PanMemory
 import Guest.Basic
@@ -7,7 +7,7 @@ import Guest.SoftwareAst
 import Guest.Accel
 
 /-!
-# The guest as a flapjack program: state, handlers, and the stepped run
+# The guest as a flapjack program: state, host, handlers, and the stepped run
 
 Everything here is computable, so it doubles as an executable model
 (`lake exe run-guest`). The goal stated about it lives in `Guest.StepBound`.
@@ -19,22 +19,19 @@ Everything here is computable, so it doubles as an executable model
   (`Guest/SoftwareAst.lean`) is the default build with all crypto in Pancake.
   `Guest.AstParse` proves once that the parser produces exactly these ASTs, so
   nothing here depends on the parser.
-* `guestInitialState` lays the host input out per `guest/src/config.h` and
-  zero-fills the output, scratch and heap regions.
+* The evaluator is flapjack's stateful-FFI stepped semantics
+  (`Flapjack.evalPanValueFfiProgramStepped`), CakeML's picture: Pancake memory
+  is the guest's own, and the host's input/output regions are reached only
+  through shared-memory accesses (`!ldw`, `!st8`, ...), which are FFI calls to
+  an oracle (`guestOracle`) over `HostMemory`.
+* `guestInitialState` zero-fills the scratch and heap regions per
+  `guest/src/config.h`; `guestHostMemory` lays the input out at `INPUT_ADDR`.
 * `guestPrimitiveHandler` is flapjack's own 64-bit `__add_with_carry__`.
-* `guestFfiHandler` accepts the two foreign calls of the software build,
-  `@halt` and `@trap`, as no-ops on the Pancake state. `guestMemoryFfi`
-  (`Guest/Accel.lean`) additionally gives the accelerator calls of the
-  `ZISK_ACCEL` build their ZisK semantics on memory.
-* `guestMemoryAccess` selects CakeML's aligned-cell model for sub-word and
-  shared-memory accesses, with the RISC-V little-endian byte layout.
-
-## Status of the accelerated run
-
-Flapjack's stepped semantics only take a locals-only `PanValueFfiHandler`, so
-`guestMemoryFfi` cannot be attached yet and the accelerated guest cannot be
-executed (flapjack #517). Until that lands, `runGuestStepped` runs the
-software build; its docstring records the intended definition.
+* `guestAcceleratorFfi` (from `guestMemoryFfi`, `Guest/Accel.lean`) gives
+  `@halt`/`@trap` and the accelerator calls their semantics; the accelerators
+  act on Pancake memory through their parameter blocks.
+* `guestMemoryAccess` selects CakeML's aligned-cell model for sub-word
+  accesses, with the RISC-V little-endian byte layout.
 
 ## Modelling caveats
 
@@ -43,10 +40,10 @@ software build; its docstring records the intended definition.
   final `return`; after `@trap` (via `trap_with`) the callers keep going down
   their error paths, so the model may count steps the machine never takes.
   This only over-approximates, which is the safe direction for a bound.
-* *Shared memory is in-map.* CakeML routes `!ld*`/`!st*` through the FFI
-  oracle; flapjack (since PR 403) reads and writes the same memory map with
-  the access size honoured. That is what puts the host input at `INPUT_ADDR`
-  and lets the guest read it.
+* *Shared-memory payload address.* CakeML passes the exact (unaligned) address
+  to the `SharedMem` oracle; flapjack passes `context.byteAlign address`. We
+  set `byteAlign := id`, so the oracle sees the exact address and byte stores
+  to the output region land where the machine puts them.
 -/
 
 namespace Guest
@@ -66,8 +63,17 @@ def inputAddr : Word := 1073741824
 def inputLenAddr : Word := 1073741832
 /-- `INPUT_DATA_ADDR`: the blob, zero padded to a multiple of 8 bytes. -/
 def inputDataAddr : Word := 1073741840
+/-- Size of ZisK's input region (`MAX_INPUT_SIZE = 0x40000000`, 1 GiB, in
+`core/src/mem.rs` of ZisK; the region at `INPUT_ADDR` is separate from the
+512 MB RAM at `0xa0000000`). `spike_run` maps only 16 MB of it. -/
+def inputArenaSize : Word := 1073741824
+/-- Largest input blob the architecture can present: the input region minus the
+16-byte framing (`[8B zero meta][8B LE len]`). -/
+def maxInputBytes : Nat := 1073741824 - 16
 /-- `OUTPUT_ADDR`: start of the public output region. -/
 def outputAddr : Word := 2684420096
+/-- `SCRATCH_BASE`: first byte after the output/debug prefix. -/
+def scratchBase : Word := 2684424192
 /-- `HEAP_BASE`: the Pancake heap start, `@base`. -/
 def heapBase : Word := 2701131776
 /-- `HEAP_END`: end of the Pancake heap. -/
@@ -75,41 +81,110 @@ def heapEnd : Word := 2952790016
 /-- `WORD`: bytes per word. -/
 def bytesInWord : Word := 8
 
-/-- Little-endian word from the first eight bytes of a list, zero padded. -/
-def leWord (bytes : List (BitVec 8)) : Word :=
-  (bytes.take 8).foldr (fun byte acc => (acc <<< 8) ||| byte.zeroExtend 64) 0
+/-! ### Bytes and words (little-endian, as the RISC-V target) -/
 
-/-- The `k`-th little-endian word of the input blob. -/
-def inputWord (input : InputBlob) (k : Nat) : Word :=
-  leWord (input.drop (8 * k))
+/-- The eight little-endian bytes of a word. -/
+def leBytes (w : Word) : List UInt8 :=
+  (List.range 8).map fun i => UInt8.ofNat ((w.toNat / 256 ^ i) % 256)
 
-/-- Initial memory: the input region as the host lays it out, and the output,
-scratch and heap regions (`[OUTPUT_ADDR, HEAP_END)`) zero-filled; every other
-address is unmapped. Input words sit only at 8-byte strides from
-`INPUT_DATA_ADDR`, which is how `input_blob` reads them (`!ldw`). -/
-def guestInitialMemory (input : InputBlob) : Word → Option (PanValue Word) :=
+/-- The word whose little-endian bytes are `bytes` (missing high bytes zero). -/
+def wordOfLeBytes (bytes : List UInt8) : Word :=
+  BitVec.ofNat 64 (bytes.foldr (fun byte acc => acc * 256 + byte.toNat) 0)
+
+/-! ### Pancake memory -/
+
+/-- Initial Pancake memory: the scratch and heap regions
+(`[SCRATCH_BASE, HEAP_END)`) zero-filled, everything else unmapped. The host
+regions are not here: the guest reaches them only through shared-memory
+accesses, i.e. through the FFI oracle below. -/
+def guestInitialMemory : Memory :=
   fun address =>
-    let length : Word := BitVec.ofNat 64 input.length
-    if address = inputAddr then some (.word 0)
-    else if address = inputLenAddr then some (.word length)
-    else if inputDataAddr ≤ address ∧ address < inputDataAddr + length ∧
-        (address - inputDataAddr).toNat % 8 = 0 then
-      some (.word (inputWord input ((address - inputDataAddr).toNat / 8)))
-    else if outputAddr ≤ address ∧ address < heapEnd then some (.word 0)
-    else none
+    if scratchBase ≤ address ∧ address < heapEnd then some (.word 0) else none
 
-/-- Initial program state for a run on `input`. Declarations are evaluated by
-`evalPanValueSteppedProgram` itself, so the declaration tables start empty. -/
-def guestInitialState (input : InputBlob) : PanValueProgramState Word :=
+/-- Initial program state. Declarations are evaluated by the run itself, so
+the declaration tables start empty. -/
+def guestInitialState : PanValueProgramState Word :=
   { structs := []
     globals := fun _ => none
     functions := []
     returnShapes := []
     exceptions := []
-    memory := guestInitialMemory input
+    memory := guestInitialMemory
     baseAddress := heapBase
     topAddress := heapEnd
     bytesInWord := bytesInWord }
+
+/-! ### The host: shared-memory regions behind the FFI oracle -/
+
+/-- Host memory reachable through shared-memory accesses, as bytes. -/
+abbrev HostMemory := Word → Option UInt8
+
+/-- The input arena as the host lays it out: `[8B zero meta][8B LE len][blob]`,
+zero padded to a multiple of 8. -/
+def hostInputBytes (input : InputBlob) : List UInt8 :=
+  let blob := input.map fun byte => UInt8.ofNat byte.toNat
+  let padding := (8 - input.length % 8) % 8
+  List.replicate 8 0 ++ leBytes (BitVec.ofNat 64 input.length) ++ blob ++
+    List.replicate padding 0
+
+/-- Initial host memory for a run on `input`: the input arena, and a
+zero-filled output region (`[OUTPUT_ADDR, SCRATCH_BASE)`). -/
+def guestHostMemory (input : InputBlob) : HostMemory :=
+  let bytes := hostInputBytes input
+  fun address =>
+    if inputAddr ≤ address ∧ address < inputAddr + BitVec.ofNat 64 bytes.length then
+      bytes[(address - inputAddr).toNat]?
+    else if outputAddr ≤ address ∧ address < scratchBase then some 0
+    else none
+
+/-- Access width of a shared-memory call from its configuration byte (`0`
+means a full word). -/
+def sharedWidth (configuration : List UInt8) : Nat :=
+  match configuration with
+  | [width] => if width.toNat = 0 then 8 else width.toNat
+  | _ => 0
+
+/-- The FFI oracle: `MappedRead` returns the addressed bytes (zero-extended to
+the 8-byte payload), `MappedWrite` stores the value bytes that precede the
+8-byte address in the payload. Both fail outside the host regions. Ordinary
+external calls are all handled by `guestAcceleratorFfi`, so the oracle never
+sees them. -/
+def guestOracle : FfiOracle HostMemory := fun name host configuration bytes =>
+  match name with
+  | .sharedMem .mappedRead =>
+      let width := sharedWidth configuration
+      let address := wordOfLeBytes bytes
+      match (List.range width).mapM fun i => host (address + BitVec.ofNat 64 i) with
+      | some values => .returned host (values ++ List.replicate (bytes.length - width) 0)
+      | none => .final .failed
+  | .sharedMem .mappedWrite =>
+      let count := bytes.length - 8
+      let values := bytes.take count
+      let address := wordOfLeBytes (bytes.drop count)
+      if (List.range count).all fun i => (host (address + BitVec.ofNat 64 i)).isSome then
+        .returned (fun current =>
+          let offset := (current - address).toNat
+          if address ≤ current ∧ offset < count then values[offset]? else host current) bytes
+      else .final .failed
+  | .extCall _ => .final .failed
+
+/-- Initial FFI state for a run on `input`. -/
+def guestFfiState (input : InputBlob) : FfiState HostMemory :=
+  { oracle := guestOracle, state := guestHostMemory input, ioEvents := [] }
+
+/-- Byte codec and shared-memory domain for the 64-bit little-endian target. -/
+def guestFfiContext : PanValueFfiContext Word :=
+  { sharedDomain := fun address =>
+      decide ((inputAddr ≤ address ∧ address < inputAddr + inputArenaSize) ∨
+        (outputAddr ≤ address ∧ address < scratchBase))
+    -- Exact address in the payload, as CakeML does (see the module docstring).
+    byteAlign := id
+    bigEndian := false
+    wordToBytes := fun word _ => leBytes word
+    wordOfBytes := fun _ bytes => wordOfLeBytes bytes
+    wordToByte := fun word => UInt8.ofNat (word.toNat % 256)
+    byteToWord := fun byte => BitVec.ofNat 64 byte.toNat
+    valueToNat := BitVec.toNat }
 
 /-! ### Host handlers -/
 
@@ -118,38 +193,50 @@ words, as defined by flapjack. -/
 def guestPrimitiveHandler : PanPrimitiveHandler Word :=
   RiscV.panPrimitiveHandler
 
-/-- Host side of the guest's foreign calls in the software build,
-`@halt(@base, 0, @base, 0)` and `@trap(@base, code, @base, 0)`
-(`guest/runtime/start.S`). Neither touches Pancake-visible state, so both leave
-the locals unchanged; see the module docstring for the fact that on the machine
-neither returns. Any other foreign call is unmodelled. -/
-def guestFfiHandler : PanValueFfiHandler Word :=
-  fun function _ _ _ _ locals =>
-    if function == "halt" || function == "trap" then some locals else none
+/-- CakeML-style external calls without memory effects: `@halt` and `@trap`
+leave everything unchanged (see the module docstring for the fact that on the
+machine neither returns). Only reached when no memory handler is installed. -/
+def guestHostFfi : PanValueStatefulFfiHandler Word HostMemory :=
+  fun function _ _ _ _ locals ffi =>
+    if function == "halt" || function == "trap" then some (locals, ffi) else none
 
-/-- Sub-word and shared-memory accesses follow CakeML's aligned-cell model with
-the RISC-V byte layout: `ld8`/`st8`/`ld32`/`st32` and `!ld*`/`!st*` extract or
-patch bytes of the aligned word cell (`Flapjack.RiscV.panRiscVMemoryModel`). -/
+/-- Bare-metal external calls: `@halt`/`@trap` as no-ops, and the accelerators
+acting on Pancake memory through their parameter blocks (`Guest.guestMemoryFfi`). -/
+def guestAcceleratorFfi : PanValueMemoryFfiHandler Word HostMemory :=
+  fun function configuration configurationLength array arrayLength locals memory ffi =>
+    (guestMemoryFfi function configuration configurationLength array arrayLength memory).map
+      fun memory => (locals, memory, ffi)
+
+/-- Sub-word accesses follow CakeML's aligned-cell model with the RISC-V byte
+layout: `ld8`/`st8`/`ld32`/`st32` extract or patch bytes of the aligned word
+cell (`Flapjack.RiscV.panRiscVMemoryModel`). -/
 def guestMemoryAccess : PanValueMemoryAccess Word :=
   panValueMemoryAccessOfModel RiscV.panRiscVMemoryModel
 
 /-! ### The run -/
 
-/-- Step-counted run of the software guest `Guest.Software.guestAst` on
-`input` with recursion guard `fuel`. -/
-def runGuestSoftwareStepped (input : InputBlob) (fuel : Nat) :
-    Option (PanValueSteppedResult Word) :=
-  evalPanValueSteppedProgram (guestInitialState input) guestPrimitiveHandler
-    guestFfiHandler fuel Software.guestAst guestEntry [] (memoryAccess := some guestMemoryAccess)
+/-- Step-counted run of `program` on `input` with recursion guard `fuel`. -/
+def runProgramStepped (program : List (Decl Word)) (input : InputBlob) (fuel : Nat) :
+    Option (PanValueFfiSteppedResult Word HostMemory) :=
+  evalPanValueFfiProgramStepped guestFfiContext
+    { source := guestInitialState, ffi := guestFfiState input }
+    guestPrimitiveHandler guestHostFfi fuel program guestEntry []
+    (memoryAccess := some guestMemoryAccess) (memoryHandler := some guestAcceleratorFfi)
 
-/-- Step-counted run of the guest on `input` with recursion guard `fuel`.
-
-Intended: the accelerated `guestAst` with `guestMemoryFfi` handling the
-accelerator calls. Blocked on flapjack #517 (the stepped semantics need an
-`ExtCall` handler that can write memory); until then this is the software
-run, whose Pancake step counts are far larger (all crypto in software). -/
+/-- Step-counted run of the guest (the accelerated `guestAst`) on `input`. An
+accelerator call costs one `ExtCall` step. -/
 def runGuestStepped (input : InputBlob) (fuel : Nat) :
-    Option (PanValueSteppedResult Word) :=
-  runGuestSoftwareStepped input fuel
+    Option (PanValueFfiSteppedResult Word HostMemory) :=
+  runProgramStepped guestAst input fuel
+
+/-- The same for the software build `Guest.Software.guestAst`. -/
+def runGuestSoftwareStepped (input : InputBlob) (fuel : Nat) :
+    Option (PanValueFfiSteppedResult Word HostMemory) :=
+  runProgramStepped Software.guestAst input fuel
+
+/-- The host memory a run ended with, whatever its control outcome. -/
+def hostMemoryOf : PanValueFfiControlResult Word HostMemory → HostMemory
+  | .normal _ _ _ ffi | .returned _ _ _ ffi _ | .raised _ _ _ ffi _ _
+  | .broke _ _ _ ffi | .continued _ _ _ ffi | .finalFfi _ _ _ ffi _ => ffi.state
 
 end Guest

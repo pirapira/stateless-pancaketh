@@ -2,13 +2,13 @@ name = "Guest"
 version = "0.1.0"
 defaultTargets = ["Guest"]
 
-# Pinned to flapjack's HEAD as of this setup (needs PR 403, the memory model in
-# the stepped semantics); bump deliberately (and re-check lean-toolchain
-# compatibility) rather than tracking main unpinned.
+# Pinned to flapjack main after PR 521 (accelerator memory FFI dispatch takes
+# precedence over the byte-granular memory model). Bump deliberately (and
+# re-check lean-toolchain compatibility) rather than tracking main unpinned.
 [[require]]
 name = "flapjack"
 git = "https://github.com/pirapira/flapjack"
-rev = "cbea0d192ea7de7bd129d2c75fafa7fb7abfb321"
+rev = "c55bb9cd6e8c4528d0f36fc97d1c2b899ae0bc01"
 
 # ZisK accelerator semantics (RiscvZkvm.Rv64.ZiskAccel: Keccak-f, SHA-256
 # compress, Arith256/384Mod, secp256k1/BN254/BLS12-381 affine ops, BLAKE2b
@@ -39,3 +39,9 @@ root = "Tools.RunGuest"
 [[lean_exe]]
 name = "trace-guest"
 root = "Tools.TraceGuest"
+
+# `lake exe frame-bound [--software] [N]` prints a source-level upper estimate
+# of each function's stack frame (all variables spilled), see Tools/FrameBound.lean.
+[[lean_exe]]
+name = "frame-bound"
+root = "Tools.FrameBound"

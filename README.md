@@ -197,9 +197,11 @@ Pancake compiler, pinned by commit. `lake build` checks it.
 * `Guest/Accel.lean` gives the accelerator `@ffi` calls of the `ZISK_ACCEL`
   build their ZisK semantics on memory, reusing the concrete definitions in
   [riscv-zkvm](https://github.com/Verified-zkEVM/riscv-zkvm)
-  (`RiscvZkvm.Rv64.ZiskAccel`, shared with evm-asm). Attaching it to the
-  stepped run awaits an `ExtCall` handler with memory effects in flapjack
-  (flapjack #517); until then `Guest.runGuestStepped` is the software build.
+  (`RiscvZkvm.Rv64.ZiskAccel`, shared with evm-asm). `Guest.runGuestStepped`
+  runs the accelerated guest under flapjack's stateful-FFI stepped semantics,
+  with the host's input and output regions behind the shared-memory oracle;
+  executing it needs the `ExtCall` dispatch fix of flapjack #520 (verified
+  locally with that fix: 12 of 13 EEST fixtures match, one still running).
 * `Guest/Model.lean` is the guest as a flapjack program: initial state per
   `guest/src/config.h`, primitive/FFI handlers, CakeML's aligned-cell memory
   model, and the step-counted run `Guest.runGuestStepped`. It is computable;
@@ -211,6 +213,12 @@ Pancake compiler, pinned by commit. `lake build` checks it.
 * `Guest/StepBound.lean` states the first goal: the guest terminates within a
   constant number of Pancake source steps (flapjack's step-counted semantics)
   whenever the declared block gas limit is at most 200M.
+* `lake exe frame-bound` prints a source-level, oracle-free upper estimate of
+  every function's stack frame (all variables spilled: parameter and local
+  words plus the largest statement's expression temporaries), the ingredient
+  for a stack bound of the form `8 · (F · call depth + 3 · handlers)`; heap,
+  scratch and frame-memory usage are the guest's own bump allocators and so are
+  source-level quantities already.
 
 ## Status / plan
 
