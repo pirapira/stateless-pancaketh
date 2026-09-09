@@ -27,3 +27,11 @@ gen() { # gen <cpp flags> <pp output> <lean output> <namespace>
 
 gen "-DZISK_ACCEL" Guest/guest.pp.pnk Guest/Ast.lean Guest
 gen "" Guest/guest-software.pp.pnk Guest/SoftwareAst.lean Guest.Software
+
+# Stamp the source hashes into Guest/Source.lean so Lake rebuilds the
+# include_str% embeddings (it tracks only the .lean file's own content).
+for f in guest.pp.pnk guest-software.pp.pnk; do
+  h=$(sha256sum "Guest/$f" | cut -d' ' -f1)
+  sed -i "s|^-- $f sha256: .*|-- $f sha256: $h|" Guest/Source.lean
+done
+echo "stamped source hashes into Guest/Source.lean"
