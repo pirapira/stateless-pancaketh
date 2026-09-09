@@ -194,9 +194,11 @@ Pancake compiler, pinned by commit. `lake build` checks it.
 * `Guest/Model.lean` is the guest as a flapjack program: initial state per
   `guest/src/config.h`, primitive/FFI handlers, CakeML's aligned-cell memory
   model, and the step-counted run `Guest.runGuestStepped`. It is computable;
-  `lake exe run-guest [input.bin]` executes it and prints the result, the
-  Pancake step count, and the output region. Its docstring lists the
-  modelling caveats.
+  `lake exe run-guest [input.bin]` executes it on a `tools/make-inputs.sh`
+  input and prints the result, the Pancake step count, and the output region;
+  `lake exe trace-guest [input.bin]` locates the statement where a failing or
+  exception-raising run goes wrong. The module docstring lists the modelling
+  caveats.
 * `Guest/StepBound.lean` states the first goal: the guest terminates within a
   constant number of Pancake source steps (flapjack's step-counted semantics)
   whenever the declared block gas limit is at most 200M.
