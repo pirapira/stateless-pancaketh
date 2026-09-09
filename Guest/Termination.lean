@@ -476,6 +476,99 @@ theorem raise_terminates (exception : ExceptionId) (value : Exp α)
   simp only [Option.bind_eq_bind, Option.bind_some, if_pos hvalid]
   rfl
 
+/-! ### Equational forms
+
+`Terminates` is an existential, and existentials do not compose: `seq_terminates`
+needs to *know* the first statement's result, because the second runs from the
+state it left. These `_runs` lemmas are the equational forms the composition
+actually consumes. Every rule's proof above already constructs its result, so
+these are the same proofs stated to say what it is. -/
+
+/-- `skip` leaves the state alone. -/
+theorem skip_runs (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α))
+    (f : FfiState σ) (fuel : Nat) :
+    evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord (fuel + 1) l g m f Prog.skip ma c mh
+      = some (PanValueFfiControlResult.normal l g m f, 1) := by
+  rw [evalPanValueFfiProgSteps]
+
+/-- What an `ite` runs to: the condition's cost, plus the taken branch. -/
+theorem ite_runs (condition : Exp α) (thenBranch elseBranch : Prog α)
+    (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)
+    (cv : α) (cs : Nat) (fuel : Nat) (r : PanValueFfiControlResult α σ) (steps : Nat)
+    (hcond : evalPanValueExpCounted structs l g m baseAddress topAddress bytesInWord condition ma = some (PanValue.word cv, cs))
+    (hbranch : evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord fuel l g m f
+      (if (cv != 0) = true then thenBranch else elseBranch) ma c mh = some (r, steps)) :
+    evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord (fuel + 1) l g m f (Prog.ite condition thenBranch elseBranch) ma c mh
+      = some (r, cs + steps + 1) := by
+  rw [evalPanValueFfiProgSteps, hcond]
+  by_cases hz : (cv != 0) = true
+  · rw [if_pos hz] at hbranch
+    simp only [Option.bind_eq_bind, Option.bind_some, if_pos hz, hbranch]
+    rfl
+  · rw [if_neg hz] at hbranch
+    simp only [Option.bind_eq_bind, Option.bind_some, if_neg hz, hbranch]
+    rfl
+
+/-- What a `seq` runs to when the first half falls through. -/
+theorem seq_runs_normal (first second : Prog α)
+    (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)
+    (l' g' : VarName → Option (PanValue α)) (m' : α → Option (PanValue α)) (f' : FfiState σ)
+    (fuel s1 s2 : Nat) (r2 : PanValueFfiControlResult α σ)
+    (hfirst : evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord fuel l g m f first ma c mh
+      = some (PanValueFfiControlResult.normal l' g' m' f', s1))
+    (hsecond : evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord fuel l' g' m' f' second ma c mh = some (r2, s2)) :
+    evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord (fuel + 1) l g m f (Prog.seq first second) ma c mh = some (r2, s1 + s2 + 1) := by
+  rw [evalPanValueFfiProgSteps, hfirst]
+  simp only [Option.bind_eq_bind, Option.bind_some, hsecond]
+  rfl
+
+/-- What a `seq` runs to when the first half raises: the second never runs. -/
+theorem seq_runs_raised (first second : Prog α)
+    (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)
+    (l' g' : VarName → Option (PanValue α)) (m' : α → Option (PanValue α)) (f' : FfiState σ)
+    (fuel s1 : Nat) (e : ExceptionId) (v : PanValue α)
+    (hfirst : evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord fuel l g m f first ma c mh
+      = some (PanValueFfiControlResult.raised l' g' m' f' e v, s1)) :
+    evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord (fuel + 1) l g m f (Prog.seq first second) ma c mh
+      = some (PanValueFfiControlResult.raised l' g' m' f' e v, s1 + 1) := by
+  rw [evalPanValueFfiProgSteps, hfirst]
+  rfl
+
+/-- What a `raise` runs to. -/
+theorem raise_runs (exception : ExceptionId) (value : Exp α)
+    (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)
+    (v : PanValue α) (vs fuel : Nat)
+    (hvalue : evalPanValueExpCounted structs l g m baseAddress topAddress bytesInWord value ma = some (v, vs))
+    (hvalid : (panValueExceptionValid structs c exception v &&
+      panValuePayloadWithinLimit structs v) = true) :
+    evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord (fuel + 1) l g m f (Prog.raise exception value) ma c mh
+      = some (PanValueFfiControlResult.raised (fun _ => none) g m f exception v, vs + 1) := by
+  rw [evalPanValueFfiProgSteps, hvalue]
+  simp only [Option.bind_eq_bind, Option.bind_some, if_pos hvalid]
+  rfl
+
+/-- What a `return` runs to. -/
+theorem return_runs (value : Exp α)
+    (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)
+    (v : PanValue α) (vs fuel : Nat)
+    (hvalue : evalPanValueExpCounted structs l g m baseAddress topAddress bytesInWord value ma = some (v, vs))
+    (hlimit : panValuePayloadWithinLimit structs v = true) :
+    evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord (fuel + 1) l g m f (Prog.return value) ma c mh
+      = some (PanValueFfiControlResult.returned (fun _ => none) g m f [v], vs + 1) := by
+  rw [evalPanValueFfiProgSteps, hvalue]
+  simp only [Option.bind_eq_bind, Option.bind_some, if_pos hlimit]
+  rfl
+
 end
 end StepCalculus
 end Guest

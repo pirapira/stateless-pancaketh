@@ -270,28 +270,83 @@ theorem charge_gas_tail_terminates
     (by rw [evalPanValueExpCounted, eval_const]; rfl) hlimit
 
 
-/-!
-### What is still missing, and why
+/-- **`charge_gas` terminates, from state alone.** No hypothesis about the
+evaluator remains: it suffices that the global `ev` holds a word, that memory
+holds words at the two fields `charge_gas` touches, that `amount` is bound to a
+word, that those two addresses differ, and that the program declares `EvmErr`
+with a matching shape and admits the payloads.
 
-`charge_gas_terminates_of_state` and `charge_gas_tail_terminates` between them
-cover everything except joining them, and joining them is blocked by a
-structural point worth stating rather than worked around:
+The last group is not incidental. `Prog.raise` and `Prog.return` check their
+payload against the program's contracts and answer `none` otherwise, so a proof
+about *any* guest function carries them — the control-flow analogue of the
+no-wraparound conditions the loop measures need.
 
-**`Terminates` does not compose; the rules need equational forms too.**
-`seq_terminates` takes the first statement's result `r1` as a parameter, and
-rightly so — the second statement runs from whatever state the first left. But
-that means the caller must supply an *equation*, `eval fuel₁ … = some (r1, s1)`,
-not merely `∃ r, … = some r`. `store_runs` is the equational form of
-`store_terminates`, and it is what let `charge_gas_tail_terminates` chain its
-two stores at all: the second store reads `ev + 184` out of the memory the
-first one produced.
-
-The same is now needed for `ite` (and, later, for `while`, `dec` and `call`).
-In `charge_gas` the missing step is small — the condition is false, the branch
-is `skip`, so the state is unchanged — but there is no `ite_runs` to say so,
-and inventing one ad hoc here would be the wrong shape. Adding the equational
-layer to `Guest.Termination` is the next task; it is mechanical, since every
-rule's proof already constructs the result it needs.
--/
+Both branches are taken: out of gas, where the `ite` raises and the tail never
+runs; and the normal path, where the `ite` falls through with the state
+unchanged and the tail does the two stores and the `return`. Joining them is
+what needed the `_runs` layer of `Guest.Termination`: `seq` has to *know* the
+`ite`'s result, not merely that it had one. -/
+theorem charge_gas_terminates_from_state
+    (l g : VarName → Option (PanValue Word)) (m : Memory) (f : FfiState HostMemory)
+    (e gl amount used : Word)
+    (hev : g "ev" = some (PanValue.word e))
+    (hgas : m (e + BitVec.ofNat 64 64) = some (PanValue.word gl))
+    (hused : m (e + BitVec.ofNat 64 184) = some (PanValue.word used))
+    (hamount : l "amount" = some (PanValue.word amount))
+    (hne : ((e + BitVec.ofNat 64 184) == (e + BitVec.ofNat 64 64)) = false)
+    (hraiseValid : (panValueExceptionValid structs c "EvmErr"
+        (PanValue.word (BitVec.ofNat 64 4)) &&
+      panValuePayloadWithinLimit structs (PanValue.word (BitVec.ofNat 64 4))) = true)
+    (hlimit : panValuePayloadWithinLimit structs
+      (PanValue.word (BitVec.ofNat 64 0)) = true) :
+    StepCalculus.Terminates context primitive handler structs functions baseAddress
+      topAddress bytesInWord (some guestMemoryAccess) c mh l g m f chargeGasBody := by
+  have hgl' : updatePanValueMap l "gl" (PanValue.word gl) "gl"
+      = some (PanValue.word gl) := by simp [updatePanValueMap]
+  have hamount' : updatePanValueMap l "gl" (PanValue.word gl) "amount"
+      = some (PanValue.word amount) := by simp [updatePanValueMap, hamount]
+  have hcond := evalCounted_cmp_locals structs (updatePanValueMap l "gl" (PanValue.word gl))
+    g m baseAddress topAddress bytesInWord Cmp.lower "gl" "amount" gl amount hgl' hamount'
+  refine StepCalculus.dec_terminates context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh "gl" Shape.one _ _
+    l g m f (PanValue.word gl) _
+    (charge_gas_load_of_state structs l g m baseAddress topAddress bytesInWord e gl hev hgas)
+    (word_shape_matches structs gl) ?_
+  by_cases hz : ((RiscV.panRiscVCmp Cmp.lower gl amount) != 0) = true
+  · -- out of gas: the `ite` raises, and the `seq` stops there
+    have hraise := StepCalculus.raise_runs context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+      "EvmErr" (Exp.const (BitVec.ofNat 64 4)) (updatePanValueMap l "gl" (PanValue.word gl))
+      g m f _ _ 0 (by rw [evalPanValueExpCounted, eval_const]; rfl) hraiseValid
+    have hite := StepCalculus.ite_runs context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+      (thenBranch := Prog.raise "EvmErr" (Exp.const (BitVec.ofNat 64 4)))
+      (elseBranch := Prog.skip)
+      (updatePanValueMap l "gl" (PanValue.word gl)) g m f _ _ 1 _ _ hcond
+      (by rw [if_pos hz]; exact hraise)
+    exact ⟨3, _, StepCalculus.seq_runs_raised context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _ _ _ _ _ _ _ _ _ _
+      2 _ _ _ hite⟩
+  · -- normal path: the `ite` falls through unchanged, then the tail runs
+    have hskip := StepCalculus.skip_runs context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+      (updatePanValueMap l "gl" (PanValue.word gl)) g m f 0
+    have hite := StepCalculus.ite_runs context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+      (thenBranch := Prog.raise "EvmErr" (Exp.const (BitVec.ofNat 64 4)))
+      (elseBranch := Prog.skip)
+      (updatePanValueMap l "gl" (PanValue.word gl)) g m f _ _ 1 _ _ hcond
+      (by rw [if_neg hz]; exact hskip)
+    exact StepCalculus.seq_terminates context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _ _ _ g m f
+      2 _ _ hite
+      (fun l'' g'' m'' f'' heq => by
+        injection heq with h1 h2 h3 h4
+        subst h1; subst h2; subst h3; subst h4
+        exact charge_gas_tail_terminates
+          (l := updatePanValueMap l "gl" (PanValue.word gl)) (g := g) (m := m) (f := f)
+          (e := e) (gl := gl) (amount := amount) (used := used)
+          (hev := hev) (hgl := hgl') (hamount := hamount') (hused := hused)
+          (hne := hne) (hlimit := hlimit))
 
 end Guest

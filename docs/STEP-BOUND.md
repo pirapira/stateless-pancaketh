@@ -482,22 +482,37 @@ no-wraparound conditions the loop measures need.
 
 ### `Terminates` does not compose; the rules need equational forms
 
-The one thing still between these two halves and a hypothesis-free
-`charge_gas`, and it is structural rather than an oversight.
-
 `seq_terminates` takes the first statement's result `r1` as a parameter, and
 rightly so: the second statement runs from whatever state the first left. But
 that means the caller must supply an **equation**, `eval fuel₁ … = some (r1,
-s1)`, not merely `∃ r, … = some r`. `store_runs` is the equational form of
-`store_terminates`, and it is what let the tail chain its two stores at all —
-the second store reads `ev + 184` out of the memory the first produced.
+s1)`, not merely `∃ r, … = some r`. So each rule needs an equational twin, and
+`Guest/Termination.lean` now has them: `skip_runs`, `ite_runs`,
+`seq_runs_normal`, `seq_runs_raised`, `raise_runs`, `return_runs`, alongside
+`store_runs` in `Guest/Expressions.lean`. They are the same proofs as the
+`_terminates` rules, stated to say *what* the result is; every one of those
+proofs already constructed it.
 
-The same is now needed for `ite`, and later for `while`, `dec` and `call`. In
-`charge_gas` the missing step is small — the condition is false, the branch is
-`skip`, the state is unchanged — but there is no `ite_runs` to say so, and an
-ad-hoc version would be the wrong shape. Adding the equational layer to
-`Guest/Termination.lean` is the next task; it is mechanical, since every rule's
-proof already constructs the result it needs.
+### The first guest function proved to terminate from state alone
+
+`charge_gas_terminates_from_state` needs **no hypothesis about the evaluator**.
+It suffices that:
+
+* the global `ev` holds a word;
+* memory holds words at the two fields `charge_gas` touches, `ev + 64` and
+  `ev + 184`;
+* `amount` is bound to a word;
+* those two addresses differ;
+* the program declares `EvmErr` with a matching shape and admits the payloads.
+
+Both branches are proved: out of gas, where the `ite` raises and the tail never
+runs, and the normal path, where the `ite` falls through with the state
+unchanged and the tail does its two stores and the `return`.
+
+That last group of hypotheses is not incidental, and it is the shape every
+guest function will have. `Prog.raise` and `Prog.return` check their payload
+against the program's contracts and answer `none` otherwise, so a termination
+proof about any guest function carries them — the control-flow analogue of the
+no-wraparound conditions the loop measures need.
 
 ## What the bound itself needs
 
