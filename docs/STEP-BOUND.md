@@ -388,9 +388,37 @@ accelerated guest has **257 `while` loops**. By loop condition:
     opcode either charges ≥ 1 gas or clears `EV_RUNNING`. With that, iterations
     ≤ 200M + 2·frames, frames ≤ 1024 deep and ≤ gas/700.
 
-    This case analysis, together with the input-proportional loops inside the
-    metered opcodes (KECCAK256, CALLDATACOPY, MCOPY, EXP), is the bulk of the
-    remaining work.
+    `lake exe opcode-census` reads that classification off the committed AST.
+    It walks `op_dispatch` for every `op_*` handler it can reach — equality
+    tests and the range tests that pass an argument (`if op <+ 128 {
+    op_push(op - 95); ... }`) alike — and inspects each handler's
+    straight-line prefix:
+
+    | | handlers |
+    |---|---|
+    | charge a literal ≥ 1 gas up front | 60 |
+    | end the frame without charging | 3 — `op_stop`, `op_return`, `op_selfdestruct` |
+    | need the branches looked at | 24 |
+
+    **87 handlers, and the only ones that charge nothing up front are frame
+    enders** — which is the repaired bound's shape, confirmed rather than
+    assumed. `op_dispatch` also falls through to `throw EvmErr 5` for an
+    unmatched opcode, which ends the frame too.
+
+    The 24 are the dynamically-metered ones: `op_exp`, `op_keccak`,
+    `op_balance`, the `*copy` family, `op_extcode*`, `op_mload`/`op_mstore`/
+    `op_mstore8`/`op_mcopy`, `op_sload`/`op_sstore`, `op_push`, `op_log`,
+    `op_revert`, and the six call/create opcodes. Those are the work-list: each
+    needs its branches checked, and several also carry an input-proportional
+    inner loop that the step bound has to count. The census is syntactic and
+    conservative — it reports what is evident on the prefix and says
+    "unclear" otherwise, so it is a work-list, not a proof; turning
+    "charges ≥ 1" into a semantic fact still needs a lemma about `charge_gas`.
+
+    One wrinkle that lemma will have to handle: gas lives in **two** counters.
+    `charge_gas` decrements `EV_GAS_LEFT`, but `charge_state_gas`
+    (`evm.pnk:249`) draws from `EV_STATE_GAS_LEFT` first and only spills into
+    `EV_GAS_LEFT` when that is exhausted, so the measure has to be the sum.
   * the witness-decode machine, MPT insert/delete descent and unwind
     (`mpt.pnk:410,714,857,919,1075`) — bounded by trie depth 64 and the witness
     node count, itself bounded by the input.
