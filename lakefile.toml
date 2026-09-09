@@ -2,15 +2,13 @@ name = "Guest"
 version = "0.1.0"
 defaultTargets = ["Guest"]
 
-# Pinned to the head of flapjack PR 519 (memory-effect accelerator FFI handler
-# in the stateful stepped semantics; merged). Executing the accelerated guest
-# additionally needs the ExtCall dispatch fix of flapjack #520. Bump
-# deliberately (and re-check lean-toolchain compatibility) rather than tracking
-# main unpinned.
+# Pinned to flapjack main after PR 521 (accelerator memory FFI dispatch takes
+# precedence over the byte-granular memory model). Bump deliberately (and
+# re-check lean-toolchain compatibility) rather than tracking main unpinned.
 [[require]]
 name = "flapjack"
 git = "https://github.com/pirapira/flapjack"
-rev = "7ebb1c66ad29b4c24f072dc32640a77dcf147c77"
+rev = "c55bb9cd6e8c4528d0f36fc97d1c2b899ae0bc01"
 
 # ZisK accelerator semantics (RiscvZkvm.Rv64.ZiskAccel: Keccak-f, SHA-256
 # compress, Arith256/384Mod, secp256k1/BN254/BLS12-381 affine ops, BLAKE2b
