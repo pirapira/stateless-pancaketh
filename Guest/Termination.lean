@@ -57,52 +57,59 @@ def Terminates (l g : VarName → Option (PanValue α)) (m : α → Option (PanV
   ∃ fuel result, evalPanValueFfiProgSteps context primitive handler structs functions
     baseAddress topAddress bytesInWord fuel l g m f prog ma c mh = some result
 
-/-- A loop whose condition always evaluates and whose body, whenever it is
-entered, terminates and strictly decreases `μ` on the states it continues from,
-terminates. -/
-theorem while_terminates (cond : Exp α) (body : Prog α)
+/-- **The loop rule.** A loop terminates when an invariant `I` holds on entry
+and is preserved, the condition evaluates on every state satisfying `I`, and
+the body — whenever entered — terminates and strictly decreases `μ` on the
+states it continues from.
+
+The invariant is not decoration. A loop condition mentioning a local can only
+be shown to evaluate on states where that local is bound, so without `I` the
+rule is unusable on real code: that is what trying it on the guest's
+`rlp_be_len` showed. `while_terminates` below is this with `I := True`. -/
+theorem while_terminates_inv (cond : Exp α) (body : Prog α)
+    (I : (VarName → Option (PanValue α)) → (VarName → Option (PanValue α)) →
+      (α → Option (PanValue α)) → FfiState σ → Prop)
     (μ : (VarName → Option (PanValue α)) → (VarName → Option (PanValue α)) →
       (α → Option (PanValue α)) → FfiState σ → Nat)
-    (hcond : ∀ (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)),
-      ∃ n cs, evalPanValueExpCounted structs l g m
-        baseAddress topAddress bytesInWord cond ma = some (PanValue.word n, cs))
-    (hbody : ∀ l g m f n cs,
+    (hcond : ∀ l g m f, I l g m f → ∃ n cs, evalPanValueExpCounted structs l g m
+      baseAddress topAddress bytesInWord cond ma = some (PanValue.word n, cs))
+    (hbody : ∀ l g m f, I l g m f → ∀ n cs,
       evalPanValueExpCounted structs l g m baseAddress topAddress bytesInWord cond ma
         = some (PanValue.word n, cs) → (n == 0) = false →
       ∃ fuel result steps,
         evalPanValueFfiProgSteps context primitive handler structs functions
-          baseAddress topAddress bytesInWord fuel l g m f body ma c mh
-          = some (result, steps) ∧
+          baseAddress topAddress bytesInWord fuel l g m f body ma c mh = some (result, steps) ∧
         ∀ l' g' m' f', result = .normal l' g' m' f' ∨ result = .continued l' g' m' f' →
-          μ l' g' m' f' < μ l g m f) :
-    ∀ l g m f, Terminates context primitive handler structs functions baseAddress
-      topAddress bytesInWord ma c mh l g m f (Prog.while cond body) := by
-  suffices H : ∀ n l g m f, μ l g m f = n →
+          I l' g' m' f' ∧ μ l' g' m' f' < μ l g m f) :
+    ∀ l g m f, I l g m f → Terminates context primitive handler structs functions
+      baseAddress topAddress bytesInWord ma c mh l g m f (Prog.while cond body) := by
+  suffices H : ∀ k l g m f, I l g m f → μ l g m f = k →
       Terminates context primitive handler structs functions baseAddress topAddress
         bytesInWord ma c mh l g m f (Prog.while cond body) by
-    intro l g m f; exact H _ l g m f rfl
-  intro n
-  induction n using Nat.strongRecOn with
-  | _ n ih =>
-    intro l g m f hmu
-    obtain ⟨cv, cs, hc⟩ := hcond l g m
+    intro l g m f hI; exact H _ l g m f hI rfl
+  intro k
+  induction k using Nat.strongRecOn with
+  | _ k ih =>
+    intro l g m f hI hmu
+    obtain ⟨cv, cs, hc⟩ := hcond l g m f hI
     unfold Terminates
     by_cases hz : (cv == 0) = true
     · refine ⟨1, (PanValueFfiControlResult.normal l g m f, cs + 1), ?_⟩
       rw [evalPanValueFfiProgSteps, hc]
       simp only [Option.bind_eq_bind, Option.bind_some, if_pos hz]
       rfl
-    · obtain ⟨bfuel, bres, bsteps, hb, hdec⟩ := hbody l g m f cv cs hc (by simpa using hz)
-      have hmono : ∀ (k : Nat), bfuel ≤ k →
+    · obtain ⟨bfuel, bres, bsteps, hb, hdec⟩ :=
+        hbody l g m f hI cv cs hc (by simpa using hz)
+      have hmono : ∀ (j : Nat), bfuel ≤ j →
           evalPanValueFfiProgSteps context primitive handler structs functions
-            baseAddress topAddress bytesInWord k l g m f body ma c mh = some (bres, bsteps) :=
-        fun k hk => progMono context primitive handler structs functions baseAddress topAddress
-            bytesInWord bfuel l g m f body ma c mh k (bres, bsteps) hk hb
+          baseAddress topAddress bytesInWord j l g m f body ma c mh = some (bres, bsteps) :=
+        fun j hj => progMono context primitive handler structs functions baseAddress topAddress
+            bytesInWord bfuel l g m f body ma c mh j (bres, bsteps) hj hb
       cases bres with
       | normal l' g' m' f' =>
-        have hlt : μ l' g' m' f' < n := by
-          rw [← hmu]; exact hdec l' g' m' f' (Or.inl rfl)
-        obtain ⟨lfuel, lres, hl⟩ := ih _ hlt l' g' m' f' rfl
+        obtain ⟨hI', hlt'⟩ := hdec l' g' m' f' (Or.inl rfl)
+        have hlt : μ l' g' m' f' < k := by rw [← hmu]; exact hlt'
+        obtain ⟨lfuel, lres, hl⟩ := ih _ hlt l' g' m' f' hI' rfl
         obtain ⟨lres1, lres2⟩ := lres
         refine ⟨max bfuel lfuel + 1, (lres1, cs + bsteps + lres2 + 1), ?_⟩
         rw [evalPanValueFfiProgSteps, hc]
@@ -114,9 +121,9 @@ theorem while_terminates (cond : Exp α) (body : Prog α)
           (max bfuel lfuel) (lres1, lres2) (Nat.le_max_right _ _) hl]
         rfl
       | continued l' g' m' f' =>
-        have hlt : μ l' g' m' f' < n := by
-          rw [← hmu]; exact hdec l' g' m' f' (Or.inr rfl)
-        obtain ⟨lfuel, lres, hl⟩ := ih _ hlt l' g' m' f' rfl
+        obtain ⟨hI', hlt'⟩ := hdec l' g' m' f' (Or.inr rfl)
+        have hlt : μ l' g' m' f' < k := by rw [← hmu]; exact hlt'
+        obtain ⟨lfuel, lres, hl⟩ := ih _ hlt l' g' m' f' hI' rfl
         obtain ⟨lres1, lres2⟩ := lres
         refine ⟨max bfuel lfuel + 1, (lres1, cs + bsteps + lres2 + 1), ?_⟩
         rw [evalPanValueFfiProgSteps, hc]
@@ -151,6 +158,31 @@ theorem while_terminates (cond : Exp α) (body : Prog α)
         simp only [Option.bind_eq_bind, Option.bind_some, if_neg hz]
         rw [hmono _ (Nat.le_refl _)]
         rfl
+
+/-- `while_terminates_inv` with a trivial invariant. -/
+theorem while_terminates (cond : Exp α) (body : Prog α)
+    (μ : (VarName → Option (PanValue α)) → (VarName → Option (PanValue α)) →
+      (α → Option (PanValue α)) → FfiState σ → Nat)
+    (hcond : ∀ (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)),
+      ∃ n cs, evalPanValueExpCounted structs l g m
+        baseAddress topAddress bytesInWord cond ma = some (PanValue.word n, cs))
+    (hbody : ∀ l g m f n cs,
+      evalPanValueExpCounted structs l g m baseAddress topAddress bytesInWord cond ma
+        = some (PanValue.word n, cs) → (n == 0) = false →
+      ∃ fuel result steps,
+        evalPanValueFfiProgSteps context primitive handler structs functions
+          baseAddress topAddress bytesInWord fuel l g m f body ma c mh = some (result, steps) ∧
+        ∀ l' g' m' f', result = .normal l' g' m' f' ∨ result = .continued l' g' m' f' →
+          μ l' g' m' f' < μ l g m f) :
+    ∀ l g m f, Terminates context primitive handler structs functions baseAddress
+      topAddress bytesInWord ma c mh l g m f (Prog.while cond body) := by
+  intro l g m f
+  refine while_terminates_inv context primitive handler structs functions baseAddress
+    topAddress bytesInWord ma c mh cond body (fun _ _ _ _ => True) μ
+    (fun l g m _ _ => hcond l g m) ?_ l g m f trivial
+  intro l g m f _ n cs hc hnz
+  obtain ⟨fuel, result, steps, hrun, hdec⟩ := hbody l g m f n cs hc hnz
+  exact ⟨fuel, result, steps, hrun, fun l' g' m' f' hres => ⟨trivial, hdec l' g' m' f' hres⟩⟩
 
 /-- `seq`: exhibit a run of `first`, then handle the case where it falls
 through. -/
@@ -371,36 +403,42 @@ theorem callSteps_terminates
 
 /-- The shape most of the guest's loops have: a counter the body strictly
 increases, against a bound. Around 200 of the 257 `while` loops are of this
-form (`i <+ n`, `i < cap`, `i < 8`, ...), and this saves redoing the truncated
-subtraction each time — note that the counter is *not* required to stay below
-`N`, since overshooting it sends the measure to zero, which is still a
-decrease. -/
+form (`i <+ n`, `i < cap`, `i < 8`, ...), and this does the truncated
+subtraction once instead of per loop — note the counter need not stay below
+`N`, since overshooting sends the measure to zero, which is still a decrease.
+
+`counter` is a `Nat`, deliberately. The guest's counters are `BitVec 64` and
+its `+` wraps, so "the body increases the counter" is a real obligation, not a
+formality: `memzero`'s `while i + 32 <=+ n` does not terminate for
+`n ≥ 2^64 - 32`, because `i + 32` wraps to `0` and the counter restarts. Making
+the hypothesis an increase in `ℕ` is what forces that to be discharged. -/
 theorem while_terminates_of_increasing_counter (cond : Exp α) (body : Prog α)
+    (I : (VarName → Option (PanValue α)) → (VarName → Option (PanValue α)) →
+      (α → Option (PanValue α)) → FfiState σ → Prop)
     (counter : (VarName → Option (PanValue α)) → Nat) (N : Nat)
-    (hcond : ∀ (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)),
-      ∃ n cs, evalPanValueExpCounted structs l g m
-        baseAddress topAddress bytesInWord cond ma = some (PanValue.word n, cs))
-    (hentered : ∀ (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) n cs,
+    (hcond : ∀ l g m f, I l g m f → ∃ n cs, evalPanValueExpCounted structs l g m
+      baseAddress topAddress bytesInWord cond ma = some (PanValue.word n, cs))
+    (hentered : ∀ l g m f, I l g m f → ∀ n cs,
       evalPanValueExpCounted structs l g m baseAddress topAddress bytesInWord cond ma
         = some (PanValue.word n, cs) → (n == 0) = false → counter l < N)
-    (hbody : ∀ l g m f n cs,
+    (hbody : ∀ l g m f, I l g m f → ∀ n cs,
       evalPanValueExpCounted structs l g m baseAddress topAddress bytesInWord cond ma
         = some (PanValue.word n, cs) → (n == 0) = false →
       ∃ fuel result steps,
         evalPanValueFfiProgSteps context primitive handler structs functions
           baseAddress topAddress bytesInWord fuel l g m f body ma c mh = some (result, steps) ∧
         ∀ l' g' m' f', result = .normal l' g' m' f' ∨ result = .continued l' g' m' f' →
-          counter l < counter l') :
-    ∀ l g m f, Terminates context primitive handler structs functions baseAddress
-      topAddress bytesInWord ma c mh l g m f (Prog.while cond body) := by
-  refine while_terminates context primitive handler structs functions baseAddress
-    topAddress bytesInWord ma c mh cond body (fun l _ _ _ => N - counter l) hcond ?_
-  intro l g m f n cs hc hnz
-  obtain ⟨fuel, result, steps, hrun, hinc⟩ := hbody l g m f n cs hc hnz
+          I l' g' m' f' ∧ counter l < counter l') :
+    ∀ l g m f, I l g m f → Terminates context primitive handler structs functions
+      baseAddress topAddress bytesInWord ma c mh l g m f (Prog.while cond body) := by
+  refine while_terminates_inv context primitive handler structs functions baseAddress
+    topAddress bytesInWord ma c mh cond body I (fun l _ _ _ => N - counter l) hcond ?_
+  intro l g m f hI n cs hc hnz
+  obtain ⟨fuel, result, steps, hrun, hstep⟩ := hbody l g m f hI n cs hc hnz
   refine ⟨fuel, result, steps, hrun, fun l' g' m' f' hres => ?_⟩
-  have h1 : counter l < N := hentered l g m n cs hc hnz
-  have h2 : counter l < counter l' := hinc l' g' m' f' hres
-  omega
+  obtain ⟨hI', hinc⟩ := hstep l' g' m' f' hres
+  have h1 : counter l < N := hentered l g m f hI n cs hc hnz
+  exact ⟨hI', by omega⟩
 
 end
 end StepCalculus

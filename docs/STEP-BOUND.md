@@ -340,11 +340,12 @@ So BLAKE2F was the only unguarded one.
 With monotonicity in hand, the next layer is a termination calculus, so a
 whole-program proof can be assembled from per-construct facts. All `sorry`-free:
 
-* **`while_terminates`** — a loop whose condition always evaluates and whose
-  body, whenever entered, terminates and strictly decreases a measure `μ` on
-  the states it continues from, terminates. Proved by strong induction on `μ`,
-  taking `max` of the body's fuel and the tail's and lifting both with
-  `progMono` — which is precisely the step that was impossible before.
+* **`while_terminates_inv`** — a loop terminates when an invariant `I` holds on
+  entry and is preserved, the condition evaluates on every state satisfying
+  `I`, and the body — whenever entered — terminates and strictly decreases a
+  measure `μ`. Proved by strong induction on `μ`, taking `max` of the body's
+  fuel and the tail's and lifting both with `progMono` — precisely the step
+  that was impossible before. `while_terminates` is this with `I := True`.
 * `seq_terminates`, `ite_terminates`, `dec_terminates`, `call_terminates` — the
   compositional rules for a function body.
 * `callSteps_terminates` — the call evaluator itself. Its extra hypotheses are
@@ -362,9 +363,39 @@ their expressions evaluate.
   bound, since overshooting sends the measure to zero, which is still a
   decrease.
 
-Since the call graph is acyclic (#71), **what is left is the measures**: every
-remaining loop reduces to exhibiting one, and for most of them that is now a
-counter and a bound.
+Since the call graph is acyclic (#71), **what is left is invariants and
+measures**: every remaining loop reduces to exhibiting a pair, and for most of
+them that is a counter and a bound.
+
+### Two things learned by pointing the rules at real guest code
+
+Both came out of trying to prove an actual function rather than designing the
+rules in the abstract, and both change how the remaining work has to be
+organised.
+
+**The invariant is not decoration.** A loop condition mentioning a local can
+only be shown to evaluate on states where that local is bound, so an
+invariant-free rule is unusable on anything real. `rlp_be_len` — four lines,
+one loop — already needs one.
+
+**Counters wrap, so per-loop lemmas are not independent.** The guest's counters
+are `BitVec 64` and Pancake's `+` wraps, so "the body increases the counter" is
+a real obligation:
+
+| loop | diverges when | why |
+|---|---|---|
+| `memzero`'s `while i + 32 <=+ n` | `n ≥ 2^64 − 32` | `i + 32` wraps to `0`, the condition still holds, the counter restarts |
+| `ceil_log2`'s `while (1 << d) <+ n` | `n > 2^63` | at `d = 64` the shift gives `0`, which is `<+ n` forever |
+
+Neither is reachable — `memzero`'s call sites pass small constants, and
+`ceil_log2` is only called from `merkleize` with SSZ chunk counts bounded by
+the list limits — but **both are preconditions that only the caller can
+discharge**. So the loops cannot be proved in isolation and then assembled;
+each needs its bound threaded down from its callers. That is a structural
+constraint on the remaining work, not a detail.
+
+The counter corollary takes `counter` as a `ℕ` precisely so that this obligation
+cannot be skipped.
 
 ## What the bound itself needs
 
