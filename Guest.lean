@@ -2,7 +2,9 @@ import Guest.Basic
 import Guest.IncludeStr
 import Guest.Source
 import Guest.Ast
+import Guest.SoftwareAst
 import Guest.DecidableEq
+import Guest.Accel
 import Guest.Model
 import Guest.StepBound
 import Guest.AstParse
