@@ -422,29 +422,49 @@ accelerated guest has **257 `while` loops**. By loop condition:
     `lake exe opcode-census` reads that classification off the committed AST.
     It walks `op_dispatch` for every `op_*` handler it can reach — equality
     tests and the range tests that pass an argument (`if op <+ 128 {
-    op_push(op - 95); ... }`) alike — and inspects each handler's
-    straight-line prefix:
+    op_push(op - 95); ... }`) alike — and then runs two passes:
+
+    1. the handler's straight-line prefix, following `seq`, `dec` and `decCall`;
+    2. a **path-sensitive, interprocedural must-charge analysis** on whatever
+       the first pass left open. `mustCharge` holds when every path leaving a
+       program has either charged ≥ 1 gas or ended the frame (cleared
+       `EV_RUNNING`, or raised — `run_frames` catches `EvmErr` into
+       `frame_exception`). It is conservative by construction: a charge inside
+       a `while` does not count, since the loop may run zero times, and a
+       `return` that has not charged makes the whole program fail. Callee
+       facts come from a fixpoint over the acyclic call graph, tracking both
+       "charges unconditionally" and "charges if its first argument is ≥ 1" —
+       the latter because the charging helpers take the base cost as a
+       parameter (`charge_with_memory(3, start, <32,0,0,0>)`), and positivity
+       propagates through `add_sat`, which is monotone, but *not* through
+       plain `+`, which wraps.
 
     | | handlers |
     |---|---|
     | charge a literal ≥ 1 gas up front | 60 |
     | end the frame without charging | 3 — `op_stop`, `op_return`, `op_selfdestruct` |
-    | need the branches looked at | 24 |
+    | charge or end the frame on every path | 7 — `op_mload`, `op_mstore`, `op_mstore8`, `op_sload`, `op_sstore`, `op_push`, `op_revert` |
+    | still need a human | 17 |
 
     **87 handlers, and the only ones that charge nothing up front are frame
     enders** — which is the repaired bound's shape, confirmed rather than
     assumed. `op_dispatch` also falls through to `throw EvmErr 5` for an
     unmatched opcode, which ends the frame too.
 
-    The 24 are the dynamically-metered ones: `op_exp`, `op_keccak`,
-    `op_balance`, the `*copy` family, `op_extcode*`, `op_mload`/`op_mstore`/
-    `op_mstore8`/`op_mcopy`, `op_sload`/`op_sstore`, `op_push`, `op_log`,
-    `op_revert`, and the six call/create opcodes. Those are the work-list: each
-    needs its branches checked, and several also carry an input-proportional
-    inner loop that the step bound has to count. The census is syntactic and
-    conservative — it reports what is evident on the prefix and says
-    "unclear" otherwise, so it is a work-list, not a proof; turning
-    "charges ≥ 1" into a semantic fact still needs a lemma about `charge_gas`.
+    The 17 left are `op_exp`, `op_keccak`, `op_balance`, the four `*copy`
+    opcodes, `op_extcodesize`/`op_extcodehash`/`op_extcodecopy`, `op_mcopy`,
+    `op_log`, and the six call/create opcodes. They are open for a reason worth
+    stating, because it is the same reason as the loop preconditions above:
+    their cost is computed rather than constant, so proving it is ≥ 1 needs a
+    no-wraparound side condition. `op_keccak`'s
+    `cost = add_sat(30 + 6 * w, x.0)` is ≥ 30 only because `6 * w` cannot wrap,
+    which holds since `w = words_of(sat_word(size)) ≤ 2^59` — true, but an
+    obligation, not an inspection. The call and create opcodes are open for a
+    second reason: part of their cost is paid by the child frame.
+
+    The census is syntactic and conservative — a work-list, not a proof.
+    Turning "charges ≥ 1" into a semantic fact still needs a lemma about
+    `charge_gas`.
 
     One wrinkle that lemma will have to handle: gas lives in **two** counters.
     `charge_gas` decrements `EV_GAS_LEFT`, but `charge_state_gas`
