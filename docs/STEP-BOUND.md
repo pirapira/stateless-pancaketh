@@ -335,6 +335,23 @@ against every call site in `guest/src`, and all are guarded by the guest:
 
 So BLAKE2F was the only unguarded one.
 
+## Structural termination rules (`Guest/Termination.lean`)
+
+With monotonicity in hand, the next layer is a termination calculus, so a
+whole-program proof can be assembled from per-construct facts. All `sorry`-free:
+
+* **`while_terminates`** — a loop whose condition always evaluates and whose
+  body, whenever entered, terminates and strictly decreases a measure `μ` on
+  the states it continues from, terminates. Proved by strong induction on `μ`,
+  taking `max` of the body's fuel and the tail's and lifting both with
+  `progMono` — which is precisely the step that was impossible before.
+* `seq_terminates`, `ite_terminates`, `dec_terminates`, `call_terminates` — the
+  compositional rules for a function body.
+
+Since the call graph is acyclic (#71), **every remaining loop reduces to
+exhibiting a measure**. Not yet covered: the leaf constructors and the call
+evaluator's own rule, both mechanical.
+
 ## What the bound itself needs
 
 The guest's call graph is acyclic (#71), so no recursion-depth argument is
@@ -346,9 +363,20 @@ accelerated guest has **257 `while` loops**. By loop condition:
 * The substantive ones are the de-recursified drivers, where termination is the
   real content:
   * `run_frames` (`evm_calls.pnk:681`) — one iteration per opcode executed
-    across all frames, plus one per frame completion. Bounded by gas: every
-    opcode costs at least 1 gas, gas is conserved across the call tree, so
-    iterations ≤ 200M + frames, and frames ≤ 1024 deep and ≤ gas/700.
+    across all frames, plus one per frame completion.
+
+    **The obvious gas argument does not work as stated.** "Every opcode costs
+    at least 1 gas" is false: `op_stop` (`evm.pnk:870`) charges nothing at all,
+    it only clears `EV_RUNNING` and advances the pc, and the other frame-ending
+    opcodes are in the same position. The repair is that a zero-gas opcode
+    *ends its frame*, so it runs at most once per frame — but that turns the
+    bound into a case analysis over the whole of `op_dispatch`, showing every
+    opcode either charges ≥ 1 gas or clears `EV_RUNNING`. With that, iterations
+    ≤ 200M + 2·frames, frames ≤ 1024 deep and ≤ gas/700.
+
+    This case analysis, together with the input-proportional loops inside the
+    metered opcodes (KECCAK256, CALLDATACOPY, MCOPY, EXP), is the bulk of the
+    remaining work.
   * the witness-decode machine, MPT insert/delete descent and unwind
     (`mpt.pnk:410,714,857,919,1075`) — bounded by trie depth 64 and the witness
     node count, itself bounded by the input.
