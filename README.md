@@ -184,13 +184,22 @@ The repo is also a Lake project (`lakefile.toml`, library `Guest`) depending
 on [flapjack](https://github.com/pirapira/flapjack), the Lean port of the
 Pancake compiler, pinned by commit. `lake build` checks it.
 
-* `Guest/guest.pp.pnk` is the cpp-expanded guest as `guest/build.sh` feeds it
-  to `cake` (default build), and `Guest/Ast.lean` is its parse by flapjack's
-  Pancake parser, committed as Lean terms (`Guest.guestAst`). Regenerate both
-  with `tools/gen-guest-ast.sh` after editing `guest/src`.
-* `Guest/AstParse.lean` proves, by `native_decide`, that parsing the committed
+* `Guest/guest.pp.pnk` is the cpp-expanded `ZISK_ACCEL` guest as
+  `guest/build.sh` feeds it to `cake` (the deployed build), and
+  `Guest/Ast.lean` is its parse by flapjack's Pancake parser, committed as Lean
+  terms (`Guest.guestAst`). `Guest/guest-software.pp.pnk` and
+  `Guest/SoftwareAst.lean` (`Guest.Software.guestAst`) are the same for the
+  default build with all crypto in Pancake. Regenerate all four with
+  `tools/gen-guest-ast.sh` after editing `guest/src`.
+* `Guest/AstParse.lean` proves, by `native_decide`, that parsing each committed
   source gives exactly the committed AST, so the rest of the development
-  states things about `guestAst` without re-running the parser.
+  states things about the ASTs without re-running the parser.
+* `Guest/Accel.lean` gives the accelerator `@ffi` calls of the `ZISK_ACCEL`
+  build their ZisK semantics on memory, reusing the concrete definitions in
+  [riscv-zkvm](https://github.com/Verified-zkEVM/riscv-zkvm)
+  (`RiscvZkvm.Rv64.ZiskAccel`, shared with evm-asm). Attaching it to the
+  stepped run awaits an `ExtCall` handler with memory effects in flapjack
+  (flapjack #517); until then `Guest.runGuestStepped` is the software build.
 * `Guest/Model.lean` is the guest as a flapjack program: initial state per
   `guest/src/config.h`, primitive/FFI handlers, CakeML's aligned-cell memory
   model, and the step-counted run `Guest.runGuestStepped`. It is computable;
