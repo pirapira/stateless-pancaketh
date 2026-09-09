@@ -368,6 +368,40 @@ theorem callSteps_terminates
           simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody, if_pos hvalid, if_neg hcaught]
           rfl
 
+
+/-- The shape most of the guest's loops have: a counter the body strictly
+increases, against a bound. Around 200 of the 257 `while` loops are of this
+form (`i <+ n`, `i < cap`, `i < 8`, ...), and this saves redoing the truncated
+subtraction each time — note that the counter is *not* required to stay below
+`N`, since overshooting it sends the measure to zero, which is still a
+decrease. -/
+theorem while_terminates_of_increasing_counter (cond : Exp α) (body : Prog α)
+    (counter : (VarName → Option (PanValue α)) → Nat) (N : Nat)
+    (hcond : ∀ (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)),
+      ∃ n cs, evalPanValueExpCounted structs l g m
+        baseAddress topAddress bytesInWord cond ma = some (PanValue.word n, cs))
+    (hentered : ∀ (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) n cs,
+      evalPanValueExpCounted structs l g m baseAddress topAddress bytesInWord cond ma
+        = some (PanValue.word n, cs) → (n == 0) = false → counter l < N)
+    (hbody : ∀ l g m f n cs,
+      evalPanValueExpCounted structs l g m baseAddress topAddress bytesInWord cond ma
+        = some (PanValue.word n, cs) → (n == 0) = false →
+      ∃ fuel result steps,
+        evalPanValueFfiProgSteps context primitive handler structs functions
+          baseAddress topAddress bytesInWord fuel l g m f body ma c mh = some (result, steps) ∧
+        ∀ l' g' m' f', result = .normal l' g' m' f' ∨ result = .continued l' g' m' f' →
+          counter l < counter l') :
+    ∀ l g m f, Terminates context primitive handler structs functions baseAddress
+      topAddress bytesInWord ma c mh l g m f (Prog.while cond body) := by
+  refine while_terminates context primitive handler structs functions baseAddress
+    topAddress bytesInWord ma c mh cond body (fun l _ _ _ => N - counter l) hcond ?_
+  intro l g m f n cs hc hnz
+  obtain ⟨fuel, result, steps, hrun, hinc⟩ := hbody l g m f n cs hc hnz
+  refine ⟨fuel, result, steps, hrun, fun l' g' m' f' hres => ?_⟩
+  have h1 : counter l < N := hentered l g m n cs hc hnz
+  have h2 : counter l < counter l' := hinc l' g' m' f' hres
+  omega
+
 end
 end StepCalculus
 end Guest

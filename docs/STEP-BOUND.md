@@ -355,8 +355,16 @@ The leaf constructors need no rule: `Terminates` for them is discharged at the
 point of use by exhibiting the one-step run, and their only content is whether
 their expressions evaluate.
 
+* `while_terminates_of_increasing_counter` — the shape ~200 of the 257 loops
+  actually have (`i <+ n`, `i < cap`, `i < 8`, ...): a counter the body strictly
+  increases, against a bound. It does the truncated-subtraction argument once
+  rather than per loop, and does not require the counter to stay under the
+  bound, since overshooting sends the measure to zero, which is still a
+  decrease.
+
 Since the call graph is acyclic (#71), **what is left is the measures**: every
-remaining loop reduces to exhibiting one.
+remaining loop reduces to exhibiting one, and for most of them that is now a
+counter and a bound.
 
 ## What the bound itself needs
 
