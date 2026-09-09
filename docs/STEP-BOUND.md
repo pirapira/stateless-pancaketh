@@ -347,10 +347,16 @@ whole-program proof can be assembled from per-construct facts. All `sorry`-free:
   `progMono` — which is precisely the step that was impossible before.
 * `seq_terminates`, `ite_terminates`, `dec_terminates`, `call_terminates` — the
   compositional rules for a function body.
+* `callSteps_terminates` — the call evaluator itself. Its extra hypotheses are
+  the evaluator's own `none` branches: the return- and exception-validity
+  checks, the destination assignment, and a matching handler's termination.
 
-Since the call graph is acyclic (#71), **every remaining loop reduces to
-exhibiting a measure**. Not yet covered: the leaf constructors and the call
-evaluator's own rule, both mechanical.
+The leaf constructors need no rule: `Terminates` for them is discharged at the
+point of use by exhibiting the one-step run, and their only content is whether
+their expressions evaluate.
+
+Since the call graph is acyclic (#71), **what is left is the measures**: every
+remaining loop reduces to exhibiting one.
 
 ## What the bound itself needs
 

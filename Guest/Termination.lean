@@ -17,12 +17,21 @@ termination proof can be assembled from per-construct facts.
   (#71), so with this each loop reduces to exhibiting a measure.
 * `seq_terminates`, `ite_terminates`, `dec_terminates`, `call_terminates` — the
   compositional rules for assembling a function body.
+* `callSteps_terminates` — the call evaluator itself: arguments evaluate, the
+  callee is found and binds, the body returns, and whatever the body's result
+  requires of the caller holds. Those last hypotheses are not bureaucracy: they
+  are exactly the evaluator's own `none` branches (the return- and
+  exception-validity checks, the destination assignment, a matching handler),
+  and a call cannot terminate without them.
 
-Not here yet: the leaf constructors (`skip`, `assign`, `store`, `return`,
-`raise`, `break`, `continue`, `tick`, `annot`), which terminate as soon as
-their expressions evaluate, and the call evaluator's own rule. Those are
-mechanical; the measures for the guest's loops are the real remaining work, and
-`docs/STEP-BOUND.md` records which ones are substantive.
+The leaf constructors need no rule of their own: `Terminates` for `skip`,
+`assign`, `store`, `return`, `raise`, `break`, `continue`, `tick` and `annot`
+is discharged at the point of use by exhibiting the one-step run, e.g.
+`⟨1, _, by rw [evalPanValueFfiProgSteps, hexp]; rfl⟩`. Their only content is
+whether the expressions evaluate, which is an expression-level question.
+
+What is left is therefore the *measures* for the guest's loops;
+`docs/STEP-BOUND.md` records which of the 257 are substantive.
 -/
 
 open Flapjack
@@ -245,6 +254,119 @@ theorem dec_terminates (name : VarName) (shape : Shape) (valueExp : Exp α) (bod
   rw [evalPanValueFfiProgSteps, hv]
   simp only [Option.bind_eq_bind, Option.bind_some, if_pos hshape, h]
   rfl
+
+
+/-- `evalPanValueFfiCallSteps`: a call returns when its arguments evaluate, the
+callee is found and its parameters bind, the body returns, and whatever the
+body's result requires of the caller holds — the return/exception validity
+checks the evaluator makes, the destination assignment, and termination of a
+matching handler. Those hypotheses are the evaluator's own `none` branches; a
+call cannot terminate without them. -/
+theorem callSteps_terminates
+    (info : Option (Option (VarKind × VarName) × Option (ExceptionId × VarName × Prog α)))
+    (function : FunName) (arguments : List (Exp α))
+    (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)
+    (values : List (PanValue α)) (argSteps : Nat)
+    (parameters : List VarName) (body : Prog α)
+    (calleeLocals : VarName → Option (PanValue α))
+    (bfuel : Nat) (res : PanValueFfiControlResult α σ) (bsteps : Nat)
+    (hargs : evalPanValueExpsCounted structs l g m baseAddress topAddress bytesInWord
+      arguments ma = some (values, argSteps))
+    (hlookup : lookupPanFunction function functions = some (parameters, body))
+    (hbind : bindPanValueParameters parameters values = some calleeLocals)
+    (hbody : evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord bfuel calleeLocals g m f body ma c mh = some (res, bsteps))
+    (hret : ∀ cl cg cm cf vs, res = .returned cl cg cm cf vs →
+      (panValueReturnValid structs c function vs &&
+        panValueValuesWithinLimit structs vs) = true ∧
+      ∀ destination handlerInfo, info = some (destination, handlerInfo) →
+        ∃ lg, assignPanValueCallResult l cg destination vs (structs := structs) = some lg)
+    (hraise : ∀ cl cg cm cf e v, res = .raised cl cg cm cf e v →
+      (panValueExceptionValid structs c e v &&
+        panValuePayloadWithinLimit structs v) = true ∧
+      ∀ destination caught handlerVariable handlerProgram,
+        info = some (destination, some (caught, handlerVariable, handlerProgram)) →
+        (caught == e) = true →
+        panValueHandlerValid structs c l handlerVariable v = true ∧
+        Terminates context primitive handler structs functions baseAddress topAddress
+          bytesInWord ma c mh (updatePanValueMap l handlerVariable v) cg cm cf handlerProgram) :
+    ∃ fuel r, evalPanValueFfiCallSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord fuel l g m f info function arguments ma c mh
+      = some r := by
+  cases res with
+  | normal cl cg cm cf =>
+    refine ⟨bfuel + 1, (.normal l cg cm cf, argSteps + bsteps), ?_⟩
+    rw [evalPanValueFfiCallSteps, hargs]
+    simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody]
+    rfl
+  | broke cl cg cm cf =>
+    refine ⟨bfuel + 1, (.broke l cg cm cf, argSteps + bsteps), ?_⟩
+    rw [evalPanValueFfiCallSteps, hargs]
+    simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody]
+    rfl
+  | continued cl cg cm cf =>
+    refine ⟨bfuel + 1, (.continued l cg cm cf, argSteps + bsteps), ?_⟩
+    rw [evalPanValueFfiCallSteps, hargs]
+    simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody]
+    rfl
+  | finalFfi cl cg cm cf ev =>
+    refine ⟨bfuel + 1, (.finalFfi (fun _ => none) cg cm cf ev, argSteps + bsteps), ?_⟩
+    rw [evalPanValueFfiCallSteps, hargs]
+    simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody]
+    rfl
+  | returned cl cg cm cf vs =>
+    obtain ⟨hvalid, hassign⟩ := hret cl cg cm cf vs rfl
+    cases info with
+    | none =>
+      refine ⟨bfuel + 1, (.returned (fun _ => none) cg cm cf vs, argSteps + bsteps), ?_⟩
+      rw [evalPanValueFfiCallSteps, hargs]
+      simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody, if_pos hvalid]
+      rfl
+    | some pr =>
+      obtain ⟨destination, handlerInfo⟩ := pr
+      obtain ⟨lg, hlg⟩ := hassign destination handlerInfo rfl
+      obtain ⟨nl, ng⟩ := lg
+      refine ⟨bfuel + 1, (.normal nl ng cm cf, argSteps + bsteps), ?_⟩
+      rw [evalPanValueFfiCallSteps, hargs]
+      simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody, if_pos hvalid, hlg]
+      rfl
+  | raised cl cg cm cf e v =>
+    obtain ⟨hvalid, hhandler⟩ := hraise cl cg cm cf e v rfl
+    cases info with
+    | none =>
+      refine ⟨bfuel + 1, (.raised (fun _ => none) cg cm cf e v, argSteps + bsteps), ?_⟩
+      rw [evalPanValueFfiCallSteps, hargs]
+      simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody, if_pos hvalid]
+      rfl
+    | some pr =>
+      obtain ⟨destination, handlerInfo⟩ := pr
+      cases handlerInfo with
+      | none =>
+        refine ⟨bfuel + 1, (.raised (fun _ => none) cg cm cf e v, argSteps + bsteps), ?_⟩
+        rw [evalPanValueFfiCallSteps, hargs]
+        simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody, if_pos hvalid]
+        rfl
+      | some triple =>
+        obtain ⟨caught, hvar, hprog⟩ := triple
+        by_cases hcaught : (caught == e) = true
+        · obtain ⟨hvalidh, hterm⟩ := hhandler destination caught hvar hprog rfl hcaught
+          obtain ⟨hfuel, hres, hh⟩ := hterm
+          obtain ⟨hra, hrb⟩ := hres
+          refine ⟨max bfuel hfuel + 1, (hra, argSteps + bsteps + hrb), ?_⟩
+          rw [evalPanValueFfiCallSteps, hargs]
+          simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind]
+          rw [progMono context primitive handler structs functions baseAddress topAddress
+        bytesInWord bfuel calleeLocals g m f body ma c mh (max bfuel hfuel) (_, bsteps)
+            (Nat.le_max_left _ _) hbody]
+          simp only [Option.bind_some, if_pos hvalid, if_pos hcaught, if_pos hvalidh]
+          rw [progMono context primitive handler structs functions baseAddress topAddress
+        bytesInWord hfuel (updatePanValueMap l hvar v) cg cm cf hprog ma c mh
+            (max bfuel hfuel) (hra, hrb) (Nat.le_max_right _ _) hh]
+          rfl
+        · refine ⟨bfuel + 1, (.raised (fun _ => none) cg cm cf e v, argSteps + bsteps), ?_⟩
+          rw [evalPanValueFfiCallSteps, hargs]
+          simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody, if_pos hvalid, if_neg hcaught]
+          rfl
 
 end
 end StepCalculus
