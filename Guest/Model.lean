@@ -35,11 +35,15 @@ Everything here is computable, so it doubles as an executable model
 
 ## Modelling caveats
 
-* *`@halt` / `@trap` return.* On the machine both stop execution. Here the
-  handler returns and the program continues: after `@halt` that is only the
-  final `return`; after `@trap` (via `trap_with`) the callers keep going down
-  their error paths, so the model may count steps the machine never takes.
-  This only over-approximates, which is the safe direction for a bound.
+* *`@halt` / `@trap` return.* On the machine both stop execution; here the
+  handler returns and the program continues. After `@halt` that is only the
+  final `return`. After `@trap` the guest itself makes it terminal:
+  `trap_with` (`guest/src/lib/mem.pnk`) ends with `throw TrapErr code`, caught
+  nowhere, so the run ends as `.raised`. That line is dead code on the machine,
+  where `ffitrap` jumps to `cml_exit` and never returns. Without it the callers
+  would keep going down their error paths, and that is not merely an
+  over-approximation: it reaches unmapped byte accesses, which make the whole
+  stepped run `none`. See `docs/STEP-BOUND.md`.
 * *Shared-memory payload address.* CakeML passes the exact (unaligned) address
   to the `SharedMem` oracle; flapjack passes `context.byteAlign address`. We
   set `byteAlign := id`, so the oracle sees the exact address and byte stores

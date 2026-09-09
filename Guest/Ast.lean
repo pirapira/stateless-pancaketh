@@ -16,6 +16,9 @@ def guestGlobal_heap_ptr : Decl (BitVec 64) :=
 def guestGlobal_journal_n : Decl (BitVec 64) :=
   Decl.decl Shape.one "journal_n" (Exp.const (BitVec.ofNat 64 0))
 
+def guestExn_TrapErr : Decl (BitVec 64) :=
+  Decl.exnDecl "TrapErr" Shape.one
+
 def guestFn_trap_with : Decl (BitVec 64) :=
   Decl.function
     { name := "trap_with"
@@ -31,7 +34,7 @@ def guestFn_trap_with : Decl (BitVec 64) :=
           (Prog.shMemStore OpSize.opW (Exp.op BinOp.add [(Exp.const (BitVec.ofNat 64 2684420096)), (Exp.const (BitVec.ofNat 64 48))]) (Exp.var VarKind.global "journal_n"))
           (Prog.seq
           (Prog.extCall "trap" Exp.baseAddr (Exp.var VarKind.local "code") Exp.baseAddr (Exp.const (BitVec.ofNat 64 0)))
-          (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))
+          (Prog.raise "TrapErr" (Exp.var VarKind.local "code"))))))
       returnShape := Shape.one }
 
 def guestGlobal_scratch_ptr : Decl (BitVec 64) :=
@@ -30230,6 +30233,7 @@ def guestFn_main : Decl (BitVec 64) :=
 def guestAst : List (Decl (BitVec 64)) :=
   [ guestGlobal_heap_ptr,
     guestGlobal_journal_n,
+    guestExn_TrapErr,
     guestFn_trap_with,
     guestGlobal_scratch_ptr,
     guestGlobal_frame_mem_ptr,

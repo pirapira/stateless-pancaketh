@@ -23,9 +23,17 @@ Together with the step-preserving compilation theorem tracked in
 between source steps and generated RISC-V instruction steps) this yields a
 RISC-V step bound for the compiled guest.
 
-What is still `sorry`: `declaredBlockGasLimit`, which should mirror the guest's
-own decoding of the SSZ input down to the header's `gas_limit`; the constant
-`guestPancakeStepBound`; and the theorem.
+`declaredBlockGasLimit` is filled: `Guest.InputDecode` mirrors the guest's own
+decoding of the SSZ input down to the header's `gas_limit`, differentially
+validated against the guest by `lake exe input-decode-check`. What is still
+`sorry`: the constant `guestPancakeStepBound`, and the theorem.
+
+`TerminatesWithin` asks only that the stepped run *returns* — any control
+result, `.raised` included — so a guest that halts on resource exhaustion
+satisfies it. That is why `trap_with` ends in `throw TrapErr`: without it a
+trap would return in the model and the run would walk off the mapped heap into
+an evaluation failure, which no value of the constant could repair. See
+`docs/STEP-BOUND.md`.
 -/
 
 namespace Guest
