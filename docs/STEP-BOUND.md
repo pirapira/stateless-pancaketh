@@ -7,6 +7,7 @@ Status of the three `sorry`s of `Guest/StepBound.lean`:
 | `declaredBlockGasLimit` | **done** — `Guest/InputDecode.lean`, differentially validated against the guest |
 | `guestPancakeStepBound` | open |
 | `guest_terminates_within_step_bound` | open — was **false as stated**; [the obstruction](#the-obstruction) is fixed, the bound itself is what is left |
+| *foundation* | [`Guest/StepCalculus.lean`](#the-step-calculus-gueststepcalculuslean) — fuel monotonicity, without which no two cost lemmas compose |
 
 ## `declaredBlockGasLimit`
 
@@ -217,6 +218,46 @@ The two options not taken:
 
 Option 1 also *helps* the bound: every resource-exhaustion path becomes
 immediate termination rather than a continuation that has to be bounded.
+
+## The step calculus (`Guest/StepCalculus.lean`)
+
+`TerminatesWithin` asks for *some* fuel at which the run returns. Proving that
+compositionally — a cost lemma per function, combined along the call graph —
+means combining sub-proofs carried at different fuels, and that needs **fuel
+monotonicity**: a successful run is unchanged, same control result *and* same
+step count, at any larger fuel.
+
+Flapjack does not have it. `Flapjack/PanSteppedSemantics.lean` proves the
+`_fst`/`_snd` projections relating the stepped evaluator to the unstepped one,
+and nothing about varying the fuel; `Flapjack/PanValueFfiSemantics.lean` has one
+theorem, `evalPanValueFfiProgramStepped_fst`. So the issue's remark that "the
+stepped semantics is compositional (steps add up), so per-function cost lemmas
+compose" is true of the *definition* — `.seq` returns
+`firstSteps + secondSteps + 1` — but there was no theorem to compose with.
+
+`Guest/StepCalculus.lean` supplies it, `sorry`-free:
+
+* `progMono`, `callMono` — for the mutually recursive
+  `evalPanValueFfiProgSteps` / `evalPanValueFfiCallSteps`, by the
+  functional-induction principle `evalPanValueFfiProgSteps.induct` (25 cases;
+  18 are the constructors whose body does not mention fuel and close by
+  unfolding both sides, 7 recurse: the call evaluator's successor case, `dec`,
+  `seq`, `ite`, `call`, `decCall`, `while`).
+* `evalPanValueFfiProgramStepped_fuel_mono` — the public entry point, which is
+  what `Guest.runGuestStepped` is.
+* In `Guest/StepBound.lean`: `runGuestStepped_fuel_mono` and
+  `TerminatesWithin.mono` (bound weakening, so a parametric bound can be
+  specialised to the constant).
+
+Worth knowing when reading the evaluator: **fuel is a depth budget, not a work
+budget.** `.seq first second` at `fuel + 1` evaluates *both* halves at `fuel`,
+and `.while`'s next iteration also recurses at `fuel`, so fuel bounds syntactic
+nesting and call depth as well as iteration count. Monotonicity is what makes
+that workable — a bound proved for a sub-program stays true in a larger context.
+
+This belongs upstream in flapjack. It lives here so the pinned revision does not
+have to move, in namespace `Guest.StepCalculus` rather than `Flapjack.*` so a
+re-pin cannot collide with it.
 
 ## What the bound itself needs
 
