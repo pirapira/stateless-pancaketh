@@ -45,3 +45,9 @@ root = "Tools.TraceGuest"
 [[lean_exe]]
 name = "frame-bound"
 root = "Tools.FrameBound"
+
+# `lake exe input-decode-check input.bin ...` checks Guest.declaredBlockGasLimit
+# against the guest's own decode outcome (see Tools/InputDecodeCheck.lean).
+[[lean_exe]]
+name = "input-decode-check"
+root = "Tools.InputDecodeCheck"
