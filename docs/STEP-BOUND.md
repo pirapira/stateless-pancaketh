@@ -591,26 +591,78 @@ And on `op_sstore`'s credit path the *charge* is small. The credit fires when
 fire, and `gas_cost` is just `access_cost`, 100 warm or 3,000 cold. One SSTORE
 can therefore move the gas sum **up by ~95,000**.
 
-The repair is a conservation invariant, not a different counter. Reading
-`op_sstore`, a credit of `SG_STORAGE_SET` appears to be matched by an earlier
-charge of `SG_STORAGE_SET` on the same slot: the credit needs `original == 0`
-and `current != 0`, which within one transaction requires a prior SSTORE that
-took the slot `0 -> nonzero`, and that one charges `state_gas = SG_STORAGE_SET`
-(its guard `oc && !cn && oz` holds exactly there). So the plausible invariant
-is
+The repair is a conservation invariant:
 
     total state gas credited so far <= total state gas charged so far
 
-which would make `gas + reservoir` bounded above by its initial value and
-restore a measure. **This is not yet proved**, and the argument above is a
-source reading, not a theorem — the same class of claim as issue #73's own gas
-sketch, which turned out to be wrong. It should be checked opcode by opcode
-(including the five `SG_NEW_ACCOUNT` sites in `evm_calls.pnk`, and what a
-reverted frame does) before anything is built on it.
+which makes the reservoir bounded above by its initial value and restores a
+measure. The five `SG_NEW_ACCOUNT` sites and the one `SG_STORAGE_SET` site
+turn out to need quite different arguments.
+
+##### The five `SG_NEW_ACCOUNT` credits are conserved *structurally*
+
+Every one of them is guarded by a flag:
+
+```
+if new_account_charged != 0 {
+  credit_state_gas_refund(SG_NEW_ACCOUNT);
+}
+```
+
+and `new_account_charged` is set in exactly two places (`evm_calls.pnk:1012`
+and `:1188`), both of the form
+
+```
+new_account_charged = 1;
+charge_state_gas(SG_NEW_ACCOUNT);
+```
+
+— assignment and charge in the same block, nothing between them. Across the
+frame boundary the flag is threaded explicitly: `start_child` takes it as a
+parameter and stores it at `CK_NEW_ACCOUNT` in the continuation record
+(`:749`), and the unwind path reads it back (`:610`) before the two credits at
+`:638` and `:652`.
+
+So the invariant here is not a subtle argument about state history; it is a
+boolean that is only ever true when the charge happened. That is a proof
+obligation about a flag, which is the easy kind.
+
+##### `op_sstore`'s credit is *not* flag-guarded
+
+It is guarded by a state condition — `cn == 0 && on != 0 && oz != 0` — so
+conservation there rests on storage history: the credit needs `original == 0`
+and `current != 0`, which within one transaction requires a prior SSTORE that
+took the slot `0 -> nonzero`, and that one charges `state_gas =
+SG_STORAGE_SET` (its guard `oc && !cn && oz` holds exactly there).
+
+**That remains a source reading, not a theorem**, and it is the same class of
+claim as issue #73's own gas sketch, which the census showed was wrong. It is
+the one place where the conservation invariant genuinely has to be earned, and
+nothing should be built on it until it is.
+
+##### A third finding: gas is *moved*, not only spent
+
+The same reading turned up something the measure has to respect independently.
+Gas is reserved for a child frame and restored if the child does not start —
+`generic_call`'s depth-limit path (`:1102`) and the insufficient-balance path
+(`:1208`) both do
+
+```
+st ev + EV_GAS_LEFT, (lds 1 (ev + EV_GAS_LEFT)) + gas;
+st ev + EV_STATE_GAS_LEFT, (lds 1 (ev + EV_STATE_GAS_LEFT)) + reservoir;
+```
+
+and `op_create` splits `gl - (gl >>> 6)` off for the child (`:1017`). These are
+save/restore pairs, net zero — but only when both frames are counted. **The
+measure must therefore be the sum over all live frames**, not the current
+frame's two counters. A measure read off `ev` alone goes *up* the moment a
+child frame declines to start.
 
 #### What is still missing for the measure
 
-* **The conservation invariant above**, without which there is no measure.
+* **`op_sstore`'s conservation argument** — the only unearned link in the
+  invariant; the `SG_NEW_ACCOUNT` half is structural (see above).
+* **The measure summed over live frames**, since gas moves between them.
 * **`charge_state_gas` equationally.** The arithmetic is done; the statement
   proof needs `call_runs`, because the body calls `add_sat`.
 * **`1 <= amount` is per-opcode.** The census settles 70 of 87 handlers; the
