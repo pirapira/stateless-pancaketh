@@ -51,3 +51,9 @@ root = "Tools.FrameBound"
 [[lean_exe]]
 name = "input-decode-check"
 root = "Tools.InputDecodeCheck"
+
+# `lake exe opcode-census` classifies every opcode handler as charging gas up
+# front, ending its frame, or needing its branches examined (see Tools/OpcodeCensus.lean).
+[[lean_exe]]
+name = "opcode-census"
+root = "Tools.OpcodeCensus"
