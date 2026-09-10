@@ -9399,10 +9399,15 @@ fun 1 blake2b_f(1 rounds, 1 h, 1 m, 1 t0, 1 t1, 1 f) {
   }
   memcpy(b2_m, m, 128);
   var r = 0;
+  var row = 0;
   while r <+ rounds {
-    st b2_round, r;
+    st b2_round, row;
     @blake2bround(b2_round, 0, 0, 0);
     r = r + 1;
+    row = row + 1;
+    if row == 10 {
+      row = 0;
+    }
   }
   var i = 0;
   while i < 8 {

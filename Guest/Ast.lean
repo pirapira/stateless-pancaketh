@@ -17441,20 +17441,27 @@ def guestFn_blake2b_f : Decl (BitVec 64) :=
           (Prog.seq
           (Prog.call (some (none, none)) "memcpy" [(Exp.var VarKind.global "b2_m"), (Exp.var VarKind.local "m"), (Exp.const (BitVec.ofNat 64 128))])
           (Prog.dec "r" Shape.one (Exp.const (BitVec.ofNat 64 0))
-            (Prog.seq
-              (Prog.while (Exp.cmp Cmp.lower (Exp.var VarKind.local "r") (Exp.var VarKind.local "rounds"))
-                (Prog.seq
-                  (Prog.store (Exp.var VarKind.global "b2_round") (Exp.var VarKind.local "r"))
+            (Prog.dec "row" Shape.one (Exp.const (BitVec.ofNat 64 0))
+              (Prog.seq
+                (Prog.while (Exp.cmp Cmp.lower (Exp.var VarKind.local "r") (Exp.var VarKind.local "rounds"))
                   (Prog.seq
-                  (Prog.extCall "blake2bround" (Exp.var VarKind.global "b2_round") (Exp.const (BitVec.ofNat 64 0)) (Exp.const (BitVec.ofNat 64 0)) (Exp.const (BitVec.ofNat 64 0)))
-                  (Prog.assign VarKind.local "r" (Exp.op BinOp.add [(Exp.var VarKind.local "r"), (Exp.const (BitVec.ofNat 64 1))])))))
-              (Prog.dec "i" Shape.one (Exp.const (BitVec.ofNat 64 0))
-                (Prog.seq
-                  (Prog.while (Exp.cmp Cmp.less (Exp.var VarKind.local "i") (Exp.const (BitVec.ofNat 64 8)))
+                    (Prog.store (Exp.var VarKind.global "b2_round") (Exp.var VarKind.local "row"))
                     (Prog.seq
-                      (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "h"), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 8))])]) (Exp.op BinOp.xor [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "h"), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 8))])])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "b2_v"), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 8))])])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "b2_v"), (Exp.panOp PanOp.mul [(Exp.op BinOp.add [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 8))]), (Exp.const (BitVec.ofNat 64 8))])]))]))
-                      (Prog.assign VarKind.local "i" (Exp.op BinOp.add [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 1))]))))
-                  (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))))))))
+                    (Prog.extCall "blake2bround" (Exp.var VarKind.global "b2_round") (Exp.const (BitVec.ofNat 64 0)) (Exp.const (BitVec.ofNat 64 0)) (Exp.const (BitVec.ofNat 64 0)))
+                    (Prog.seq
+                    (Prog.assign VarKind.local "r" (Exp.op BinOp.add [(Exp.var VarKind.local "r"), (Exp.const (BitVec.ofNat 64 1))]))
+                    (Prog.seq
+                    (Prog.assign VarKind.local "row" (Exp.op BinOp.add [(Exp.var VarKind.local "row"), (Exp.const (BitVec.ofNat 64 1))]))
+                    (Prog.ite (Exp.cmp Cmp.equal (Exp.var VarKind.local "row") (Exp.const (BitVec.ofNat 64 10)))
+                      (Prog.assign VarKind.local "row" (Exp.const (BitVec.ofNat 64 0)))
+                      Prog.skip))))))
+                (Prog.dec "i" Shape.one (Exp.const (BitVec.ofNat 64 0))
+                  (Prog.seq
+                    (Prog.while (Exp.cmp Cmp.less (Exp.var VarKind.local "i") (Exp.const (BitVec.ofNat 64 8)))
+                      (Prog.seq
+                        (Prog.store (Exp.op BinOp.add [(Exp.var VarKind.local "h"), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 8))])]) (Exp.op BinOp.xor [(Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.local "h"), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 8))])])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "b2_v"), (Exp.panOp PanOp.mul [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 8))])])), (Exp.load Shape.one (Exp.op BinOp.add [(Exp.var VarKind.global "b2_v"), (Exp.panOp PanOp.mul [(Exp.op BinOp.add [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 8))]), (Exp.const (BitVec.ofNat 64 8))])]))]))
+                        (Prog.assign VarKind.local "i" (Exp.op BinOp.add [(Exp.var VarKind.local "i"), (Exp.const (BitVec.ofNat 64 1))]))))
+                    (Prog.return (Exp.const (BitVec.ofNat 64 0))))))))))))))
       returnShape := Shape.one }
 
 def guestFn_bn_from_be : Decl (BitVec 64) :=

@@ -1,5 +1,6 @@
 import Guest.Model
 import Guest.InputDecode
+import Guest.StepCalculus
 
 /-!
 # Goal 1: the guest terminates within a constant number of Pancake steps
@@ -64,6 +65,24 @@ def guestPancakeStepBound : Nat := sorry
 def TerminatesWithin (input : InputBlob) (bound : Nat) : Prop :=
   ∃ fuel result steps,
     runGuestStepped input fuel = some (result, steps) ∧ steps ≤ bound
+
+/-- Fuel monotonicity for the guest run, from `Guest.StepCalculus`: a
+successful run keeps its control result and its step count at any larger fuel.
+Every compositional step bound needs this, to bring sub-runs proved at their own
+fuels to a common one. -/
+theorem runGuestStepped_fuel_mono {input : InputBlob} {fuel fuel' : Nat}
+    (hfuel : fuel ≤ fuel') {result : PanValueFfiSteppedResult Word HostMemory}
+    (hrun : runGuestStepped input fuel = some result) :
+    runGuestStepped input fuel' = some result :=
+  StepCalculus.evalPanValueFfiProgramStepped_fuel_mono _ _ _ _ hfuel _ _ _ hrun
+
+/-- `TerminatesWithin` weakens to any larger bound, so a parametric bound can be
+specialised to the constant. -/
+theorem TerminatesWithin.mono {input : InputBlob} {bound bound' : Nat}
+    (h : TerminatesWithin input bound) (hle : bound ≤ bound') :
+    TerminatesWithin input bound' := by
+  obtain ⟨fuel, result, steps, hrun, hsteps⟩ := h
+  exact ⟨fuel, result, steps, hrun, Nat.le_trans hsteps hle⟩
 
 theorem terminatesWithin_panSteppedTerminates {input : InputBlob} {bound : Nat}
     (h : TerminatesWithin input bound) :

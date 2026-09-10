@@ -7,6 +7,12 @@ Status of the three `sorry`s of `Guest/StepBound.lean`:
 | `declaredBlockGasLimit` | **done** — `Guest/InputDecode.lean`, differentially validated against the guest |
 | `guestPancakeStepBound` | open |
 | `guest_terminates_within_step_bound` | open — was **false as stated**; [the obstruction](#the-obstruction) is fixed, the bound itself is what is left |
+| *foundation* | [`Guest/StepCalculus.lean`](#the-step-calculus-gueststepcalculuslean) — fuel monotonicity, without which no two cost lemmas compose |
+
+Two guest bugs were found on the way, both of which made the theorem false as
+stated and both now fixed: [`@trap` returning](#the-obstruction), and
+[BLAKE2F's SIGMA row index](#a-second-evaluation-failure-path-blake2f-fixed) —
+the latter a real halt on ordinary EIP-152 input, not only a modelling artefact.
 
 ## `declaredBlockGasLimit`
 
@@ -217,6 +223,117 @@ The two options not taken:
 
 Option 1 also *helps* the bound: every resource-exhaustion path becomes
 immediate termination rather than a continuation that has to be bounded.
+
+## The step calculus (`Guest/StepCalculus.lean`)
+
+`TerminatesWithin` asks for *some* fuel at which the run returns. Proving that
+compositionally — a cost lemma per function, combined along the call graph —
+means combining sub-proofs carried at different fuels, and that needs **fuel
+monotonicity**: a successful run is unchanged, same control result *and* same
+step count, at any larger fuel.
+
+Flapjack does not have it. `Flapjack/PanSteppedSemantics.lean` proves the
+`_fst`/`_snd` projections relating the stepped evaluator to the unstepped one,
+and nothing about varying the fuel; `Flapjack/PanValueFfiSemantics.lean` has one
+theorem, `evalPanValueFfiProgramStepped_fst`. So the issue's remark that "the
+stepped semantics is compositional (steps add up), so per-function cost lemmas
+compose" is true of the *definition* — `.seq` returns
+`firstSteps + secondSteps + 1` — but there was no theorem to compose with.
+
+`Guest/StepCalculus.lean` supplies it, `sorry`-free:
+
+* `progMono`, `callMono` — for the mutually recursive
+  `evalPanValueFfiProgSteps` / `evalPanValueFfiCallSteps`, by the
+  functional-induction principle `evalPanValueFfiProgSteps.induct` (25 cases;
+  18 are the constructors whose body does not mention fuel and close by
+  unfolding both sides, 7 recurse: the call evaluator's successor case, `dec`,
+  `seq`, `ite`, `call`, `decCall`, `while`).
+* `evalPanValueFfiProgramStepped_fuel_mono` — the public entry point, which is
+  what `Guest.runGuestStepped` is.
+* In `Guest/StepBound.lean`: `runGuestStepped_fuel_mono` and
+  `TerminatesWithin.mono` (bound weakening, so a parametric bound can be
+  specialised to the constant).
+
+Worth knowing when reading the evaluator: **fuel is a depth budget, not a work
+budget.** `.seq first second` at `fuel + 1` evaluates *both* halves at `fuel`,
+and `.while`'s next iteration also recurses at `fuel`, so fuel bounds syntactic
+nesting and call depth as well as iteration count. Monotonicity is what makes
+that workable — a bound proved for a sub-program stays true in a larger context.
+
+This belongs upstream in flapjack. It lives here so the pinned revision does not
+have to move, in namespace `Guest.StepCalculus` rather than `Flapjack.*` so a
+re-pin cannot collide with it.
+
+## A second evaluation-failure path: BLAKE2F (fixed)
+
+Fixing `@trap` (#76) removed one way for the model to be `none` where the
+machine halts. Auditing the *other* handler that can decline — the accelerator
+— turned up a second, and it is a real guest bug rather than a modelling
+artefact.
+
+`guestMemoryFfi` (`Guest/Accel.lean`) answers an accelerator call with `none`
+"for an unknown name or an input the machine model would trap on", and the
+`.extCall` case of `evalPanValueFfiProgSteps` propagates that as `none` for the
+whole run — evaluation failure at every fuel, exactly the class the trap fix
+removed.
+
+The reachable case is `@blake2bround`. ZisK's CSR 0x819 takes a **SIGMA row**,
+not a round number: `csrsValid` requires `sigmaIdx < 10`
+(`RiscvZkvm/Rv64/ZiskAccel.lean`) and the machine traps when it fails. The
+guest's accelerated loop passed the raw round counter:
+
+```
+var r = 0;
+while r <+ rounds {
+  st b2_round, r;              /* r, not r % 10 */
+  @blake2bround(b2_round, 0, 0, 0);
+  r = r + 1;
+}
+```
+
+while the software path immediately below it maintains a `row` that wraps at
+10. `rounds` is user input — `pre_blake2f` reads it as `LD_BE32(data)` and
+charges 1 gas per round — and **BLAKE2b's standard compression is 12 rounds**,
+so an ordinary EIP-152 call reaches row 10 and traps.
+
+Measured on the guest's own `blake2b_f`, driven at each round count (all-zero
+state and message):
+
+| rounds | accelerated, before | software | after the fix |
+|---|---|---|---|
+| 1, 9, 10 | digests agree with software | — | unchanged |
+| 11, 12, 13, 21 | **`none`, every fuel** | correct digest | digests agree |
+
+All seven digests match an independent Python BLAKE2b-F reference, so the
+software build was always right and the accelerated one is now right too.
+
+The fix mirrors the software path: keep a `row` counter that wraps at 10. It
+touches only the `ZISK_ACCEL` branch, so `Guest/guest-software.pp.pnk` is
+unchanged.
+
+Consequences worth separating:
+
+* **For the guest.** The accelerated build halted on any block containing a
+  BLAKE2F call with `rounds >= 11`, which is the normal use of the precompile.
+  That is a bug in the deployed build, independent of any proof.
+* **For the theorem.** It was a second way for
+  `guest_terminates_within_step_bound` to be false as stated, on inputs well
+  inside the premises: 12 rounds costs 12 gas against a 200M limit, and the
+  block is small.
+
+### The rest of the accelerator surface
+
+The other conditions under which `acceleratorEffect` declines were checked
+against every call site in `guest/src`, and all are guarded by the guest:
+
+| accelerator | declines when | guard |
+|---|---|---|
+| `secpadd`, `bn_g1_add`, `bls_g1_add` | `x1 == x2`, or a coordinate not reduced | `ec_add`/`ecp_add`/`g1_add` test `x1 == x2` first and route to doubling or to infinity |
+| `secpdbl`, `bn_g1_dbl`, `bls_g1_dbl` | `y == 0`, or not reduced | `ec_double`/`ecp_double`/`g1_double` test `y == 0` and return infinity |
+| `arith256mod`, `bn_arith256`, `bls_arith384` | modulus zero | the modulus is a constant written at init (`SECP_P`, `SECP_N`, the BN254/BLS field primes), never user data |
+| `bn_fp2_*`, `bls_fp2_*` | an operand not reduced | operands are Montgomery-form field elements, reduced by construction |
+
+So BLAKE2F was the only unguarded one.
 
 ## What the bound itself needs
 

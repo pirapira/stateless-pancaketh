@@ -89,10 +89,18 @@ fun 1 blake2b_f(1 rounds, 1 h, 1 m, 1 t0, 1 t1, 1 f) {
      precompile input safe when the caller's data pointer is unaligned. */
   memcpy(b2_m, m, 128);
   var r = 0;
+  var row = 0;
   while r <+ rounds {
-    st b2_round, r;
+    /* The CSR takes a SIGMA row, not a round number: ZisK's csrsValid rejects
+       an index >= 10 and the machine then traps.  Wrap exactly as the software
+       path below does; BLAKE2b's standard 12 rounds reach row 10 twice. */
+    st b2_round, row;
     @blake2bround(b2_round, 0, 0, 0);
     r = r + 1;
+    row = row + 1;
+    if row == 10 {
+      row = 0;
+    }
   }
 #else
   var r = 0;

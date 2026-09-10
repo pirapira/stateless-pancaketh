@@ -8,5 +8,6 @@ import Guest.Accel
 import Guest.InputDecode
 import Guest.Model
 import Guest.FrameBound
+import Guest.StepCalculus
 import Guest.StepBound
 import Guest.AstParse
