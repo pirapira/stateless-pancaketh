@@ -658,13 +658,29 @@ measure must therefore be the sum over all live frames**, not the current
 frame's two counters. A measure read off `ev` alone goes *up* the moment a
 child frame declines to start.
 
+#### Calls compose now
+
+`callSteps_runs_returned` and `call_runs` (`Guest/Termination.lean`) complete
+the `_runs` layer for the one construct that was still existential-only.
+`callSteps_terminates` covers every control result and hands back an `∃`; a
+caller that wants to keep going has to *know* the state it resumes in, so the
+equational form is restricted to the case the guest actually uses — a callee
+that `return`s, with a destination to assign to.
+
+Worth noting which parts of the state survive a call, since it is not
+symmetric: the callee's memory and FFI state are kept (the guest's heap is
+global), the caller's locals come back from `assignPanValueCallResult` rather
+than the callee's, and the globals are the callee's as amended by that
+assignment.
+
 #### What is still missing for the measure
 
 * **`op_sstore`'s conservation argument** — the only unearned link in the
   invariant; the `SG_NEW_ACCOUNT` half is structural (see above).
 * **The measure summed over live frames**, since gas moves between them.
-* **`charge_state_gas` equationally.** The arithmetic is done; the statement
-  proof needs `call_runs`, because the body calls `add_sat`.
+* **`charge_state_gas` equationally.** The arithmetic is done and `call_runs`
+  now exists, so this is unblocked; the body's `add_sat` call needs
+  `callSteps_runs_returned` pointed at the committed AST.
 * **`1 <= amount` is per-opcode.** The census settles 70 of 87 handlers; the
   17 dynamically-metered ones each need their own charge-is-positive argument,
   and the call/create six have cost paid by the child frame.

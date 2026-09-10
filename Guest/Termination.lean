@@ -560,6 +560,71 @@ theorem dec_runs (name : VarName) (shape : Shape) (valueExp : Exp α) (body : Pr
   simp only [Option.bind_eq_bind, Option.bind_some, if_pos hshape, hbody]
   rfl
 
+/-- **What a call to a returning function runs to.** The equational twin of
+`callSteps_terminates`, restricted to the case the guest actually uses: a
+callee that `return`s, with a destination to assign the result to.
+
+This is what composition across the call graph needs. `callSteps_terminates`
+gives an existential and a pile of case hypotheses covering every control
+result; a caller that wants to keep going has to *know* the state it resumes
+in, which is `callerLocals`, `callerGlobals` and the callee's memory and FFI
+state.
+
+Note which parts of the state survive the call and which do not: the callee's
+memory and FFI state are kept (the guest's heap is global), the caller's
+locals are restored from `assignPanValueCallResult` rather than the callee's,
+and the globals are the callee's as amended by the assignment. -/
+theorem callSteps_runs_returned
+    (info : Option (Option (VarKind × VarName) × Option (ExceptionId × VarName × Prog α)))
+    (function : FunName) (arguments : List (Exp α))
+    (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)
+    (values : List (PanValue α)) (argSteps : Nat)
+    (parameters : List VarName) (body : Prog α)
+    (calleeLocals : VarName → Option (PanValue α))
+    (bfuel : Nat) (bsteps : Nat)
+    (cl cg : VarName → Option (PanValue α)) (cm : α → Option (PanValue α))
+    (cf : FfiState σ) (vs : List (PanValue α))
+    (destination : Option (VarKind × VarName))
+    (handlerInfo : Option (ExceptionId × VarName × Prog α))
+    (callerLocals callerGlobals : VarName → Option (PanValue α))
+    (hargs : evalPanValueExpsCounted structs l g m baseAddress topAddress bytesInWord
+      arguments ma = some (values, argSteps))
+    (hlookup : lookupPanFunction function functions = some (parameters, body))
+    (hbind : bindPanValueParameters parameters values = some calleeLocals)
+    (hbody : evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord bfuel calleeLocals g m f body ma c mh
+      = some (PanValueFfiControlResult.returned cl cg cm cf vs, bsteps))
+    (hinfo : info = some (destination, handlerInfo))
+    (hvalid : (panValueReturnValid structs c function vs &&
+      panValueValuesWithinLimit structs vs) = true)
+    (hassign : assignPanValueCallResult l cg destination vs (structs := structs)
+      = some (callerLocals, callerGlobals)) :
+    evalPanValueFfiCallSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord (bfuel + 1) l g m f info function arguments ma c mh
+      = some (PanValueFfiControlResult.normal callerLocals callerGlobals cm cf,
+        argSteps + bsteps) := by
+  subst hinfo
+  rw [evalPanValueFfiCallSteps, hargs]
+  simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody, if_pos hvalid,
+    hassign]
+  rfl
+
+/-- **What `Prog.call` runs to**, from the call evaluator's equation: the
+statement wrapper costs one step. -/
+theorem call_runs
+    (info : Option (Option (VarKind × VarName) × Option (ExceptionId × VarName × Prog α)))
+    (function : FunName) (arguments : List (Exp α))
+    (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)
+    (fuel : Nat) (r : PanValueFfiControlResult α σ) (steps : Nat)
+    (hcall : evalPanValueFfiCallSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord fuel l g m f info function arguments ma c mh
+      = some (r, steps)) :
+    evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord (fuel + 1) l g m f
+      (Prog.call info function arguments) ma c mh = some (r, steps + 1) := by
+  rw [evalPanValueFfiProgSteps, hcall]
+  rfl
+
 /-- What a `raise` runs to. -/
 theorem raise_runs (exception : ExceptionId) (value : Exp α)
     (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)
