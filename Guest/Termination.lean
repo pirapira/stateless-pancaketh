@@ -528,6 +528,23 @@ theorem seq_runs_normal (first second : Prog α)
   simp only [Option.bind_eq_bind, Option.bind_some, hsecond]
   rfl
 
+/-- What a `seq` runs to when the first half returns: the second never runs.
+The `return` twin of `seq_runs_raised`, and just as necessary — a guest
+function that returns early from inside a `seq` (which `charge_state_gas` does
+on its reservoir path) needs this to compose. -/
+theorem seq_runs_returned (first second : Prog α)
+    (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)
+    (l' g' : VarName → Option (PanValue α)) (m' : α → Option (PanValue α)) (f' : FfiState σ)
+    (fuel s1 : Nat) (vs : List (PanValue α))
+    (hfirst : evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord fuel l g m f first ma c mh
+      = some (PanValueFfiControlResult.returned l' g' m' f' vs, s1)) :
+    evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord (fuel + 1) l g m f (Prog.seq first second) ma c mh
+      = some (PanValueFfiControlResult.returned l' g' m' f' vs, s1 + 1) := by
+  rw [evalPanValueFfiProgSteps, hfirst]
+  rfl
+
 /-- What a `seq` runs to when the first half raises: the second never runs. -/
 theorem seq_runs_raised (first second : Prog α)
     (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)

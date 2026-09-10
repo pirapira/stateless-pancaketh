@@ -111,4 +111,16 @@ theorem credit_state_gas_refund_increases_sum {gl sgl amount fromGl : Word}
     omega
   omega
 
+/-- `Cmp.notLower` is unsigned `>=`: `charge_state_gas`'s reservoir test is
+true exactly when the reservoir covers the charge. The mirror of
+`cmp_lower_false_of_le`, and the same observation — the guest branches on the
+borrow before it subtracts. -/
+theorem cmp_notLower_true_of_le {a b : Word} (h : b.toNat ≤ a.toNat) :
+    ((RiscV.panRiscVCmp Cmp.notLower a b) != 0) = true := by
+  have : ¬ (a < b) := by
+    simp only [BitVec.lt_def]
+    omega
+  simp [RiscV.panRiscVCmp, this]
+
+
 end Guest

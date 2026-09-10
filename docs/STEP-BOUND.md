@@ -658,6 +658,23 @@ measure must therefore be the sum over all live frames**, not the current
 frame's two counters. A measure read off `ev` alone goes *up* the moment a
 child frame declines to start.
 
+#### `charge_state_gas`, reservoir path
+
+`charge_state_gas` draws from `EV_STATE_GAS_LEFT` first, so the reservoir path
+is the one that runs whenever the frame has state gas to spend — and it is
+self-contained: it `return`s before reaching `add_sat`, so it needs no call
+rule. `charge_state_gas_runs_reservoir` gives its equation at fuel 6 and
+`charge_state_gas_decreases_sum_reservoir` reads the measure off the resulting
+memory: the reservoir is down by `amount`, `EV_GAS_LEFT` is untouched, so the
+sum falls.
+
+It needed one new rule. The reservoir branch `return`s from *inside* a `seq` —
+the `add_sat` half of the body is still syntactically ahead of it — so
+`seq_runs_returned` had to join `seq_runs_raised`. The test is
+`Cmp.notLower`, the mirror of `charge_gas`'s, and
+`cmp_notLower_true_of_le` is the same observation once more: the guest
+branches on the borrow before it subtracts.
+
 #### Calls compose now
 
 `callSteps_runs_returned` and `call_runs` (`Guest/Termination.lean`) complete
@@ -678,9 +695,11 @@ assignment.
 * **`op_sstore`'s conservation argument** — the only unearned link in the
   invariant; the `SG_NEW_ACCOUNT` half is structural (see above).
 * **The measure summed over live frames**, since gas moves between them.
-* **`charge_state_gas` equationally.** The arithmetic is done and `call_runs`
-  now exists, so this is unblocked; the body's `add_sat` call needs
-  `callSteps_runs_returned` pointed at the committed AST.
+* **`charge_state_gas`'s spill path.** The reservoir path is done
+  (`charge_state_gas_runs_reservoir`, and
+  `charge_state_gas_decreases_sum_reservoir` for the measure); the spill path
+  calls `add_sat`, so it needs `callSteps_runs_returned` pointed at that
+  callee's committed AST.
 * **`1 <= amount` is per-opcode.** The census settles 70 of 87 handlers; the
   17 dynamically-metered ones each need their own charge-is-positive argument,
   and the call/create six have cost paid by the child frame.
