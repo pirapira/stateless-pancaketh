@@ -675,6 +675,37 @@ the `add_sat` half of the body is still syntactically ahead of it — so
 `cmp_notLower_true_of_le` is the same observation once more: the guest
 branches on the borrow before it subtracts.
 
+#### `charge_state_gas`, spill path — the measure step is complete
+
+When the reservoir is short, `charge_state_gas` asks `add_sat` whether the two
+counters *together* cover the charge, empties the reservoir, and takes the
+remainder out of `EV_GAS_LEFT`. `charge_state_gas_runs_spill` is that path end
+to end from the committed AST, at fuel 11, and
+`charge_state_gas_decreases_sum_spill` reads the measure off it.
+
+**Both paying paths of both counters now move the measure down**, which is the
+whole of the "charges >= 1 gas" half of the census claim:
+
+| | equation | measure |
+|---|---|---|
+| `charge_gas` | `charge_gas_runs_normal` | `charge_gas_decreases_gas` |
+| `charge_state_gas`, reservoir | `charge_state_gas_runs_reservoir` | `..._decreases_sum_reservoir` |
+| `charge_state_gas`, spill | `charge_state_gas_runs_spill` | `..._decreases_sum_spill` |
+
+The link on the spill path is `addSatOf_le_sum`: the guest's `tot >=+ amount`
+test bounds `amount` by the *saturating* sum, and that bounds it by the true
+sum — which is exactly the no-borrow condition `state_gas_sum_decreases_spill`
+wants. So for a third time the guest's own branch is what licenses the
+measure; there is still no place where a no-wraparound side condition had to
+be assumed rather than read off a test the guest already performs.
+
+This is also the first path in the guest that leaves its own function and
+comes back, so it is where `decCall_runs` and `callSteps_runs_returned_none`
+get used for real. The three stores are straight-line, except that the last
+one *reads* `EV_STATE_GAS_SPILLED` after the first two have run — which is the
+only reason disjointness hypotheses appear, and why they are only about
+`ev + 192`.
+
 #### `add_sat`, the first callee
 
 `charge_state_gas`'s spill path calls `add_sat`, so it is the first guest
@@ -722,11 +753,10 @@ assignment.
 * **`op_sstore`'s conservation argument** — the only unearned link in the
   invariant; the `SG_NEW_ACCOUNT` half is structural (see above).
 * **The measure summed over live frames**, since gas moves between them.
-* **`charge_state_gas`'s spill path**, now that its callee and both call
-  rules exist. The reservoir path is done
-  (`charge_state_gas_runs_reservoir`, `charge_state_gas_decreases_sum_reservoir`)
-  and `add_sat` is proved (`add_sat_runs`); what is left is threading them
-  together through `decCall_runs`.
+* **`charge_gas`'s out-of-gas path and `charge_state_gas`'s**, the two
+  raising branches. Both counters' *paying* paths are now done on both sides:
+  `charge_gas_decreases_gas`, `charge_state_gas_decreases_sum_reservoir` and
+  `charge_state_gas_decreases_sum_spill`.
 * **`1 <= amount` is per-opcode.** The census settles 70 of 87 handlers; the
   17 dynamically-metered ones each need their own charge-is-positive argument,
   and the call/create six have cost paid by the child frame.

@@ -886,4 +886,404 @@ theorem charge_state_gas_decreases_sum_reservoir
 
 end
 
+/-!
+## `charge_state_gas`, spill path
+
+When the reservoir is short, `charge_state_gas` asks `add_sat` whether the two
+counters *together* cover the charge, and if so empties the reservoir and
+takes the remainder out of `EV_GAS_LEFT`.
+
+This is the first path in the guest that leaves its own function and comes
+back, so it is where `decCall_runs` and `callSteps_runs_returned_none` get
+used for real. The rest is straight-line: three stores and a `return`, with
+the last store *reading* `EV_STATE_GAS_SPILLED` after the first two have run —
+which is the only reason disjointness hypotheses appear, and why they are only
+about `ev + 192`.
+
+`charge_state_gas_decreases_sum_spill` closes the measure argument for this
+path. The link is `addSatOf_le_sum`: the guest's `tot >=+ amount` test bounds
+`amount` by the *saturating* sum, and that bounds it by the true sum, which is
+exactly the no-borrow condition `state_gas_sum_decreases_spill` wants.
+-/
+
+/-- `add_sat`'s parameters bind to its two arguments. Computed, not assumed. -/
+theorem add_sat_binds (a b : Word) :
+    bindPanValueParameters ["a", "b"] [PanValue.word a, PanValue.word b]
+      = some (updatePanValueMap
+          (updatePanValueMap (fun _ => none) "a" (PanValue.word a))
+          "b" (PanValue.word b)) := by
+  simp [bindPanValueParameters]
+
+/-- The paying branch of the spill test: empty the reservoir, take the
+remainder from `EV_GAS_LEFT`, record it in `EV_STATE_GAS_SPILLED`, return. -/
+def chargeStateGasSpillStores : Prog Word :=
+  (Prog.dec "rem" Shape.one
+        (Exp.op BinOp.sub [Exp.var VarKind.local "amount", Exp.var VarKind.local "sgl"])
+        (Prog.seq
+          (Prog.store (Exp.op BinOp.add
+              [Exp.var VarKind.global "ev", Exp.const (BitVec.ofNat 64 72)])
+            (Exp.const (BitVec.ofNat 64 0)))
+          (Prog.seq
+            (Prog.store (Exp.op BinOp.add
+                [Exp.var VarKind.global "ev", Exp.const (BitVec.ofNat 64 64)])
+              (Exp.op BinOp.sub
+                [Exp.var VarKind.local "gl", Exp.var VarKind.local "rem"]))
+            (Prog.seq
+              (Prog.store (Exp.op BinOp.add
+                  [Exp.var VarKind.global "ev", Exp.const (BitVec.ofNat 64 192)])
+                (Exp.op BinOp.add
+                  [Exp.load Shape.one (Exp.op BinOp.add
+                    [Exp.var VarKind.global "ev", Exp.const (BitVec.ofNat 64 192)]),
+                   Exp.var VarKind.local "rem"]))
+              (Prog.return (Exp.const (BitVec.ofNat 64 0)))))))
+
+/-- The memory `charge_state_gas` leaves on its spill path: the reservoir is
+emptied, the remainder comes out of `EV_GAS_LEFT`, and `EV_STATE_GAS_SPILLED`
+records what was borrowed. -/
+def chargeStateGasSpillMemory (m : Memory) (e sgl gl amount spilled : Word) : Memory :=
+  fun current =>
+    if current == e + BitVec.ofNat 64 192 then
+      some (PanValue.word (spilled + (amount - sgl)))
+    else if current == e + BitVec.ofNat 64 64 then
+      some (PanValue.word (gl - (amount - sgl)))
+    else if current == e + BitVec.ofNat 64 72 then
+      some (PanValue.word (BitVec.ofNat 64 0))
+    else m current
+
+section
+variable (context : PanValueFfiContext Word) (primitive : PanPrimitiveHandler Word)
+  (handler : PanValueStatefulFfiHandler Word HostMemory) (structs : StructContext)
+  (functions : List (FunName × List VarName × Prog Word))
+  (baseAddress topAddress bytesInWord : Word)
+  (c : Option PanValueCallContracts)
+  (mh : Option (PanValueMemoryFfiHandler Word HostMemory))
+
+/-- **The `add_sat` call inside `charge_state_gas`.** The only part of the
+spill path that leaves the function, isolated so the rest is ordinary
+straight-line reasoning. -/
+theorem charge_state_gas_add_sat_call
+    (l g : VarName → Option (PanValue Word)) (m : Memory) (f : FfiState HostMemory)
+    (sgl gl : Word)
+    (hsgl : l "sgl" = some (PanValue.word sgl))
+    (hgl : l "gl" = some (PanValue.word gl))
+    (hlookup : lookupPanFunction "add_sat" functions = some (["a", "b"], addSatBody))
+    (hlimitMax : panValuePayloadWithinLimit structs
+      (PanValue.word (BitVec.ofNat 64 18446744073709551615)) = true)
+    (hlimitSum : panValuePayloadWithinLimit structs
+      (PanValue.word (sgl + gl)) = true)
+    (hretValid : (panValueReturnValid structs c "add_sat"
+        [PanValue.word (addSatOf sgl gl)] &&
+      panValueValuesWithinLimit structs [PanValue.word (addSatOf sgl gl)]) = true) :
+    ∃ steps, evalPanValueFfiCallSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord 5 l g m f none "add_sat"
+      [Exp.var VarKind.local "sgl", Exp.var VarKind.local "gl"]
+      (some guestMemoryAccess) c mh
+      = some (PanValueFfiControlResult.returned (fun _ => none) g m f
+          [PanValue.word (addSatOf sgl gl)], steps) := by
+  have hcallee := add_sat_binds sgl gl
+  have ha : updatePanValueMap (updatePanValueMap (fun _ => none) "a" (PanValue.word sgl))
+      "b" (PanValue.word gl) "a" = some (PanValue.word sgl) := by
+    simp [updatePanValueMap]
+  have hb : updatePanValueMap (updatePanValueMap (fun _ => none) "a" (PanValue.word sgl))
+      "b" (PanValue.word gl) "b" = some (PanValue.word gl) := by
+    simp [updatePanValueMap]
+  obtain ⟨cl, bsteps, hbody⟩ := add_sat_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord c mh _ g m f sgl gl ha hb hlimitMax hlimitSum
+  exact ⟨_, StepCalculus.callSteps_runs_returned_none context primitive handler structs
+    functions baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+    "add_sat" _ l g m f _ _ ["a", "b"] addSatBody _ 4 _ cl g m f _
+    (evalCounted_args_two_locals structs l g m baseAddress topAddress bytesInWord
+      "sgl" "gl" sgl gl hsgl hgl)
+    hlookup hcallee hbody hretValid⟩
+
+
+/-- **What `charge_state_gas`'s spill body runs to**, from the point where
+`tot`, `sgl`, `gl` and `amount` are all bound: empty the reservoir, take the
+remainder out of `EV_GAS_LEFT`, and record it in `EV_STATE_GAS_SPILLED`.
+
+The three stores are sequential and the last one *reads* `EV_STATE_GAS_SPILLED`
+after the first two have run, which is why the two disjointness hypotheses are
+needed and why they are only about `ev + 192`. -/
+theorem charge_state_gas_spill_stores
+    (l g : VarName → Option (PanValue Word)) (m : Memory) (f : FfiState HostMemory)
+    (e sgl gl amount spilled : Word)
+    (hev : g "ev" = some (PanValue.word e))
+    (hgl : l "gl" = some (PanValue.word gl))
+    (hsgl : l "sgl" = some (PanValue.word sgl))
+    (hamount : l "amount" = some (PanValue.word amount))
+    (hspilled : m (e + BitVec.ofNat 64 192) = some (PanValue.word spilled))
+    (hne72 : ((e + BitVec.ofNat 64 192) == (e + BitVec.ofNat 64 72)) = false)
+    (hne64 : ((e + BitVec.ofNat 64 192) == (e + BitVec.ofNat 64 64)) = false)
+    (hlimit : panValuePayloadWithinLimit structs
+      (PanValue.word (BitVec.ofNat 64 0)) = true) :
+    ∃ l' steps, evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord 5 l g m f
+      chargeStateGasSpillStores
+      (some guestMemoryAccess) c mh
+      = some (PanValueFfiControlResult.returned l' g
+          (chargeStateGasSpillMemory m e sgl gl amount spilled) f
+          [PanValue.word (BitVec.ofNat 64 0)], steps) := by
+  -- `rem := amount - sgl`
+  have hrem : evalPanValueExpCounted structs l g m baseAddress topAddress bytesInWord
+      (Exp.op BinOp.sub [Exp.var VarKind.local "amount", Exp.var VarKind.local "sgl"])
+      (some guestMemoryAccess)
+      = some (PanValue.word (amount - sgl),
+          panValueExpStepCost (Exp.op BinOp.sub
+            [Exp.var VarKind.local "amount", Exp.var VarKind.local "sgl"] : Exp Word)) := by
+    rw [evalPanValueExpCounted]
+    rw [eval_op2 structs l g m baseAddress topAddress bytesInWord BinOp.sub _ _ amount sgl _
+      (by rw [eval_var_local]; exact hamount) (by rw [eval_var_local]; exact hsgl)
+      (wordOp_sub amount sgl)]
+    rfl
+  -- locals with `rem` bound
+  have hgl' : updatePanValueMap l "rem" (PanValue.word (amount - sgl)) "gl"
+      = some (PanValue.word gl) := by simp [updatePanValueMap, hgl]
+  have hrem' : updatePanValueMap l "rem" (PanValue.word (amount - sgl)) "rem"
+      = some (PanValue.word (amount - sgl)) := by simp [updatePanValueMap]
+  -- store 1: ev + 72 := 0
+  have haddr72 : evalPanValueExp structs (updatePanValueMap l "rem" (PanValue.word (amount - sgl)))
+      g m baseAddress topAddress bytesInWord
+      (Exp.op BinOp.add [Exp.var VarKind.global "ev", Exp.const (BitVec.ofNat 64 72)])
+      (some guestMemoryAccess) = some (PanValue.word (e + BitVec.ofNat 64 72)) :=
+    eval_global_add_const structs _ g m baseAddress topAddress bytesInWord "ev" e _ hev
+  have hs1 := store_runs structs _ g m baseAddress topAddress bytesInWord context
+    primitive handler functions c mh _ _ f _ _ haddr72
+    (by rw [eval_const] : evalPanValueExp structs
+      (updatePanValueMap l "rem" (PanValue.word (amount - sgl))) g m baseAddress topAddress
+      bytesInWord (Exp.const (BitVec.ofNat 64 0)) (some guestMemoryAccess)
+      = some (PanValue.word (BitVec.ofNat 64 0)))
+  -- store 2: ev + 64 := gl - rem, in the memory the first store left
+  have haddr64 : evalPanValueExp structs (updatePanValueMap l "rem" (PanValue.word (amount - sgl)))
+      g (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) baseAddress topAddress bytesInWord
+      (Exp.op BinOp.add [Exp.var VarKind.global "ev", Exp.const (BitVec.ofNat 64 64)])
+      (some guestMemoryAccess) = some (PanValue.word (e + BitVec.ofNat 64 64)) :=
+    eval_global_add_const structs _ g (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) baseAddress topAddress bytesInWord "ev" e _ hev
+  have hval64 : evalPanValueExp structs (updatePanValueMap l "rem" (PanValue.word (amount - sgl)))
+      g (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) baseAddress topAddress bytesInWord
+      (Exp.op BinOp.sub [Exp.var VarKind.local "gl", Exp.var VarKind.local "rem"])
+      (some guestMemoryAccess) = some (PanValue.word (gl - (amount - sgl))) := by
+    refine eval_op2 structs _ g (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) baseAddress topAddress bytesInWord BinOp.sub _ _ gl
+      (amount - sgl) _ ?_ ?_ (wordOp_sub gl (amount - sgl))
+    · rw [eval_var_local]; exact hgl'
+    · rw [eval_var_local]; exact hrem'
+  have hs2 := store_runs structs _ g (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) baseAddress topAddress bytesInWord context
+    primitive handler functions c mh _ _ f _ _ haddr64 hval64
+  -- store 3: ev + 192 := (load ev + 192) + rem, reading past the first two
+  have hsp2 : (fun cur => if cur == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - (amount - sgl))) else (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) cur) (e + BitVec.ofNat 64 192) = some (PanValue.word spilled) := by
+    simp only [hne64, hne72]
+    exact hspilled
+  have haddr192 : evalPanValueExp structs (updatePanValueMap l "rem" (PanValue.word (amount - sgl)))
+      g (fun cur => if cur == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - (amount - sgl))) else (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) cur) baseAddress topAddress bytesInWord
+      (Exp.op BinOp.add [Exp.var VarKind.global "ev", Exp.const (BitVec.ofNat 64 192)])
+      (some guestMemoryAccess) = some (PanValue.word (e + BitVec.ofNat 64 192)) :=
+    eval_global_add_const structs _ g (fun cur => if cur == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - (amount - sgl))) else (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) cur) baseAddress topAddress bytesInWord "ev" e _ hev
+  have hload192 : evalPanValueExp structs (updatePanValueMap l "rem" (PanValue.word (amount - sgl)))
+      g (fun cur => if cur == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - (amount - sgl))) else (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) cur) baseAddress topAddress bytesInWord
+      (Exp.load Shape.one (Exp.op BinOp.add
+        [Exp.var VarKind.global "ev", Exp.const (BitVec.ofNat 64 192)]))
+      (some guestMemoryAccess) = some (PanValue.word spilled) :=
+    eval_load_global_add structs _ g (fun cur => if cur == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - (amount - sgl))) else (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) cur) baseAddress topAddress bytesInWord "ev" e _ spilled
+      hev hsp2
+  have hval192 : evalPanValueExp structs (updatePanValueMap l "rem" (PanValue.word (amount - sgl)))
+      g (fun cur => if cur == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - (amount - sgl))) else (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) cur) baseAddress topAddress bytesInWord
+      (Exp.op BinOp.add [Exp.load Shape.one (Exp.op BinOp.add
+          [Exp.var VarKind.global "ev", Exp.const (BitVec.ofNat 64 192)]),
+        Exp.var VarKind.local "rem"])
+      (some guestMemoryAccess) = some (PanValue.word (spilled + (amount - sgl))) := by
+    refine eval_op2 structs _ g (fun cur => if cur == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - (amount - sgl))) else (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) cur) baseAddress topAddress bytesInWord BinOp.add _ _ spilled
+      (amount - sgl) _ hload192 ?_ (wordOp_add spilled (amount - sgl))
+    rw [eval_var_local]; exact hrem'
+  have hs3 := store_runs structs _ g (fun cur => if cur == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - (amount - sgl))) else (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) cur) baseAddress topAddress bytesInWord context
+    primitive handler functions c mh _ _ f _ _ haddr192 hval192
+  have hret := StepCalculus.return_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+    (Exp.const (BitVec.ofNat 64 0))
+    (updatePanValueMap l "rem" (PanValue.word (amount - sgl))) g
+    (chargeStateGasSpillMemory m e sgl gl amount spilled) f _ _ 0
+    (by rw [evalPanValueExpCounted, eval_const]; rfl) hlimit
+  -- chain them: innermost first
+  have hseq3 := StepCalculus.seq_runs_normal context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _ _ _ g (fun cur => if cur == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - (amount - sgl))) else (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) cur) f
+    _ g (chargeStateGasSpillMemory m e sgl gl amount spilled) f 1 _ _ _ hs3 hret
+  have hs2' := StepCalculus.progMono context primitive handler structs functions
+    baseAddress topAddress bytesInWord 1 _ g (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) f _ (some guestMemoryAccess) c mh 2 _
+    (by omega) hs2
+  have hseq2 := StepCalculus.seq_runs_normal context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _ _ _ g (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) f
+    _ g (fun cur => if cur == e + BitVec.ofNat 64 64 then some (PanValue.word (gl - (amount - sgl))) else (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) cur) f 2 _ _ _ hs2' hseq3
+  have hs1' := StepCalculus.progMono context primitive handler structs functions
+    baseAddress topAddress bytesInWord 1 _ g m f _ (some guestMemoryAccess) c mh 3 _
+    (by omega) hs1
+  have hseq1 := StepCalculus.seq_runs_normal context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _ _ _ g m f
+    _ g (fun cur => if cur == e + BitVec.ofNat 64 72 then some (PanValue.word (BitVec.ofNat 64 0)) else m cur) f 3 _ _ _ hs1' hseq2
+  have hfinal := StepCalculus.dec_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh "rem" Shape.one _ _
+    l g m f (PanValue.word (amount - sgl)) _ 4 _ _ hrem
+    (word_shape_matches structs (amount - sgl)) hseq1
+  exact ⟨_, _, hfinal⟩
+/-- **What `charge_state_gas` runs to when the reservoir is short but the two
+counters together cover the charge.** The spill path, end to end from the
+committed AST: `add_sat` is called, the `tot >=+ amount` test passes, the
+reservoir is emptied, and the remainder is taken from `EV_GAS_LEFT` and
+recorded in `EV_STATE_GAS_SPILLED`.
+
+`hshort` puts us on this path (the reservoir test fails) and `hcovers` takes
+the paying branch of the spill test. Both are the guest's own comparisons,
+restated on `Nat`. -/
+theorem charge_state_gas_runs_spill
+    (l g : VarName → Option (PanValue Word)) (m : Memory) (f : FfiState HostMemory)
+    (e sgl gl amount spilled : Word)
+    (hev : g "ev" = some (PanValue.word e))
+    (hsglM : m (e + BitVec.ofNat 64 72) = some (PanValue.word sgl))
+    (hglM : m (e + BitVec.ofNat 64 64) = some (PanValue.word gl))
+    (hspilled : m (e + BitVec.ofNat 64 192) = some (PanValue.word spilled))
+    (hamount : l "amount" = some (PanValue.word amount))
+    (hshort : sgl.toNat < amount.toNat)
+    (hcovers : amount.toNat ≤ (addSatOf sgl gl).toNat)
+    (hne72 : ((e + BitVec.ofNat 64 192) == (e + BitVec.ofNat 64 72)) = false)
+    (hne64 : ((e + BitVec.ofNat 64 192) == (e + BitVec.ofNat 64 64)) = false)
+    (hlookup : lookupPanFunction "add_sat" functions = some (["a", "b"], addSatBody))
+    (hlimitMax : panValuePayloadWithinLimit structs
+      (PanValue.word (BitVec.ofNat 64 18446744073709551615)) = true)
+    (hlimitSum : panValuePayloadWithinLimit structs (PanValue.word (sgl + gl)) = true)
+    (hlimit0 : panValuePayloadWithinLimit structs
+      (PanValue.word (BitVec.ofNat 64 0)) = true)
+    (hretValid : (panValueReturnValid structs c "add_sat"
+        [PanValue.word (addSatOf sgl gl)] &&
+      panValueValuesWithinLimit structs [PanValue.word (addSatOf sgl gl)]) = true) :
+    ∃ l' steps, evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord 11 l g m f chargeStateGasBody
+      (some guestMemoryAccess) c mh
+      = some (PanValueFfiControlResult.returned l' g
+          (chargeStateGasSpillMemory m e sgl gl amount spilled) f
+          [PanValue.word (BitVec.ofNat 64 0)], steps) := by
+  have hL2sgl : updatePanValueMap (updatePanValueMap l "sgl" (PanValue.word sgl)) "gl"
+      (PanValue.word gl) "sgl" = some (PanValue.word sgl) := by simp [updatePanValueMap]
+  have hL2gl : updatePanValueMap (updatePanValueMap l "sgl" (PanValue.word sgl)) "gl"
+      (PanValue.word gl) "gl" = some (PanValue.word gl) := by simp [updatePanValueMap]
+  have hL2amount : updatePanValueMap (updatePanValueMap l "sgl" (PanValue.word sgl)) "gl"
+      (PanValue.word gl) "amount" = some (PanValue.word amount) := by
+    simp [updatePanValueMap, hamount]
+  obtain ⟨csteps, hcall⟩ := charge_state_gas_add_sat_call context primitive handler structs
+    functions baseAddress topAddress bytesInWord c mh _ g m f sgl gl hL2sgl hL2gl
+    hlookup hlimitMax hlimitSum hretValid
+  have hcall' := StepCalculus.callMono context primitive handler structs functions
+    baseAddress topAddress bytesInWord 5 _ g m f none "add_sat" _
+    (some guestMemoryAccess) c mh 7 _ (by omega) hcall
+  have hL3tot : updatePanValueMap (updatePanValueMap (updatePanValueMap l "sgl"
+      (PanValue.word sgl)) "gl" (PanValue.word gl)) "tot"
+      (PanValue.word (addSatOf sgl gl)) "tot" = some (PanValue.word (addSatOf sgl gl)) := by
+    simp [updatePanValueMap]
+  have hL3amount : updatePanValueMap (updatePanValueMap (updatePanValueMap l "sgl"
+      (PanValue.word sgl)) "gl" (PanValue.word gl)) "tot"
+      (PanValue.word (addSatOf sgl gl)) "amount" = some (PanValue.word amount) := by
+    simp [updatePanValueMap, hamount]
+  have hL3gl : updatePanValueMap (updatePanValueMap (updatePanValueMap l "sgl"
+      (PanValue.word sgl)) "gl" (PanValue.word gl)) "tot"
+      (PanValue.word (addSatOf sgl gl)) "gl" = some (PanValue.word gl) := by
+    simp [updatePanValueMap]
+  have hL3sgl : updatePanValueMap (updatePanValueMap (updatePanValueMap l "sgl"
+      (PanValue.word sgl)) "gl" (PanValue.word gl)) "tot"
+      (PanValue.word (addSatOf sgl gl)) "sgl" = some (PanValue.word sgl) := by
+    simp [updatePanValueMap]
+  obtain ⟨l3, ssteps, hstores⟩ := charge_state_gas_spill_stores context primitive handler
+    structs functions baseAddress topAddress bytesInWord c mh _ g m f e sgl gl amount
+    spilled hev hL3gl hL3sgl hL3amount hspilled hne72 hne64 hlimit0
+  have hzs : ((RiscV.panRiscVCmp Cmp.notLower (addSatOf sgl gl) amount) != 0) = true :=
+    cmp_notLower_true_of_le hcovers
+  have hconds := evalCounted_cmp_locals structs _ g m baseAddress topAddress bytesInWord
+    Cmp.notLower "tot" "amount" (addSatOf sgl gl) amount hL3tot hL3amount
+  have hites := StepCalculus.ite_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+    (thenBranch := chargeStateGasSpillStores) (elseBranch := Prog.skip)
+    _ g m f _ _ 5 _ _ hconds (by rw [if_pos hzs]; exact hstores)
+  have hbody := StepCalculus.seq_runs_returned context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+    (second := Prog.seq (Prog.raise "EvmErr" (Exp.const (BitVec.ofNat 64 4)))
+      (Prog.return (Exp.const (BitVec.ofNat 64 0))))
+    _ g m f _ g (chargeStateGasSpillMemory m e sgl gl amount spilled) f 6 _ _ hites
+  have hdecCall := StepCalculus.decCall_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh "tot" Shape.one
+    "add_sat" _ _ _ g m f 7 _ _ _ g m f _ _ hcall'
+    (word_shape_matches structs (addSatOf sgl gl)) hbody
+  have hzr : ((RiscV.panRiscVCmp Cmp.notLower sgl amount) != 0) = false :=
+    cmp_notLower_false_of_lt hshort
+  have hcondr := evalCounted_cmp_locals structs _ g m baseAddress topAddress bytesInWord
+    Cmp.notLower "sgl" "amount" sgl amount hL2sgl hL2amount
+  have hskip := StepCalculus.skip_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+    (updatePanValueMap (updatePanValueMap l "sgl" (PanValue.word sgl)) "gl"
+      (PanValue.word gl)) g m f 6
+  have hiter := StepCalculus.ite_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+    (thenBranch := chargeStateGasReservoir) (elseBranch := Prog.skip)
+    _ g m f _ _ 7 _ _ hcondr (by rw [if_neg (by rw [hzr]; simp)]; exact hskip)
+  have houter := StepCalculus.seq_runs_normal context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+    (second := chargeStateGasSpill) _ g m f _ g m f 8 _ _ _ hiter hdecCall
+  have hdecgl := StepCalculus.dec_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh "gl" Shape.one _ _
+    _ g m f (PanValue.word gl) _ 9 _ _
+    (evalCounted_load_global_add structs _ g m baseAddress topAddress bytesInWord "ev" e
+      (BitVec.ofNat 64 64) gl hev hglM)
+    (word_shape_matches structs gl) houter
+  have hfinal := StepCalculus.dec_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh "sgl" Shape.one _ _
+    l g m f (PanValue.word sgl) _ 10 _ _
+    (evalCounted_load_global_add structs l g m baseAddress topAddress bytesInWord "ev" e
+      (BitVec.ofNat 64 72) sgl hev hsglM)
+    (word_shape_matches structs sgl) hdecgl
+  rw [chargeStateGasBody_eq]
+  exact ⟨_, _, hfinal⟩
+
+/-- `add_sat` never exceeds the true sum — the other half of `add_sat_ge`.
+Together they say it *is* `min (a + b) (2^64 - 1)` on `Nat`. This direction is
+what turns `charge_state_gas`'s `tot >=+ amount` test into the arithmetic fact
+the measure needs. -/
+theorem addSatOf_le_sum (a b : Word) :
+    (addSatOf a b).toNat ≤ a.toNat + b.toNat := by
+  by_cases hc : (a + b) < a
+  · have hsat : 2 ^ 64 ≤ a.toNat + b.toNat := (add_sat_saturates a b).mp hc
+    have : (addSatOf a b).toNat = 2 ^ 64 - 1 := by
+      simp only [addSatOf, if_pos hc]; decide
+    omega
+  · have hno : a.toNat + b.toNat < 2 ^ 64 := by
+      cases Nat.lt_or_ge (a.toNat + b.toNat) (2 ^ 64) with
+      | inl h => exact h
+      | inr h => exact absurd ((add_sat_saturates a b).mpr h) hc
+    have : (addSatOf a b).toNat = a.toNat + b.toNat := by
+      simp only [addSatOf, if_neg hc]; exact add_no_carry hno
+    omega
+
+/-- **The spill charge moves the measure down.** Reading the two counters back
+out of the memory the spill path leaves: the reservoir is empty and
+`EV_GAS_LEFT` is short by `amount - sgl`, so the sum has fallen by exactly
+`amount`.
+
+`hcovers` is the guest's `tot >=+ amount`; `addSatOf_le_sum` is what turns it
+into the no-borrow condition `state_gas_sum_decreases_spill` needs. -/
+theorem charge_state_gas_decreases_sum_spill
+    (m : Memory) (e sgl gl amount spilled : Word)
+    (hshort : sgl.toNat < amount.toNat)
+    (hcovers : amount.toNat ≤ (addSatOf sgl gl).toNat)
+    (hpos : 1 ≤ amount.toNat)
+    (h72_192 : ((e + BitVec.ofNat 64 72) == (e + BitVec.ofNat 64 192)) = false)
+    (h72_64 : ((e + BitVec.ofNat 64 72) == (e + BitVec.ofNat 64 64)) = false)
+    (h64_192 : ((e + BitVec.ofNat 64 64) == (e + BitVec.ofNat 64 192)) = false) :
+    ∃ sgl' gl',
+      chargeStateGasSpillMemory m e sgl gl amount spilled (e + BitVec.ofNat 64 72)
+          = some (PanValue.word sgl') ∧
+      chargeStateGasSpillMemory m e sgl gl amount spilled (e + BitVec.ofNat 64 64)
+          = some (PanValue.word gl') ∧
+      sgl'.toNat + gl'.toNat < sgl.toNat + gl.toNat := by
+  have htot : amount.toNat ≤ sgl.toNat + gl.toNat :=
+    Nat.le_trans hcovers (addSatOf_le_sum sgl gl)
+  refine ⟨BitVec.ofNat 64 0, gl - (amount - sgl), ?_, ?_,
+    state_gas_sum_decreases_spill hshort htot hpos⟩
+  · simp [chargeStateGasSpillMemory, h72_192, h72_64]
+  · simp [chargeStateGasSpillMemory, h64_192]
+
+end
+
 end Guest

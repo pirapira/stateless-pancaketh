@@ -177,4 +177,15 @@ theorem add_sat_ge (a b : Word) :
     rw [add_no_carry hno]
     omega
 
+/-- `Cmp.notLower` is false exactly when the charge exceeds what is there —
+the spill path's entry condition, and the complement of
+`cmp_notLower_true_of_le`. -/
+theorem cmp_notLower_false_of_lt {a b : Word} (h : a.toNat < b.toNat) :
+    ((RiscV.panRiscVCmp Cmp.notLower a b) != 0) = false := by
+  have hlt : a < b := by
+    simp only [BitVec.lt_def]
+    omega
+  simp [RiscV.panRiscVCmp, hlt]
+
+
 end Guest
