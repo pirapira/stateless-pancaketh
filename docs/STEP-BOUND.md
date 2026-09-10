@@ -514,6 +514,58 @@ against the program's contracts and answer `none` otherwise, so a termination
 proof about any guest function carries them — the control-flow analogue of the
 no-wraparound conditions the loop measures need.
 
+### Termination is not a measure step: `charge_gas` semantically (`Guest/Gas.lean`)
+
+`run_frames`'s measure is the gas left, so proving `charge_gas` *terminates*
+buys nothing towards it. What the loop needs is that a charge **moves the
+measure**, and that is an equation about the state `charge_gas` leaves, not an
+existential that it left one.
+
+`charge_gas_runs_normal` is that equation. On the branch the charge fits, and
+under exactly the hypotheses of `charge_gas_terminates_from_state`,
+`chargeGasBody` runs at fuel 5 to
+
+    .returned _ g (chargeGasMemory m ev gl amount used) f [word 0]
+
+where `chargeGasMemory` puts `gl - amount` at `ev + 64` and `used + amount` at
+`ev + 184`. `charge_gas_decreases_gas` then reads the measure off it: the new
+value at `ev + 64` is `gl - amount`, and
+
+    amount <= gl  and  1 <= amount   implies   (gl - amount).toNat < gl.toNat
+
+Proving that needed one new statement rule, `dec_runs` — the equational twin of
+`dec_terminates`, restoring the shadowed local on the way out — completing the
+`_runs` layer for everything `charge_gas` uses.
+
+#### The wrap-around condition is the branch condition
+
+The gas counters are `BitVec 64` and the guest charges with `-`, which wraps:
+`0 - 1` is `2^64 - 1`, and an unguarded charge would move the measure **up**.
+So `gas_strictly_decreases` is conditional on `amount <= gl` unsigned.
+
+The pleasant part is that this is not an extra assumption to discharge
+elsewhere. It is *the same fact* as the guest's own `gl <+ amount` test falling
+through, because `Cmp.lower` is unsigned `<`:
+
+    cmp_lower_false_of_le : b.toNat <= a.toNat -> (panRiscVCmp .lower a b != 0) = false
+
+The guest checks for the borrow before it subtracts, and that check is what
+licenses the measure. `Guest/Gas.lean` keeps these three facts apart from the
+evaluator on purpose: the wrap-around hypothesis is the interesting half of
+every gas argument and should be legible, not buried inside a proof about
+`Prog.store`.
+
+#### What is still missing for the measure
+
+Two things, both known:
+
+* **Gas lives in two counters.** `charge_state_gas` drains `EV_STATE_GAS_LEFT`
+  before spilling into `EV_GAS_LEFT`, so the measure is the *sum*, and the
+  above needs its companion for the state-gas path.
+* **`1 <= amount` is per-opcode.** The census settles 70 of 87 handlers; the
+  17 dynamically-metered ones each need their own charge-is-positive argument,
+  and the call/create six have cost paid by the child frame.
+
 ## What the bound itself needs
 
 The guest's call graph is acyclic (#71), so no recursion-depth argument is

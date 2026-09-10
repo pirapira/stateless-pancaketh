@@ -542,6 +542,24 @@ theorem seq_runs_raised (first second : Prog α)
   rw [evalPanValueFfiProgSteps, hfirst]
   rfl
 
+/-- What a `dec` runs to: the bound variable's old value is restored on the way
+out, so only the locals of the result change. -/
+theorem dec_runs (name : VarName) (shape : Shape) (valueExp : Exp α) (body : Prog α)
+    (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)
+    (value : PanValue α) (vs fuel bs : Nat) (r : PanValueFfiControlResult α σ)
+    (hv : evalPanValueExpCounted structs l g m baseAddress topAddress bytesInWord
+      valueExp ma = some (value, vs))
+    (hshape : panShapeMatches (panValueShape structs value) shape = true)
+    (hbody : evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord fuel (updatePanValueMap l name value) g m f body
+      ma c mh = some (r, bs)) :
+    evalPanValueFfiProgSteps context primitive handler structs functions baseAddress
+      topAddress bytesInWord (fuel + 1) l g m f (Prog.dec name shape valueExp body) ma c mh
+      = some (restorePanValueFfiLocal name (l name) r, vs + bs + 1) := by
+  rw [evalPanValueFfiProgSteps, hv]
+  simp only [Option.bind_eq_bind, Option.bind_some, if_pos hshape, hbody]
+  rfl
+
 /-- What a `raise` runs to. -/
 theorem raise_runs (exception : ExceptionId) (value : Exp α)
     (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)
