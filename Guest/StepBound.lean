@@ -1,4 +1,5 @@
 import Guest.Model
+import Guest.InputDecode
 
 /-!
 # Goal 1: the guest terminates within a constant number of Pancake steps
@@ -33,8 +34,15 @@ open Flapjack
 
 /-- The block gas limit declared by the input: the `gas_limit` field of the
 block header inside the SSZ-encoded stateless input (what `fork.pnk` reads
-back as `BE_GAS_LIMIT`). `none` when the input does not decode. -/
-def declaredBlockGasLimit (input : InputBlob) : Option Nat := sorry
+back as `BE_GAS_LIMIT`). `none` when the input does not decode.
+
+`Guest.InputDecode` mirrors the guest's own decoder (`decode_stateless_input`
+of `guest/src/ssz.pnk` and everything it calls), so this is `none` on exactly
+the inputs on which the guest raises `SszErr`; the field is the payload's
+`gas_limit`, which `fork.pnk` copies to `HDR_GAS_LIMIT` and then to
+`BE_GAS_LIMIT`. -/
+def declaredBlockGasLimit (input : InputBlob) : Option Nat :=
+  InputDecode.declaredGasLimit input
 
 /-- Largest declared block gas limit covered by the bound. -/
 def maxBlockGasLimit : Nat := 200000000
