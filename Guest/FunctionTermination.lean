@@ -544,6 +544,147 @@ theorem charge_gas_decreases_gas (m : Memory) (e gl amount used : Word)
 end
 
 /-!
+## `add_sat`, the first callee
+
+`charge_state_gas`'s spill path calls `add_sat`, so it is the first function
+that has to be proved as a *callee* rather than entered at the top. Nothing
+here is new machinery — it is the same `_runs` layer — but it is the first
+place `seq_runs_returned` earns its keep twice over, and the first result
+whose statement has to say that the callee left the heap alone, because
+`decCall` runs its body in the callee's memory and FFI state.
+-/
+
+/-- The body of `add_sat`, verbatim from `Guest.guestAst`. -/
+def addSatBody : Prog Word :=
+  match Guest.guestFn_add_sat with
+  | .function info => info.body
+  | _ => Prog.skip
+
+theorem addSatBody_eq : addSatBody =
+    Prog.dec "s" Shape.one
+      (Exp.op BinOp.add [Exp.var VarKind.local "a", Exp.var VarKind.local "b"])
+      (Prog.seq
+        (Prog.ite (Exp.cmp Cmp.lower (Exp.var VarKind.local "s")
+            (Exp.var VarKind.local "a"))
+          (Prog.return (Exp.const (BitVec.ofNat 64 18446744073709551615)))
+          Prog.skip)
+        (Prog.return (Exp.var VarKind.local "s"))) := by
+  rfl
+
+/-- The value `add_sat` yields for `a`, `b`. -/
+def addSatOf (a b : Word) : Word :=
+  if (a + b) < a then BitVec.ofNat 64 18446744073709551615 else a + b
+
+section
+variable (context : PanValueFfiContext Word) (primitive : PanPrimitiveHandler Word)
+  (handler : PanValueStatefulFfiHandler Word HostMemory) (structs : StructContext)
+  (functions : List (FunName × List VarName × Prog Word))
+  (baseAddress topAddress bytesInWord : Word)
+  (c : Option PanValueCallContracts)
+  (mh : Option (PanValueMemoryFfiHandler Word HostMemory))
+
+/-- **What `add_sat`'s body runs to.** The first callee proved end to end, and
+the first use of the `_runs` layer on a function that is *called* rather than
+entered at the top.
+
+Both paths are here: a carry, where the `ite` returns `WORD_MAX` from inside
+the `seq` (`seq_runs_returned` again), and no carry, where it falls through to
+`return s`. Neither touches memory, which is why the result keeps `m` and `f`
+unchanged — worth stating, because `decCall` runs its body in the *callee's*
+heap and this says the callee left it alone. -/
+theorem add_sat_runs
+    (l g : VarName → Option (PanValue Word)) (m : Memory) (f : FfiState HostMemory)
+    (a b : Word)
+    (ha : l "a" = some (PanValue.word a))
+    (hb : l "b" = some (PanValue.word b))
+    (hlimitMax : panValuePayloadWithinLimit structs
+      (PanValue.word (BitVec.ofNat 64 18446744073709551615)) = true)
+    (hlimitSum : panValuePayloadWithinLimit structs
+      (PanValue.word (a + b)) = true) :
+    ∃ l' steps, evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord 4 l g m f addSatBody
+      (some guestMemoryAccess) c mh
+      = some (PanValueFfiControlResult.returned l' g m f
+          [PanValue.word (addSatOf a b)], steps) := by
+  have ha' : updatePanValueMap l "s" (PanValue.word (a + b)) "a"
+      = some (PanValue.word a) := by simp [updatePanValueMap, ha]
+  have hs' : updatePanValueMap l "s" (PanValue.word (a + b)) "s"
+      = some (PanValue.word (a + b)) := by simp [updatePanValueMap]
+  have hcond := evalCounted_cmp_locals structs (updatePanValueMap l "s" (PanValue.word (a + b)))
+    g m baseAddress topAddress bytesInWord Cmp.lower "s" "a" (a + b) a hs' ha'
+  -- the initialiser `s := a + b`
+  have hadd : evalPanValueExp structs l g m baseAddress topAddress bytesInWord
+      (Exp.op BinOp.add [Exp.var VarKind.local "a", Exp.var VarKind.local "b"])
+      (some guestMemoryAccess) = some (PanValue.word (a + b)) := by
+    refine eval_op2 structs l g m baseAddress topAddress bytesInWord BinOp.add _ _ a b _
+      ?_ ?_ (wordOp_add a b)
+    · rw [eval_var_local]; exact ha
+    · rw [eval_var_local]; exact hb
+  have hinit : evalPanValueExpCounted structs l g m baseAddress topAddress bytesInWord
+      (Exp.op BinOp.add [Exp.var VarKind.local "a", Exp.var VarKind.local "b"])
+      (some guestMemoryAccess)
+      = some (PanValue.word (a + b),
+          panValueExpStepCost
+            (Exp.op BinOp.add [Exp.var VarKind.local "a", Exp.var VarKind.local "b"]
+              : Exp Word)) := by
+    rw [evalPanValueExpCounted, hadd]; rfl
+  -- the tail `return s`
+  have htail := StepCalculus.return_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+    (Exp.var VarKind.local "s")
+    (updatePanValueMap l "s" (PanValue.word (a + b))) g m f _ _ 1
+    (by rw [evalPanValueExpCounted, eval_var_local, hs']; rfl) hlimitSum
+  by_cases hz : ((RiscV.panRiscVCmp Cmp.lower (a + b) a) != 0) = true
+  · -- carry: the `ite` returns WORD_MAX and the `seq` stops there
+    have hmax := StepCalculus.return_runs context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+      (Exp.const (BitVec.ofNat 64 18446744073709551615))
+      (updatePanValueMap l "s" (PanValue.word (a + b))) g m f _ _ 0
+      (by rw [evalPanValueExpCounted, eval_const]; rfl) hlimitMax
+    have hite := StepCalculus.ite_runs context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+      (thenBranch := Prog.return (Exp.const (BitVec.ofNat 64 18446744073709551615)))
+      (elseBranch := Prog.skip)
+      (updatePanValueMap l "s" (PanValue.word (a + b))) g m f _ _ 1 _ _ hcond
+      (by rw [if_pos hz]; exact hmax)
+    have hseq := StepCalculus.seq_runs_returned context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+      (second := Prog.return (Exp.var VarKind.local "s"))
+      (updatePanValueMap l "s" (PanValue.word (a + b))) g m f _ g m f 2 _ _ hite
+    have hfinal := StepCalculus.dec_runs context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh "s" Shape.one _ _
+      l g m f (PanValue.word (a + b)) _ 3 _ _ hinit
+      (word_shape_matches structs (a + b)) hseq
+    have hsat : addSatOf a b = BitVec.ofNat 64 18446744073709551615 := by
+      simp only [addSatOf, if_pos (cmp_lower_true_iff.mp hz)]
+    rw [addSatBody_eq, hsat]
+    exact ⟨_, _, hfinal⟩
+  · -- no carry: the `ite` falls through and the tail returns `s`
+    have hskip := StepCalculus.skip_runs context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+      (updatePanValueMap l "s" (PanValue.word (a + b))) g m f 0
+    have hite := StepCalculus.ite_runs context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+      (thenBranch := Prog.return (Exp.const (BitVec.ofNat 64 18446744073709551615)))
+      (elseBranch := Prog.skip)
+      (updatePanValueMap l "s" (PanValue.word (a + b))) g m f _ _ 1 _ _ hcond
+      (by rw [if_neg hz]; exact hskip)
+    have hseq := StepCalculus.seq_runs_normal context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _ _
+      (updatePanValueMap l "s" (PanValue.word (a + b))) g m f
+      (updatePanValueMap l "s" (PanValue.word (a + b))) g m f 2 _ _ _ hite htail
+    have hfinal := StepCalculus.dec_runs context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh "s" Shape.one _ _
+      l g m f (PanValue.word (a + b)) _ 3 _ _ hinit
+      (word_shape_matches structs (a + b)) hseq
+    have hsat : addSatOf a b = a + b := by
+      simp only [addSatOf, if_neg (fun hlt => hz (cmp_lower_true_iff.mpr hlt))]
+    rw [addSatBody_eq, hsat]
+    exact ⟨_, _, hfinal⟩
+
+end
+
+/-!
 ## The second gas counter: `charge_state_gas`
 
 `charge_gas` only ever touches `EV_GAS_LEFT`. `charge_state_gas`

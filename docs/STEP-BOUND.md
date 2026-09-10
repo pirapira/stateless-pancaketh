@@ -675,6 +675,33 @@ the `add_sat` half of the body is still syntactically ahead of it — so
 `cmp_notLower_true_of_le` is the same observation once more: the guest
 branches on the borrow before it subtracts.
 
+#### `add_sat`, the first callee
+
+`charge_state_gas`'s spill path calls `add_sat`, so it is the first guest
+function proved as a *callee* rather than entered at the top.
+`add_sat_runs` covers both paths — a carry, where the `ite` returns
+`WORD_MAX` from inside the `seq`, and no carry, where it falls through to
+`return s`.
+
+Its statement has to say the callee left the heap alone (`m` and `f`
+unchanged), because `decCall` runs its body in the *callee's* memory and FFI
+state, not the caller's.
+
+Two call rules were missing and are now in `Guest/Termination.lean`:
+
+* `callSteps_runs_returned_none` — `Prog.decCall` calls with `info = none`, so
+  `callSteps_runs_returned`, which needs a destination to assign to, does not
+  apply to it;
+* `decCall_runs` — the guest's `var x = f(...)` form.
+
+The arithmetic is in `Guest/Gas.lean`. `add_sat_saturates` is the fact the
+guest's overflow test actually relies on: **a sum coming out below one of its
+own summands is precisely an unsigned carry**, so `s <+ a` detects exactly
+`2^64 <= a + b`. `add_sat_ge` is the property `charge_state_gas` needs
+downstream — the result dominates the true sum, capped at the word size —
+which is what makes `tot >=+ amount` enough to rule out a borrow in
+`gl - rem`.
+
 #### Calls compose now
 
 `callSteps_runs_returned` and `call_runs` (`Guest/Termination.lean`) complete
@@ -695,11 +722,11 @@ assignment.
 * **`op_sstore`'s conservation argument** — the only unearned link in the
   invariant; the `SG_NEW_ACCOUNT` half is structural (see above).
 * **The measure summed over live frames**, since gas moves between them.
-* **`charge_state_gas`'s spill path.** The reservoir path is done
-  (`charge_state_gas_runs_reservoir`, and
-  `charge_state_gas_decreases_sum_reservoir` for the measure); the spill path
-  calls `add_sat`, so it needs `callSteps_runs_returned` pointed at that
-  callee's committed AST.
+* **`charge_state_gas`'s spill path**, now that its callee and both call
+  rules exist. The reservoir path is done
+  (`charge_state_gas_runs_reservoir`, `charge_state_gas_decreases_sum_reservoir`)
+  and `add_sat` is proved (`add_sat_runs`); what is left is threading them
+  together through `decCall_runs`.
 * **`1 <= amount` is per-opcode.** The census settles 70 of 87 handlers; the
   17 dynamically-metered ones each need their own charge-is-positive argument,
   and the call/create six have cost paid by the child frame.

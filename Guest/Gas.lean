@@ -122,5 +122,59 @@ theorem cmp_notLower_true_of_le {a b : Word} (h : b.toNat ≤ a.toNat) :
     omega
   simp [RiscV.panRiscVCmp, this]
 
+/-- `Cmp.lower` as a proposition. The `iff` companion to
+`cmp_lower_false_of_le`, for the places that need to *read* a taken branch
+rather than establish one — `add_sat`'s carry test, for instance. -/
+theorem cmp_lower_true_iff {a b : Word} :
+    ((RiscV.panRiscVCmp Cmp.lower a b) != 0) = true ↔ a < b := by
+  constructor
+  · intro h
+    by_cases hlt : a < b
+    · exact hlt
+    · simp [RiscV.panRiscVCmp, hlt] at h
+  · intro h
+    simp [RiscV.panRiscVCmp, h]
+
+/-! ## `add_sat`
+
+The guest's saturating add, used by `charge_state_gas` to decide whether the
+two counters together can cover a charge. Its whole point is that it never
+wraps, so the comparison downstream is meaningful.
+-/
+
+/-- **`add_sat` saturates exactly when the sum wraps.** `a + b` on `BitVec 64`
+wraps, and the guest detects that by `s <+ a` — the sum coming out below one
+of its own summands is precisely an unsigned carry. So the value returned is
+`a + b` when `a.toNat + b.toNat < 2^64`, and `2^64 - 1` otherwise. -/
+theorem add_sat_saturates (a b : Word) :
+    (a + b) < a ↔ 2 ^ 64 ≤ a.toNat + b.toNat := by
+  have ha := a.isLt
+  have hb := b.isLt
+  simp only [BitVec.lt_def, BitVec.toNat_add, Nat.reducePow]
+  omega
+
+/-- No carry: the machine sum is the real sum. -/
+theorem add_no_carry {a b : Word} (h : a.toNat + b.toNat < 2 ^ 64) :
+    (a + b).toNat = a.toNat + b.toNat := by
+  simp only [BitVec.toNat_add, Nat.reducePow]
+  omega
+
+/-- What `add_sat` is *for*: its result dominates the true sum, capped at the
+word size. This is the only property `charge_state_gas` needs of it — the
+`tot >=+ amount` test then rules out a borrow in `gl - rem`. -/
+theorem add_sat_ge (a b : Word) :
+    min (a.toNat + b.toNat) (2 ^ 64 - 1)
+      ≤ (if (a + b) < a then (BitVec.ofNat 64 18446744073709551615) else a + b).toNat := by
+  by_cases hc : (a + b) < a
+  · rw [if_pos hc]
+    have : (BitVec.ofNat 64 18446744073709551615).toNat = 2 ^ 64 - 1 := by decide
+    omega
+  · rw [if_neg hc]
+    have hno : a.toNat + b.toNat < 2 ^ 64 := by
+      cases Nat.lt_or_ge (a.toNat + b.toNat) (2 ^ 64) with
+      | inl h => exact h
+      | inr h => exact absurd ((add_sat_saturates a b).mpr h) hc
+    rw [add_no_carry hno]
+    omega
 
 end Guest
