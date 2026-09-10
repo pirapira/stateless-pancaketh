@@ -5,6 +5,13 @@
 var 1 heap_ptr = 0;
 var 1 journal_n = 0;   /* shared with state.pnk for trap diagnostics */
 
+/* Raised after the runtime trap stub, so that a trap is terminal for any
+   reader of the program that lets @trap return. Caught nowhere: on the
+   machine ffitrap halts and the throw is dead code, and in the Lean model
+   (Guest/Model.lean) it ends the run as `.raised` rather than letting the
+   error paths run on past a deterministic halt. */
+exception TrapErr : 1;
+
 /* Record a fatal guest condition before entering the runtime trap stub.
    The metadata is outside the normal result and is consumed by eest-run. */
 fun 1 trap_with(1 code) {
@@ -12,7 +19,7 @@ fun 1 trap_with(1 code) {
   !stw OUTPUT_ADDR + 40, heap_ptr;
   !stw OUTPUT_ADDR + 48, journal_n;
   @trap(@base, code, @base, 0);
-  return 0;
+  throw TrapErr code;
 }
 var 1 scratch_ptr = 0;
 var 1 frame_mem_ptr = 0;

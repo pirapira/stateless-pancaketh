@@ -1,11 +1,12 @@
 var 1 heap_ptr = 0;
 var 1 journal_n = 0;
+exception TrapErr : 1;
 fun 1 trap_with(1 code) {
   !st8 2684420096 + 33, code;
   !stw 2684420096 + 40, heap_ptr;
   !stw 2684420096 + 48, journal_n;
   @trap(@base, code, @base, 0);
-  return 0;
+  throw TrapErr code;
 }
 var 1 scratch_ptr = 0;
 var 1 frame_mem_ptr = 0;

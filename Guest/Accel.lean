@@ -148,7 +148,8 @@ def acceleratorEffect (name : FunName) (p : Word) (memory : Memory) : Option Mem
 
 /-- The memory-effect FFI handler of the accelerated guest: `@halt` and `@trap`
 leave memory alone (see `Guest.Model` for the fact that on the machine neither
-returns), every accelerator acts on its parameter block, anything else is
+returns, and for how the guest's own `throw TrapErr` makes `@trap` terminal
+here anyway), every accelerator acts on its parameter block, anything else is
 unmodelled. The four arguments are the `ExtCall` operands. -/
 def guestMemoryFfi (function : FunName) (configuration _configurationLength _array _arrayLength : Word)
     (memory : Memory) : Option Memory :=

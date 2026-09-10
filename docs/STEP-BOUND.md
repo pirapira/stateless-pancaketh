@@ -6,7 +6,7 @@ Status of the three `sorry`s of `Guest/StepBound.lean`:
 |---|---|
 | `declaredBlockGasLimit` | **done** — `Guest/InputDecode.lean`, differentially validated against the guest |
 | `guestPancakeStepBound` | open |
-| `guest_terminates_within_step_bound` | **false as stated** — see [The obstruction](#the-obstruction) |
+| `guest_terminates_within_step_bound` | open — was **false as stated**; [the obstruction](#the-obstruction) is fixed, the bound itself is what is left |
 
 ## `declaredBlockGasLimit`
 
@@ -52,18 +52,23 @@ every list small; see the note at the end of this file.
 
 ## The obstruction
 
-`guest_terminates_within_step_bound` is false as stated, for every value of
-`guestPancakeStepBound`. The premises admit inputs on which
+**Fixed** — by [option 1](#the-fix-taken) below, which is in the guest source
+and in the committed ASTs. The section is kept because the mechanism explains
+why `trap_with` ends in a `throw`, and because the two rejected options are
+worth not re-deriving.
+
+As stated before the fix, `guest_terminates_within_step_bound` was false for
+every value of `guestPancakeStepBound`. The premises admit inputs on which
 `runGuestStepped input fuel = none` for every `fuel`, so `TerminatesWithin`
-fails — and it fails on evaluation failure, which the theorem is meant to rule
-out.
+failed — and it failed on evaluation failure, which the theorem is meant to
+rule out.
 
 ### Mechanism
 
-1. `@trap` returns in the model. `guestMemoryFfi` (`Guest/Accel.lean:155`)
-   answers `halt` and `trap` with `some memory`, so the run continues. On the
-   machine `ffitrap` (`guest/runtime/start.S`) halts and never returns. The
-   `Guest/Model.lean` docstring notes this and calls it a safe
+1. `@trap` returns in the model. `guestMemoryFfi` (`Guest/Accel.lean`) answers
+   `halt` and `trap` with `some memory`, so the run continues. On the machine
+   `ffitrap` (`guest/runtime/start.S`) jumps to `cml_exit` and never returns.
+   The `Guest/Model.lean` docstring used to call this a safe
    over-approximation. It is not, in two ways: for `TerminatesWithin` it turns
    a halting machine run into an evaluation failure (step 3), and even when the
    run does complete, continuing past the trap can take a *different* path and
@@ -106,9 +111,9 @@ minimal well-formed input of `Guest.InputDecode`'s test set (658 bytes,
 
 | heap | baseline | with `throw TrapErr` |
 |---|---|---|
-| 17,408 B | `none` | `raised TrapErr 1`, 18,170 steps |
-| 18,432 B | `none` | `raised TrapErr 1`, 23,566 steps |
-| 19,456 B | returns normally, **137,650** steps | `raised TrapErr 1`, 28,597 steps |
+| 17,408 B | `none` | `raised TrapErr`, 18,169 steps |
+| 18,432 B | `none` | `raised TrapErr`, 23,565 steps |
+| 19,456 B | returns normally, **137,650** steps | `raised TrapErr`, 28,596 steps |
 | 20,480 B … 40,960 B (21 budgets) | returns normally, 137,596 steps | identical, 137,596 steps |
 
 Two things to read off it. The baseline has two evaluation failures and the
@@ -144,38 +149,67 @@ premises.
 `guestHostMemory` indexes a `List UInt8` per byte, so `input_blob`'s copy loop
 is quadratic in the input length. A 100 KB input already does not finish.)
 
-### The fix
+### The fix taken
 
 The guest is not at fault: on the machine, heap exhaustion is a clean
-deterministic halt with `trap=1` in the debug bytes. What is wrong is that
+deterministic halt with `trap=1` in the debug bytes. What was wrong is that
 `@trap` returns in the model. Making it terminal fixes the whole class at once
 — all seven `trap_with` sites (`alloc`, `frame_mem_alloc`, `scratch_alloc`,
 division by zero, base-fee overflow, and the two journal-full sites) become
 immediate termination, which `TerminatesWithin` accepts, and the
 "trap continues down the error paths" caveat in `Guest/Model.lean` goes away.
-Three ways to get there:
 
-1. **Raise instead of returning.** Give `trap_with` a dedicated exception —
-   `exception TrapErr : 1;` in `guest/src/lib/mem.pnk`, `throw TrapErr code`
-   after the `@trap` — caught nowhere, so it propagates to the top and the run
-   ends as `.raised`, which `TerminatesWithin` accepts. Dead code on the
-   machine, since `ffitrap` never returns, and it needs no flapjack change.
-   Costs a regeneration of the two committed ASTs
-   (`tools/gen-guest-ast.sh`; note that on macOS the script needs `CPP='clang
-   -E'`, and its `sha256sum` and `sed -i` are GNU-only).
+**Option 1, raise instead of returning**, is what is in the tree. `trap_with`
+(`guest/src/lib/mem.pnk`) declares `exception TrapErr : 1;` and ends with
+`throw TrapErr code;` in place of its `return 0;`. Nothing catches `TrapErr`,
+so it propagates to the top and the run ends as `.raised`, which
+`TerminatesWithin` accepts. It needs no flapjack change, and it is dead code on
+the machine: `ffitrap` (`guest/runtime/start.S`) jumps to `cml_exit`, so the
+`throw` is never reached there.
 
-   Prototyped: the two added lines are the whole cpp-expanded diff, and on the
-   sweep above every trapping run becomes a clean `TrapErr` and every
-   non-trapping run keeps its exact step count. The trap also fires from
-   inside `main`'s `try ... catch SszErr` in the 19,456-byte case and is not
-   swallowed by it.
+What was checked:
+
+* **The cpp-expanded diff is exactly those two lines**, for both builds
+  (`Guest/guest.pp.pnk`, `Guest/guest-software.pp.pnk`), and the parse
+  regenerated from them (`Guest/Ast.lean`, `Guest/SoftwareAst.lean`) differs
+  only in the new `Decl.exnDecl "TrapErr"` and in `trap_with`'s tail becoming
+  `Prog.raise "TrapErr" (Exp.var VarKind.local "code")`. `lake build` re-checks
+  the ASTs against the sources (`Guest/AstParse.lean`).
+* **Trapping runs terminate, non-trapping runs are unchanged**, on the heap
+  sweep above: every `none` becomes `raised TrapErr`, and all 21 budgets from
+  20,480 B keep 137,596 steps to the step. The trap fires from inside `main`'s
+  `try … catch SszErr` in the 19,456-byte case and is not swallowed by it.
+  Empty input is still 19,778 steps and the minimal well-formed input still
+  137,596 (867,017 on the software build), with byte-identical output.
+* **`declaredBlockGasLimit` still agrees with the guest** — `lake exe
+  input-decode-check` on the 431 `tools/ssz-inputs.py --fuzz` inputs, 0
+  mismatches.
+* **`cake` still compiles both builds.** `cake --pancake --target=riscv`
+  (CakeML v3479) accepts `Guest/guest.pp.pnk` and
+  `Guest/guest-software.pp.pnk`; this mattered because `main` catches only
+  `SszErr`, so `TrapErr` leaves it uncaught. Not checked end to end: the ELF
+  link and a `ziskemu`/`spike` run, which need a `riscv64-unknown-elf`
+  toolchain. Since `TrapErr` is inserted ahead of every other exception
+  declaration the compiler's exception tags all shift by one; nothing outside
+  the compiled program reads a tag (the debug byte at `OUTPUT_ADDR + 70` is an
+  exception *payload*), but a machine run is the check that would confirm it.
+
+Regenerating the ASTs is `tools/gen-guest-ast.sh`. It now runs on macOS as
+well: it picks `clang -E` there, spells `sed -i` portably, and drops blank
+lines so that GNU `cpp` and `clang -E` produce byte-identical `.pp.pnk` (they
+were verified to, on this change).
+
+The two options not taken:
+
 2. **Let the memory handler signal a final event** (flapjack). A
    `PanValueMemoryFfiHandler` returns `Option (locals × memory × ffi)`, and the
    `.extCall` case of `evalPanValueFfiProgSteps` consults it unconditionally
    and always continues as `.normal`, so with a memory handler installed there
    is no path to `.finalFfi` at all. Widening its result — or falling through
    to the oracle when it declines — is the architecturally right fix, but it is
-   a change in a pinned dependency.
+   a change in a pinned dependency. Worth doing upstream regardless: option 1
+   makes the *guest* terminate on trap, it does not make `@trap` terminal for
+   any other program the model is pointed at.
 3. **Sharpen the premise.** Not sufficient on its own: a heap-fit hypothesis on
    `input.length` would not cover exhaustion reached from inside the run
    (`frame_mem_alloc`, `scratch_alloc`, `htab_grow`), and it would give up on
