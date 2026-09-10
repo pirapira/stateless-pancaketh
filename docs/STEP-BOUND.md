@@ -335,6 +335,288 @@ against every call site in `guest/src`, and all are guarded by the guest:
 
 So BLAKE2F was the only unguarded one.
 
+## Structural termination rules (`Guest/Termination.lean`)
+
+With monotonicity in hand, the next layer is a termination calculus, so a
+whole-program proof can be assembled from per-construct facts. All `sorry`-free:
+
+* **`while_terminates_inv`** — a loop terminates when an invariant `I` holds on
+  entry and is preserved, the condition evaluates on every state satisfying
+  `I`, and the body — whenever entered — terminates and strictly decreases a
+  measure `μ`. Proved by strong induction on `μ`, taking `max` of the body's
+  fuel and the tail's and lifting both with `progMono` — precisely the step
+  that was impossible before. `while_terminates` is this with `I := True`.
+* `seq_terminates`, `ite_terminates`, `dec_terminates`, `call_terminates` — the
+  compositional rules for a function body.
+* `callSteps_terminates` — the call evaluator itself. Its extra hypotheses are
+  the evaluator's own `none` branches: the return- and exception-validity
+  checks, the destination assignment, and a matching handler's termination.
+
+The leaf constructors need no rule: `Terminates` for them is discharged at the
+point of use by exhibiting the one-step run, and their only content is whether
+their expressions evaluate.
+
+* `while_terminates_of_increasing_counter` — the shape ~200 of the 257 loops
+  actually have (`i <+ n`, `i < cap`, `i < 8`, ...): a counter the body strictly
+  increases, against a bound. It does the truncated-subtraction argument once
+  rather than per loop, and does not require the counter to stay under the
+  bound, since overshooting sends the measure to zero, which is still a
+  decrease.
+
+Since the call graph is acyclic (#71), **what is left is invariants and
+measures**: every remaining loop reduces to exhibiting a pair, and for most of
+them that is a counter and a bound.
+
+### Two things learned by pointing the rules at real guest code
+
+Both came out of trying to prove an actual function rather than designing the
+rules in the abstract, and both change how the remaining work has to be
+organised.
+
+**The invariant is not decoration.** A loop condition mentioning a local can
+only be shown to evaluate on states where that local is bound, so an
+invariant-free rule is unusable on anything real. `rlp_be_len` — four lines,
+one loop — already needs one.
+
+**Counters wrap, so per-loop lemmas are not independent.** The guest's counters
+are `BitVec 64` and Pancake's `+` wraps, so "the body increases the counter" is
+a real obligation:
+
+| loop | diverges when | why |
+|---|---|---|
+| `memzero`'s `while i + 32 <=+ n` | `n ≥ 2^64 − 32` | `i + 32` wraps to `0`, the condition still holds, the counter restarts |
+| `ceil_log2`'s `while (1 << d) <+ n` | `n > 2^63` | at `d = 64` the shift gives `0`, which is `<+ n` forever |
+
+Neither is reachable — `memzero`'s call sites pass small constants, and
+`ceil_log2` is only called from `merkleize` with SSZ chunk counts bounded by
+the list limits — but **both are preconditions that only the caller can
+discharge**. So the loops cannot be proved in isolation and then assembled;
+each needs its bound threaded down from its callers. That is a structural
+constraint on the remaining work, not a detail.
+
+The counter corollary takes `counter` as a `ℕ` precisely so that this obligation
+cannot be skipped.
+
+## First guest function proved to terminate (`Guest/FunctionTermination.lean`)
+
+`charge_gas_terminates`, `sorry`-free, composed from `dec_terminates`,
+`ite_terminates` and `seq_terminates` against the AST as committed
+(`chargeGasBody` is `Guest.guestFn_charge_gas`'s body, checked by `rfl`).
+
+`charge_gas` was chosen because it has no loop, so it tests the calculus on
+`dec`/`ite`/`seq`/leaves without needing a measure. Two things it showed:
+
+* the leaf rules really are one-liners at the use site — `skip` closes by
+  `rw [evalPanValueFfiProgSteps]` alone — so not writing lemmas for them was
+  the right call;
+* **`raise` is not free.** `Prog.raise` evaluates its payload and then requires
+  `panValueExceptionValid` and `panValuePayloadWithinLimit` against the
+  program's contracts, returning `none` otherwise. So every `throw` in the
+  guest carries an obligation that the exception is declared with a matching
+  shape — true here (`exception EvmErr : 1`), but it must be supplied, at every
+  raise site.
+
+Its remaining hypotheses are deliberate, and they named the next piece of
+missing infrastructure: `Exp.load` and `Prog.store` bottom out in
+`panValueFlatLoad` and `panValueStoreWithAccess`, about which flapjack proves
+nothing.
+
+### The memory layer (`Guest/Memory.lean`)
+
+That piece now exists for word accesses, which is what `lds 1` and `st` compile
+to everywhere in the guest:
+
+* `panValueFlatLoad_one`, `panValueStoreWithAccess_word` — generic: a
+  `Shape.one` load is exactly one underlying word read, a `.word` store exactly
+  one underlying word write.
+* `guest_readWord`, `guest_storeWord`, `guest_store_word_total` — the same
+  under `Guest.guestMemoryAccess`.
+
+The asymmetry in the last is worth stating plainly, because it is the one that
+bit before: **a word store always succeeds.** The guest's access model is
+`panValueMemoryAccessOfModel` with the default `domain := fun _ => true`, so
+`st` *extends* the map rather than failing outside it, while `ld8`/`st8` go
+through the model and fail on an absent cell. That asymmetry is exactly why
+heap exhaustion became an evaluation failure rather than a clean stop before
+the trap fix.
+
+### The expression layer (`Guest/Expressions.lean`)
+
+* `eval_const`, `eval_var_global`, `eval_var_local` — the leaves.
+* `eval_global_add_const` — `base + K` where `base` is a global holding a word.
+  This is the guest's pervasive address form (`ev + 64`, `msg + 136`, …) and it
+  *always* succeeds: `RiscV.panRiscVWordOp .add` is total.
+* `eval_load_global_add` and its counted form — `lds 1 (base + K)`, the guest's
+  pervasive field read, combining this layer with the memory one.
+* `eval_op2` — any two-argument operator, composing with arbitrary
+  sub-expressions, with `wordOp_add`/`wordOp_sub` discharging its side
+  condition. This subsumes the address form and is what the guest's value
+  expressions need (`gl - amount`, `lds 1 (ev + 184) + amount`).
+* `eval_cmp_locals` — a comparison of two word locals. Always succeeds:
+  `RiscV.panRiscVCmp` is total, so the only way a guest comparison fails to
+  evaluate is an unbound or non-word operand.
+* `store_terminates` — **a word store terminates as soon as its two expressions
+  evaluate**, with no further obligation, because the access model's `domain`
+  is `fun _ => true`. Contrast the byte accesses, which can fail.
+
+None of these hold by `rfl`: `evalPanValueExp` is defined by well-founded
+recursion, so they go through the equation lemmas, and the list case is the
+nested `evalPanValueExp.evalPanValueExps` rather than the top-level name.
+
+### What that buys, concretely
+
+`charge_gas_terminates_of_state` now needs, in place of the assumed gas load
+and shape, only that the global `ev` holds a word and memory holds a word at
+`ev + 64`. Two of its four obligations are discharged. `charge_gas_tail_terminates` then proves the whole tail — both stores and the
+`return` — from state alone, chaining the two stores through the memory the
+first one produces. Its `hne` hypothesis (the two field addresses differ) is
+the kind of side condition that only appears once statements are composed for
+real.
+
+`Prog.return` and `Prog.raise` got named rules after all
+(`return_terminates`, `raise_terminates`): an earlier claim here that the leaf
+constructors need no rules was too strong. Those two check their payload
+against the program's contracts and answer `none` otherwise, so a proof about
+*any* guest function carries them — the control-flow analogue of the
+no-wraparound conditions the loop measures need.
+
+### `Terminates` does not compose; the rules need equational forms
+
+`seq_terminates` takes the first statement's result `r1` as a parameter, and
+rightly so: the second statement runs from whatever state the first left. But
+that means the caller must supply an **equation**, `eval fuel₁ … = some (r1,
+s1)`, not merely `∃ r, … = some r`. So each rule needs an equational twin, and
+`Guest/Termination.lean` now has them: `skip_runs`, `ite_runs`,
+`seq_runs_normal`, `seq_runs_raised`, `raise_runs`, `return_runs`, alongside
+`store_runs` in `Guest/Expressions.lean`. They are the same proofs as the
+`_terminates` rules, stated to say *what* the result is; every one of those
+proofs already constructed it.
+
+### The first guest function proved to terminate from state alone
+
+`charge_gas_terminates_from_state` needs **no hypothesis about the evaluator**.
+It suffices that:
+
+* the global `ev` holds a word;
+* memory holds words at the two fields `charge_gas` touches, `ev + 64` and
+  `ev + 184`;
+* `amount` is bound to a word;
+* those two addresses differ;
+* the program declares `EvmErr` with a matching shape and admits the payloads.
+
+Both branches are proved: out of gas, where the `ite` raises and the tail never
+runs, and the normal path, where the `ite` falls through with the state
+unchanged and the tail does its two stores and the `return`.
+
+That last group of hypotheses is not incidental, and it is the shape every
+guest function will have. `Prog.raise` and `Prog.return` check their payload
+against the program's contracts and answer `none` otherwise, so a termination
+proof about any guest function carries them — the control-flow analogue of the
+no-wraparound conditions the loop measures need.
+
+### Termination is not a measure step: `charge_gas` semantically (`Guest/Gas.lean`)
+
+`run_frames`'s measure is the gas left, so proving `charge_gas` *terminates*
+buys nothing towards it. What the loop needs is that a charge **moves the
+measure**, and that is an equation about the state `charge_gas` leaves, not an
+existential that it left one.
+
+`charge_gas_runs_normal` is that equation. On the branch the charge fits, and
+under exactly the hypotheses of `charge_gas_terminates_from_state`,
+`chargeGasBody` runs at fuel 5 to
+
+    .returned _ g (chargeGasMemory m ev gl amount used) f [word 0]
+
+where `chargeGasMemory` puts `gl - amount` at `ev + 64` and `used + amount` at
+`ev + 184`. `charge_gas_decreases_gas` then reads the measure off it: the new
+value at `ev + 64` is `gl - amount`, and
+
+    amount <= gl  and  1 <= amount   implies   (gl - amount).toNat < gl.toNat
+
+Proving that needed one new statement rule, `dec_runs` — the equational twin of
+`dec_terminates`, restoring the shadowed local on the way out — completing the
+`_runs` layer for everything `charge_gas` uses.
+
+#### The wrap-around condition is the branch condition
+
+The gas counters are `BitVec 64` and the guest charges with `-`, which wraps:
+`0 - 1` is `2^64 - 1`, and an unguarded charge would move the measure **up**.
+So `gas_strictly_decreases` is conditional on `amount <= gl` unsigned.
+
+The pleasant part is that this is not an extra assumption to discharge
+elsewhere. It is *the same fact* as the guest's own `gl <+ amount` test falling
+through, because `Cmp.lower` is unsigned `<`:
+
+    cmp_lower_false_of_le : b.toNat <= a.toNat -> (panRiscVCmp .lower a b != 0) = false
+
+The guest checks for the borrow before it subtracts, and that check is what
+licenses the measure. `Guest/Gas.lean` keeps these three facts apart from the
+evaluator on purpose: the wrap-around hypothesis is the interesting half of
+every gas argument and should be legible, not buried inside a proof about
+`Prog.store`.
+
+#### The second counter, and a finding: the gas sum is not monotone
+
+Gas lives in two places, so no measure can be read off `EV_GAS_LEFT` alone.
+`charge_state_gas` (`guest/src/evm.pnk:249`) draws from `EV_STATE_GAS_LEFT` and
+spills into `EV_GAS_LEFT` only when the reservoir is short. Both of its paying
+paths take the **sum** down by exactly the amount charged, and both are proved
+in `Guest/Gas.lean` with the guest's own branch condition as the hypothesis:
+
+    state_gas_sum_decreases_reservoir   sgl >=+ amount
+    state_gas_sum_decreases_spill       sgl <+ amount, add_sat(sgl,gl) >=+ amount
+
+Saturation in `add_sat` is harmless — a saturated `add_sat` is `2^64 - 1`,
+which dominates any `amount` — and it is also what rules out a borrow in
+`gl - rem`.
+
+**But the sum still is not a measure.** `credit_state_gas_refund`
+(`guest/src/evm.pnk:268`) *increases* `EV_GAS_LEFT + EV_STATE_GAS_LEFT` by its
+whole argument, whatever `EV_STATE_GAS_SPILLED` holds — it adds
+`min(amount, spilled)` to one counter and the rest to the other.
+`credit_state_gas_refund_increases_sum` states that, machine-checked, so the
+obstruction cannot be forgotten.
+
+It is not a small increase. There are six call sites, crediting
+`SG_STORAGE_SET` (97,920) or `SG_NEW_ACCOUNT` (183,600):
+
+| site | credit |
+|---|---|
+| `op_sstore` (`evm.pnk:1242`) | `SG_STORAGE_SET` = 97,920 |
+| `evm_calls.pnk:639`, `:653`, `:1023`, `:1103`, `:1209` | `SG_NEW_ACCOUNT` = 183,600 |
+
+And on `op_sstore`'s credit path the *charge* is small. The credit fires when
+`current != new_value`, `original == new_value` and `original` is zero — so
+`oc` (original == current) is false, the `+ G_STORAGE_WRITE` branch does not
+fire, and `gas_cost` is just `access_cost`, 100 warm or 3,000 cold. One SSTORE
+can therefore move the gas sum **up by ~95,000**.
+
+The repair is a conservation invariant, not a different counter. Reading
+`op_sstore`, a credit of `SG_STORAGE_SET` appears to be matched by an earlier
+charge of `SG_STORAGE_SET` on the same slot: the credit needs `original == 0`
+and `current != 0`, which within one transaction requires a prior SSTORE that
+took the slot `0 -> nonzero`, and that one charges `state_gas = SG_STORAGE_SET`
+(its guard `oc && !cn && oz` holds exactly there). So the plausible invariant
+is
+
+    total state gas credited so far <= total state gas charged so far
+
+which would make `gas + reservoir` bounded above by its initial value and
+restore a measure. **This is not yet proved**, and the argument above is a
+source reading, not a theorem — the same class of claim as issue #73's own gas
+sketch, which turned out to be wrong. It should be checked opcode by opcode
+(including the five `SG_NEW_ACCOUNT` sites in `evm_calls.pnk`, and what a
+reverted frame does) before anything is built on it.
+
+#### What is still missing for the measure
+
+* **The conservation invariant above**, without which there is no measure.
+* **`charge_state_gas` equationally.** The arithmetic is done; the statement
+  proof needs `call_runs`, because the body calls `add_sat`.
+* **`1 <= amount` is per-opcode.** The census settles 70 of 87 handlers; the
+  17 dynamically-metered ones each need their own charge-is-positive argument,
+  and the call/create six have cost paid by the child frame.
+
 ## What the bound itself needs
 
 The guest's call graph is acyclic (#71), so no recursion-depth argument is
@@ -346,9 +628,68 @@ accelerated guest has **257 `while` loops**. By loop condition:
 * The substantive ones are the de-recursified drivers, where termination is the
   real content:
   * `run_frames` (`evm_calls.pnk:681`) — one iteration per opcode executed
-    across all frames, plus one per frame completion. Bounded by gas: every
-    opcode costs at least 1 gas, gas is conserved across the call tree, so
-    iterations ≤ 200M + frames, and frames ≤ 1024 deep and ≤ gas/700.
+    across all frames, plus one per frame completion.
+
+    **The obvious gas argument does not work as stated.** "Every opcode costs
+    at least 1 gas" is false: `op_stop` (`evm.pnk:870`) charges nothing at all,
+    it only clears `EV_RUNNING` and advances the pc, and the other frame-ending
+    opcodes are in the same position. The repair is that a zero-gas opcode
+    *ends its frame*, so it runs at most once per frame — but that turns the
+    bound into a case analysis over the whole of `op_dispatch`, showing every
+    opcode either charges ≥ 1 gas or clears `EV_RUNNING`. With that, iterations
+    ≤ 200M + 2·frames, frames ≤ 1024 deep and ≤ gas/700.
+
+    `lake exe opcode-census` reads that classification off the committed AST.
+    It walks `op_dispatch` for every `op_*` handler it can reach — equality
+    tests and the range tests that pass an argument (`if op <+ 128 {
+    op_push(op - 95); ... }`) alike — and then runs two passes:
+
+    1. the handler's straight-line prefix, following `seq`, `dec` and `decCall`;
+    2. a **path-sensitive, interprocedural must-charge analysis** on whatever
+       the first pass left open. `mustCharge` holds when every path leaving a
+       program has either charged ≥ 1 gas or ended the frame (cleared
+       `EV_RUNNING`, or raised — `run_frames` catches `EvmErr` into
+       `frame_exception`). It is conservative by construction: a charge inside
+       a `while` does not count, since the loop may run zero times, and a
+       `return` that has not charged makes the whole program fail. Callee
+       facts come from a fixpoint over the acyclic call graph, tracking both
+       "charges unconditionally" and "charges if its first argument is ≥ 1" —
+       the latter because the charging helpers take the base cost as a
+       parameter (`charge_with_memory(3, start, <32,0,0,0>)`), and positivity
+       propagates through `add_sat`, which is monotone, but *not* through
+       plain `+`, which wraps.
+
+    | | handlers |
+    |---|---|
+    | charge a literal ≥ 1 gas up front | 60 |
+    | end the frame without charging | 3 — `op_stop`, `op_return`, `op_selfdestruct` |
+    | charge or end the frame on every path | 7 — `op_mload`, `op_mstore`, `op_mstore8`, `op_sload`, `op_sstore`, `op_push`, `op_revert` |
+    | still need a human | 17 |
+
+    **87 handlers, and the only ones that charge nothing up front are frame
+    enders** — which is the repaired bound's shape, confirmed rather than
+    assumed. `op_dispatch` also falls through to `throw EvmErr 5` for an
+    unmatched opcode, which ends the frame too.
+
+    The 17 left are `op_exp`, `op_keccak`, `op_balance`, the four `*copy`
+    opcodes, `op_extcodesize`/`op_extcodehash`/`op_extcodecopy`, `op_mcopy`,
+    `op_log`, and the six call/create opcodes. They are open for a reason worth
+    stating, because it is the same reason as the loop preconditions above:
+    their cost is computed rather than constant, so proving it is ≥ 1 needs a
+    no-wraparound side condition. `op_keccak`'s
+    `cost = add_sat(30 + 6 * w, x.0)` is ≥ 30 only because `6 * w` cannot wrap,
+    which holds since `w = words_of(sat_word(size)) ≤ 2^59` — true, but an
+    obligation, not an inspection. The call and create opcodes are open for a
+    second reason: part of their cost is paid by the child frame.
+
+    The census is syntactic and conservative — a work-list, not a proof.
+    Turning "charges ≥ 1" into a semantic fact still needs a lemma about
+    `charge_gas`.
+
+    One wrinkle that lemma will have to handle: gas lives in **two** counters.
+    `charge_gas` decrements `EV_GAS_LEFT`, but `charge_state_gas`
+    (`evm.pnk:249`) draws from `EV_STATE_GAS_LEFT` first and only spills into
+    `EV_GAS_LEFT` when that is exhausted, so the measure has to be the sum.
   * the witness-decode machine, MPT insert/delete descent and unwind
     (`mpt.pnk:410,714,857,919,1075`) — bounded by trie depth 64 and the witness
     node count, itself bounded by the input.
