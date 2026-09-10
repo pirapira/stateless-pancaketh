@@ -50,4 +50,65 @@ theorem cmp_lower_false_of_le {a b : Word} (h : b.toNat ≤ a.toNat) :
     omega
   simp [RiscV.panRiscVCmp, this]
 
+/-! ## The second counter
+
+Gas lives in two places. `charge_state_gas` (`guest/src/evm.pnk:249`) draws
+from `EV_STATE_GAS_LEFT` and only spills into `EV_GAS_LEFT` when the state-gas
+reservoir runs dry, so no measure can be read off `EV_GAS_LEFT` alone. Both of
+its paying paths take the **sum** down by exactly the amount charged, which is
+what these two lemmas say — one per path, with the guest's own branch condition
+as the hypothesis in each case, exactly as in `gas_strictly_decreases`.
+-/
+
+/-- `charge_state_gas`'s first path: the reservoir covers the charge, so only
+`EV_STATE_GAS_LEFT` moves. -/
+theorem state_gas_sum_decreases_reservoir {sgl gl amount : Word}
+    (hfits : amount.toNat ≤ sgl.toNat) (hpos : 1 ≤ amount.toNat) :
+    (sgl - amount).toNat + gl.toNat < sgl.toNat + gl.toNat := by
+  rw [toNat_sub_of_le hfits]
+  omega
+
+/-- `charge_state_gas`'s spill path: the reservoir is short, so it empties and
+the remainder `amount - sgl` comes out of `EV_GAS_LEFT`. The sum still falls by
+exactly `amount`.
+
+`htot` is the guest's `add_sat(sgl, gl) >=+ amount`, restated on `Nat`;
+saturation is harmless because a saturated `add_sat` is `2^64 - 1`, which
+dominates any `amount`. That is also what rules out a borrow in `gl - rem`. -/
+theorem state_gas_sum_decreases_spill {sgl gl amount : Word}
+    (hshort : sgl.toNat < amount.toNat)
+    (htot : amount.toNat ≤ sgl.toNat + gl.toNat) (hpos : 1 ≤ amount.toNat) :
+    (0 : Word).toNat + (gl - (amount - sgl)).toNat < sgl.toNat + gl.toNat := by
+  have hrem : (amount - sgl).toNat = amount.toNat - sgl.toNat :=
+    toNat_sub_of_le (by omega)
+  have hgl : (gl - (amount - sgl)).toNat = gl.toNat - (amount - sgl).toNat :=
+    toNat_sub_of_le (by omega)
+  rw [hgl, hrem]
+  have hzero : (0 : Word).toNat = 0 := rfl
+  rw [hzero]
+  omega
+
+/-- **`credit_state_gas_refund` moves the sum the wrong way.**
+`guest/src/evm.pnk:268` adds `min(amount, spilled)` to `EV_GAS_LEFT` and the
+rest of `amount` to `EV_STATE_GAS_LEFT`, so the sum grows by exactly `amount` —
+whatever `spilled` is. It is stated here rather than left as prose because it
+is the reason `run_frames` cannot simply use the gas sum as its measure; see
+`docs/STEP-BOUND.md`. -/
+theorem credit_state_gas_refund_increases_sum {gl sgl amount fromGl : Word}
+    (hfrom : fromGl.toNat ≤ amount.toNat)
+    (hgl : gl.toNat + fromGl.toNat < 2 ^ 64)
+    (hsgl : sgl.toNat + (amount.toNat - fromGl.toNat) < 2 ^ 64)
+    (hpos : 1 ≤ amount.toNat) :
+    sgl.toNat + gl.toNat
+      < (sgl + (amount - fromGl)).toNat + (gl + fromGl).toNat := by
+  have hrem : (amount - fromGl).toNat = amount.toNat - fromGl.toNat :=
+    toNat_sub_of_le hfrom
+  have h1 : (gl + fromGl).toNat = gl.toNat + fromGl.toNat := by
+    rw [BitVec.toNat_add]
+    omega
+  have h2 : (sgl + (amount - fromGl)).toNat = sgl.toNat + (amount.toNat - fromGl.toNat) := by
+    rw [BitVec.toNat_add, hrem]
+    omega
+  omega
+
 end Guest

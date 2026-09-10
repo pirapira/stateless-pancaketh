@@ -555,13 +555,64 @@ evaluator on purpose: the wrap-around hypothesis is the interesting half of
 every gas argument and should be legible, not buried inside a proof about
 `Prog.store`.
 
+#### The second counter, and a finding: the gas sum is not monotone
+
+Gas lives in two places, so no measure can be read off `EV_GAS_LEFT` alone.
+`charge_state_gas` (`guest/src/evm.pnk:249`) draws from `EV_STATE_GAS_LEFT` and
+spills into `EV_GAS_LEFT` only when the reservoir is short. Both of its paying
+paths take the **sum** down by exactly the amount charged, and both are proved
+in `Guest/Gas.lean` with the guest's own branch condition as the hypothesis:
+
+    state_gas_sum_decreases_reservoir   sgl >=+ amount
+    state_gas_sum_decreases_spill       sgl <+ amount, add_sat(sgl,gl) >=+ amount
+
+Saturation in `add_sat` is harmless — a saturated `add_sat` is `2^64 - 1`,
+which dominates any `amount` — and it is also what rules out a borrow in
+`gl - rem`.
+
+**But the sum still is not a measure.** `credit_state_gas_refund`
+(`guest/src/evm.pnk:268`) *increases* `EV_GAS_LEFT + EV_STATE_GAS_LEFT` by its
+whole argument, whatever `EV_STATE_GAS_SPILLED` holds — it adds
+`min(amount, spilled)` to one counter and the rest to the other.
+`credit_state_gas_refund_increases_sum` states that, machine-checked, so the
+obstruction cannot be forgotten.
+
+It is not a small increase. There are six call sites, crediting
+`SG_STORAGE_SET` (97,920) or `SG_NEW_ACCOUNT` (183,600):
+
+| site | credit |
+|---|---|
+| `op_sstore` (`evm.pnk:1242`) | `SG_STORAGE_SET` = 97,920 |
+| `evm_calls.pnk:639`, `:653`, `:1023`, `:1103`, `:1209` | `SG_NEW_ACCOUNT` = 183,600 |
+
+And on `op_sstore`'s credit path the *charge* is small. The credit fires when
+`current != new_value`, `original == new_value` and `original` is zero — so
+`oc` (original == current) is false, the `+ G_STORAGE_WRITE` branch does not
+fire, and `gas_cost` is just `access_cost`, 100 warm or 3,000 cold. One SSTORE
+can therefore move the gas sum **up by ~95,000**.
+
+The repair is a conservation invariant, not a different counter. Reading
+`op_sstore`, a credit of `SG_STORAGE_SET` appears to be matched by an earlier
+charge of `SG_STORAGE_SET` on the same slot: the credit needs `original == 0`
+and `current != 0`, which within one transaction requires a prior SSTORE that
+took the slot `0 -> nonzero`, and that one charges `state_gas = SG_STORAGE_SET`
+(its guard `oc && !cn && oz` holds exactly there). So the plausible invariant
+is
+
+    total state gas credited so far <= total state gas charged so far
+
+which would make `gas + reservoir` bounded above by its initial value and
+restore a measure. **This is not yet proved**, and the argument above is a
+source reading, not a theorem — the same class of claim as issue #73's own gas
+sketch, which turned out to be wrong. It should be checked opcode by opcode
+(including the five `SG_NEW_ACCOUNT` sites in `evm_calls.pnk`, and what a
+reverted frame does) before anything is built on it.
+
 #### What is still missing for the measure
 
-Two things, both known:
-
-* **Gas lives in two counters.** `charge_state_gas` drains `EV_STATE_GAS_LEFT`
-  before spilling into `EV_GAS_LEFT`, so the measure is the *sum*, and the
-  above needs its companion for the state-gas path.
+* **The conservation invariant above**, without which there is no measure.
+* **`charge_state_gas` equationally.** The arithmetic is done; the statement
+  proof needs `call_runs`, because the body calls `add_sat`.
 * **`1 <= amount` is per-opcode.** The census settles 70 of 87 handlers; the
   17 dynamically-metered ones each need their own charge-is-positive argument,
   and the call/create six have cost paid by the child frame.
