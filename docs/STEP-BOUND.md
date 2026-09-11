@@ -675,6 +675,26 @@ the `add_sat` half of the body is still syntactically ahead of it — so
 `cmp_notLower_true_of_le` is the same observation once more: the guest
 branches on the borrow before it subtracts.
 
+#### Both charge functions are now total on what the measure needs
+
+The census claim is "every opcode handler charges at least one gas **or ends
+its frame**". For the two charge functions themselves, both halves are now
+proved, and between them they cover every reachable path:
+
+| path | outcome |
+|---|---|
+| `charge_gas`, fits | `charge_gas_runs_normal` → `charge_gas_decreases_gas` |
+| `charge_gas`, short | `charge_gas_runs_raised` → frame ends |
+| `charge_state_gas`, reservoir covers | `..._runs_reservoir` → `..._decreases_sum_reservoir` |
+| `charge_state_gas`, spill covers | `..._runs_spill` → `..._decreases_sum_spill` |
+| `charge_state_gas`, neither covers | `charge_state_gas_runs_raised` → frame ends |
+
+Nothing inside either function catches `EvmErr`, so a raise leaves the
+function and the frame is over: the caller gets a `.raised`, not a state it
+can carry on from. That is what makes "or ends its frame" a genuine
+alternative for the measure rather than a hole in it — the run does not go on
+to execute another opcode from a gas counter that did not move.
+
 #### `charge_state_gas`, spill path — the measure step is complete
 
 When the reservoir is short, `charge_state_gas` asks `add_sat` whether the two
@@ -753,10 +773,11 @@ assignment.
 * **`op_sstore`'s conservation argument** — the only unearned link in the
   invariant; the `SG_NEW_ACCOUNT` half is structural (see above).
 * **The measure summed over live frames**, since gas moves between them.
-* **`charge_gas`'s out-of-gas path and `charge_state_gas`'s**, the two
-  raising branches. Both counters' *paying* paths are now done on both sides:
-  `charge_gas_decreases_gas`, `charge_state_gas_decreases_sum_reservoir` and
-  `charge_state_gas_decreases_sum_spill`.
+* **The five `SG_NEW_ACCOUNT` credits**, whose conservation is structural (a
+  flag threaded through `start_child`) and so should follow now that calls
+  compose.
+* **`op_sstore`'s credit**, the one genuinely unearned link.
+* **The measure summed over live frames**, since gas moves between them.
 * **`1 <= amount` is per-opcode.** The census settles 70 of 87 handlers; the
   17 dynamically-metered ones each need their own charge-is-positive argument,
   and the call/create six have cost paid by the child frame.

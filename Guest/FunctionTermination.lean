@@ -1286,4 +1286,190 @@ theorem charge_state_gas_decreases_sum_spill
 
 end
 
+/-!
+## The other half of the census claim: ending the frame
+
+The census says every opcode handler either charges at least one gas **or ends
+its frame**. The charging half is above. This is the other one, for the two
+charge functions themselves: when the gas is not there, they raise
+`EvmErr E_OUT_OF_GAS`.
+
+Nothing inside either function catches it, so the raise leaves the function and
+the frame is over — the caller gets a `.raised`, not a state it can continue
+from. That is what makes "or ends its frame" a real alternative for the measure
+rather than a gap in it: the run does not go on to execute another opcode from
+a gas counter that did not move.
+
+Between these and the paying paths, `charge_gas` and `charge_state_gas` are now
+total on the cases the measure cares about — every reachable path through
+either one is either a strict decrease or a frame end.
+-/
+
+/-- **What `charge_gas` runs to when the charge does not fit**: it raises
+`EvmErr E_OUT_OF_GAS` and leaves memory untouched.
+
+This is the other half of the census claim — "charges at least one gas **or
+ends its frame**". Nothing catches `EvmErr` inside `charge_gas`, so the raise
+propagates out of the function and the frame is over; the caller sees a
+`.raised`, not a state it can carry on from. -/
+theorem charge_gas_runs_raised
+    (l g : VarName → Option (PanValue Word)) (m : Memory) (f : FfiState HostMemory)
+    (e gl amount : Word)
+    (hev : g "ev" = some (PanValue.word e))
+    (hgas : m (e + BitVec.ofNat 64 64) = some (PanValue.word gl))
+    (hamount : l "amount" = some (PanValue.word amount))
+    (hshort : gl.toNat < amount.toNat)
+    (hraiseValid : (panValueExceptionValid structs c "EvmErr"
+        (PanValue.word (BitVec.ofNat 64 4)) &&
+      panValuePayloadWithinLimit structs (PanValue.word (BitVec.ofNat 64 4))) = true) :
+    ∃ l' steps, evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord 4 l g m f chargeGasBody
+      (some guestMemoryAccess) c mh
+      = some (PanValueFfiControlResult.raised l' g m f "EvmErr"
+          (PanValue.word (BitVec.ofNat 64 4)), steps) := by
+  have hgl' : updatePanValueMap l "gl" (PanValue.word gl) "gl"
+      = some (PanValue.word gl) := by simp [updatePanValueMap]
+  have hamount' : updatePanValueMap l "gl" (PanValue.word gl) "amount"
+      = some (PanValue.word amount) := by simp [updatePanValueMap, hamount]
+  have hcond := evalCounted_cmp_locals structs (updatePanValueMap l "gl" (PanValue.word gl))
+    g m baseAddress topAddress bytesInWord Cmp.lower "gl" "amount" gl amount hgl' hamount'
+  have hz : ((RiscV.panRiscVCmp Cmp.lower gl amount) != 0) = true :=
+    cmp_lower_true_iff.mpr (by simp only [BitVec.lt_def]; omega)
+  have hraise := StepCalculus.raise_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+    "EvmErr" (Exp.const (BitVec.ofNat 64 4))
+    (updatePanValueMap l "gl" (PanValue.word gl)) g m f _ _ 0
+    (by rw [evalPanValueExpCounted, eval_const]; rfl) hraiseValid
+  have hite := StepCalculus.ite_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+    (thenBranch := Prog.raise "EvmErr" (Exp.const (BitVec.ofNat 64 4)))
+    (elseBranch := Prog.skip)
+    (updatePanValueMap l "gl" (PanValue.word gl)) g m f _ _ 1 _ _ hcond
+    (by rw [if_pos hz]; exact hraise)
+  have hseq := StepCalculus.seq_runs_raised context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+    (second := chargeGasTail)
+    (updatePanValueMap l "gl" (PanValue.word gl)) g m f _ g m f 2 _ _ _ hite
+  have hfinal := StepCalculus.dec_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh "gl" Shape.one _ _
+    l g m f (PanValue.word gl) _ 3 _ _
+    (charge_gas_load_of_state structs l g m baseAddress topAddress bytesInWord e gl hev hgas)
+    (word_shape_matches structs gl) hseq
+  rw [chargeGasBody_eq]
+  exact ⟨_, _, hfinal⟩
+
+/-- **What `charge_state_gas` runs to when neither counter can cover the
+charge**: `add_sat` says the two together are short, so the `ite` falls
+through and the `raise` below it fires.
+
+The `EvmErr` here is the same `E_OUT_OF_GAS`, and nothing in `charge_state_gas`
+catches it either — so this is the "ends its frame" half for the state-gas
+path, exactly as `charge_gas_runs_raised` is for the ordinary one. -/
+theorem charge_state_gas_runs_raised
+    (l g : VarName → Option (PanValue Word)) (m : Memory) (f : FfiState HostMemory)
+    (e sgl gl amount : Word)
+    (hev : g "ev" = some (PanValue.word e))
+    (hsglM : m (e + BitVec.ofNat 64 72) = some (PanValue.word sgl))
+    (hglM : m (e + BitVec.ofNat 64 64) = some (PanValue.word gl))
+    (hamount : l "amount" = some (PanValue.word amount))
+    (hshort : sgl.toNat < amount.toNat)
+    (hshortTot : (addSatOf sgl gl).toNat < amount.toNat)
+    (hlookup : lookupPanFunction "add_sat" functions = some (["a", "b"], addSatBody))
+    (hlimitMax : panValuePayloadWithinLimit structs
+      (PanValue.word (BitVec.ofNat 64 18446744073709551615)) = true)
+    (hlimitSum : panValuePayloadWithinLimit structs (PanValue.word (sgl + gl)) = true)
+    (hretValid : (panValueReturnValid structs c "add_sat"
+        [PanValue.word (addSatOf sgl gl)] &&
+      panValueValuesWithinLimit structs [PanValue.word (addSatOf sgl gl)]) = true)
+    (hraiseValid : (panValueExceptionValid structs c "EvmErr"
+        (PanValue.word (BitVec.ofNat 64 4)) &&
+      panValuePayloadWithinLimit structs (PanValue.word (BitVec.ofNat 64 4))) = true) :
+    ∃ l' steps, evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord 9 l g m f chargeStateGasBody
+      (some guestMemoryAccess) c mh
+      = some (PanValueFfiControlResult.raised l' g m f "EvmErr"
+          (PanValue.word (BitVec.ofNat 64 4)), steps) := by
+  have hL2sgl : updatePanValueMap (updatePanValueMap l "sgl" (PanValue.word sgl)) "gl"
+      (PanValue.word gl) "sgl" = some (PanValue.word sgl) := by simp [updatePanValueMap]
+  have hL2gl : updatePanValueMap (updatePanValueMap l "sgl" (PanValue.word sgl)) "gl"
+      (PanValue.word gl) "gl" = some (PanValue.word gl) := by simp [updatePanValueMap]
+  have hL2amount : updatePanValueMap (updatePanValueMap l "sgl" (PanValue.word sgl)) "gl"
+      (PanValue.word gl) "amount" = some (PanValue.word amount) := by
+    simp [updatePanValueMap, hamount]
+  obtain ⟨csteps, hcall⟩ := charge_state_gas_add_sat_call context primitive handler structs
+    functions baseAddress topAddress bytesInWord c mh _ g m f sgl gl hL2sgl hL2gl
+    hlookup hlimitMax hlimitSum hretValid
+  have hL3tot : updatePanValueMap (updatePanValueMap (updatePanValueMap l "sgl"
+      (PanValue.word sgl)) "gl" (PanValue.word gl)) "tot"
+      (PanValue.word (addSatOf sgl gl)) "tot" = some (PanValue.word (addSatOf sgl gl)) := by
+    simp [updatePanValueMap]
+  have hL3amount : updatePanValueMap (updatePanValueMap (updatePanValueMap l "sgl"
+      (PanValue.word sgl)) "gl" (PanValue.word gl)) "tot"
+      (PanValue.word (addSatOf sgl gl)) "amount" = some (PanValue.word amount) := by
+    simp [updatePanValueMap, hamount]
+  -- the spill test fails too
+  have hzs : ((RiscV.panRiscVCmp Cmp.notLower (addSatOf sgl gl) amount) != 0) = false :=
+    cmp_notLower_false_of_lt hshortTot
+  have hconds := evalCounted_cmp_locals structs _ g m baseAddress topAddress bytesInWord
+    Cmp.notLower "tot" "amount" (addSatOf sgl gl) amount hL3tot hL3amount
+  have hskips := StepCalculus.skip_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+    (updatePanValueMap (updatePanValueMap (updatePanValueMap l "sgl" (PanValue.word sgl))
+      "gl" (PanValue.word gl)) "tot" (PanValue.word (addSatOf sgl gl))) g m f 0
+  have hites := StepCalculus.ite_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+    (thenBranch := chargeStateGasSpillStores) (elseBranch := Prog.skip)
+    _ g m f _ _ 1 _ _ hconds (by rw [if_neg (by rw [hzs]; simp)]; exact hskips)
+  -- the raise below it
+  have hraise := StepCalculus.raise_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+    "EvmErr" (Exp.const (BitVec.ofNat 64 4))
+    (updatePanValueMap (updatePanValueMap (updatePanValueMap l "sgl" (PanValue.word sgl))
+      "gl" (PanValue.word gl)) "tot" (PanValue.word (addSatOf sgl gl))) g m f _ _ 0
+    (by rw [evalPanValueExpCounted, eval_const]; rfl) hraiseValid
+  have htail := StepCalculus.seq_runs_raised context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+    (second := Prog.return (Exp.const (BitVec.ofNat 64 0)))
+    _ g m f _ g m f 1 _ _ _ hraise
+  have hbody := StepCalculus.seq_runs_normal context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _ _ _ g m f
+    _ g m f 2 _ _ _ hites htail
+  have hbody' := StepCalculus.progMono context primitive handler structs functions
+    baseAddress topAddress bytesInWord 3 _ g m f _ (some guestMemoryAccess) c mh 5 _
+    (by omega) hbody
+  have hdecCall := StepCalculus.decCall_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh "tot" Shape.one
+    "add_sat" _ _ _ g m f 5 _ _ _ g m f _ _ hcall
+    (word_shape_matches structs (addSatOf sgl gl)) hbody'
+  -- the reservoir test fails, so the outer `ite` falls through
+  have hzr : ((RiscV.panRiscVCmp Cmp.notLower sgl amount) != 0) = false :=
+    cmp_notLower_false_of_lt hshort
+  have hcondr := evalCounted_cmp_locals structs _ g m baseAddress topAddress bytesInWord
+    Cmp.notLower "sgl" "amount" sgl amount hL2sgl hL2amount
+  have hskipr := StepCalculus.skip_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+    (updatePanValueMap (updatePanValueMap l "sgl" (PanValue.word sgl)) "gl"
+      (PanValue.word gl)) g m f 4
+  have hiter := StepCalculus.ite_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+    (thenBranch := chargeStateGasReservoir) (elseBranch := Prog.skip)
+    _ g m f _ _ 5 _ _ hcondr (by rw [if_neg (by rw [hzr]; simp)]; exact hskipr)
+  have houter := StepCalculus.seq_runs_normal context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+    (second := chargeStateGasSpill) _ g m f _ g m f 6 _ _ _ hiter hdecCall
+  have hdecgl := StepCalculus.dec_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh "gl" Shape.one _ _
+    _ g m f (PanValue.word gl) _ 7 _ _
+    (evalCounted_load_global_add structs _ g m baseAddress topAddress bytesInWord "ev" e
+      (BitVec.ofNat 64 64) gl hev hglM)
+    (word_shape_matches structs gl) houter
+  have hfinal := StepCalculus.dec_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh "sgl" Shape.one _ _
+    l g m f (PanValue.word sgl) _ 8 _ _
+    (evalCounted_load_global_add structs l g m baseAddress topAddress bytesInWord "ev" e
+      (BitVec.ofNat 64 72) sgl hev hsglM)
+    (word_shape_matches structs sgl) hdecgl
+  rw [chargeStateGasBody_eq]
+  exact ⟨_, _, hfinal⟩
+
 end Guest
