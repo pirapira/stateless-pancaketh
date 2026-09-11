@@ -203,12 +203,18 @@ theorem add_no_carry {a b : Word} (h : a.toNat + b.toNat < 2 ^ 64) :
   simp only [BitVec.toNat_add, Nat.reducePow]
   omega
 
+/-- What `add_sat` computes: the true sum, or `WORD_MAX` if that carried. The
+guest's own overflow test is `s <+ a`, which `add_sat_saturates` shows detects
+exactly the carry. -/
+def addSatOf (a b : Word) : Word :=
+  if (a + b) < a then BitVec.ofNat 64 18446744073709551615 else a + b
+
 /-- What `add_sat` is *for*: its result dominates the true sum, capped at the
 word size. This is the only property `charge_state_gas` needs of it — the
 `tot >=+ amount` test then rules out a borrow in `gl - rem`. -/
 theorem add_sat_ge (a b : Word) :
-    min (a.toNat + b.toNat) (2 ^ 64 - 1)
-      ≤ (if (a + b) < a then (BitVec.ofNat 64 18446744073709551615) else a + b).toNat := by
+    min (a.toNat + b.toNat) (2 ^ 64 - 1) ≤ (addSatOf a b).toNat := by
+  unfold addSatOf
   by_cases hc : (a + b) < a
   · rw [if_pos hc]
     have : (BitVec.ofNat 64 18446744073709551615).toNat = 2 ^ 64 - 1 := by decide
@@ -220,6 +226,68 @@ theorem add_sat_ge (a b : Word) :
       | inr h => exact absurd ((add_sat_saturates a b).mpr h) hc
     rw [add_no_carry hno]
     omega
+
+/-! ## Positivity of a computed charge
+
+`charge_gas_decreases_gas` needs `1 <= amount`. `lake exe opcode-census`
+settles that for 70 of the 87 handlers because they charge a literal; the
+remaining 17 *compute* their charge, and every one of them has one of two
+shapes:
+
+* `add_sat(base + per * w, x.0)` --- `op_keccak`, `op_extcodecopy`,
+  `op_returndatacopy`, `op_mcopy`, `op_log`;
+* a plain sum whose first summand is a function result --- `op_balance`,
+  `op_extcodesize`, `op_extcodehash`, all three `access_gas_cost(addr)`.
+
+Both reduce to **the base cost survives**, which is what these three lemmas
+say. What they do not settle is the *range* facts about the inputs, which are
+per-handler and belong with each handler. -/
+
+/-- **Saturating addition never loses its left summand.** So a charge of the
+form `add_sat(base, extra)` is at least `base`, whatever `extra` is and
+whether or not the sum carried --- which is exactly the point of `add_sat`. -/
+theorem add_sat_ge_left (a b : Word) : a.toNat ≤ (addSatOf a b).toNat := by
+  have h := add_sat_ge a b
+  have ha : a.toNat < 2 ^ 64 := a.isLt
+  omega
+
+/-- **A positive base cost survives `add_sat`.** The `1 <= amount` half of the
+census claim, for every handler that charges through `add_sat`. -/
+theorem add_sat_pos {a b : Word} (h : 1 ≤ a.toNat) : 1 ≤ (addSatOf a b).toNat := by
+  have := add_sat_ge_left a b
+  omega
+
+/-- **A positive base cost survives a plain `+`, given no carry.** Unlike
+`add_sat_pos` this one has a side condition, because a plain `+` wraps: with
+`a = 1` and `b = 2^64 - 1` the sum is `0`. That is the whole reason the guest
+uses `add_sat` wherever the second summand is attacker-influenced. -/
+theorem add_pos_of_no_carry {a b : Word} (hpos : 1 ≤ a.toNat)
+    (hno : a.toNat + b.toNat < 2 ^ 64) : 1 ≤ (a + b).toNat := by
+  rw [add_no_carry hno]
+  omega
+
+/-- **A `base + per * count` charge is positive when the base is.** The shape
+of `op_keccak`'s `G_KECCAK256_BASE + G_KECCAK256_PER_WORD * w` and
+`op_exp`'s `G_EXP_BASE + G_EXP_PER_BYTE * nb`, before `add_sat` sees it. The
+side condition is a genuine obligation, not bookkeeping: `per * count` wraps
+for a large enough `count`, and the bound on `count` is what each handler has
+to supply about its own input. -/
+theorem linear_cost_pos {base per count : Word} (hbase : 1 ≤ base.toNat)
+    (hfits : base.toNat + per.toNat * count.toNat < 2 ^ 64) :
+    1 ≤ (base + per * count).toNat := by
+  have hmul : (per * count).toNat = per.toNat * count.toNat := by
+    rw [BitVec.toNat_mul]
+    omega
+  rw [BitVec.toNat_add, hmul]
+  omega
+
+/-- `Cmp.notEqual` as a proposition: the guest's `w != 0` test. -/
+theorem cmp_notEqual_true_iff {a b : Word} :
+    ((RiscV.panRiscVCmp Cmp.notEqual a b) != 0) = true ↔ a ≠ b := by
+  simp [RiscV.panRiscVCmp]
+  constructor
+  · intro h hab; simp [hab] at h
+  · intro h; simp [h]
 
 /-- `Cmp.notLower` is false exactly when the charge exceeds what is there —
 the spill path's entry condition, and the complement of
