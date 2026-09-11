@@ -1,13 +1,13 @@
-import Guest.StepCalculus
+import Flapjack.PanValueFfiFuel
 
 /-!
 # Structural termination rules for the stepped stateful-FFI semantics
 
 `Guest.StepBound.TerminatesWithin` needs the guest run to *return* at some
-fuel. `Guest.StepCalculus` supplies fuel monotonicity, which is what lets two
-sub-proofs carried at different fuels be brought to a common fuel; this module
-uses it to turn that into a termination calculus, so that a whole-program
-termination proof can be assembled from per-construct facts.
+fuel. `Flapjack.StepCalculus` supplies fuel monotonicity, which is what lets
+two sub-proofs carried at different fuels be brought to a common fuel; this
+module uses it to turn that into a termination calculus, so that a
+whole-program termination proof can be assembled from per-construct facts.
 
 * `while_terminates` — **the one that matters.** A loop whose condition always
   evaluates and whose body, whenever entered, terminates and strictly decreases
@@ -43,13 +43,14 @@ What is left is therefore the *measures* for the guest's loops;
 -/
 
 open Flapjack
+open Flapjack.StepCalculus
 namespace Guest
 namespace StepCalculus
 
 variable {α σ : Type}
   [BEq α] [OfNat α 0] [OfNat α 1] [Add α] [Mul α]
   [Sub α] [AndOp α] [OrOp α] [HXor α α α] [ShiftLeft α] [ShiftRight α]
-  [LT α] [DecidableRel (fun left right : α => left < right)]
+  [LT α] [DecidableRel (fun left right : α => left < right)] [PanCmp α]
 
 section
 variable (context : PanValueFfiContext α) (primitive : PanPrimitiveHandler α)
@@ -296,12 +297,27 @@ theorem dec_terminates (name : VarName) (shape : Shape) (valueExp : Exp α) (bod
   rfl
 
 
+/-- **The body outcomes a call can consume.** A Pancake function body has to
+`return`, `raise`, or end in a final FFI event. Falling off the end, or a
+`break`/`continue` escaping the body, is *stuck*: `evalPanValueFfiCallSteps`
+maps all three to `none`. So a call whose body ends that way has no fuel at
+which it evaluates at all, and `callSteps_terminates` has to exclude them
+rather than claim a result for them. -/
+def BodyEscapes : PanValueFfiControlResult α σ → Prop
+  | .returned .. => True
+  | .raised .. => True
+  | .finalFfi .. => True
+  | _ => False
+
 /-- `evalPanValueFfiCallSteps`: a call returns when its arguments evaluate, the
 callee is found and its parameters bind, the body returns, and whatever the
 body's result requires of the caller holds — the return/exception validity
 checks the evaluator makes, the destination assignment, and termination of a
 matching handler. Those hypotheses are the evaluator's own `none` branches; a
-call cannot terminate without them. -/
+call cannot terminate without them.
+
+`hescape` is one of those `none` branches too: the body must actually leave the
+callee. See `BodyEscapes`. -/
 theorem callSteps_terminates
     (info : Option (Option (VarKind × VarName) × Option (ExceptionId × VarName × Prog α)))
     (function : FunName) (arguments : List (Exp α))
@@ -313,9 +329,11 @@ theorem callSteps_terminates
     (hargs : evalPanValueExpsCounted structs l g m baseAddress topAddress bytesInWord
       arguments ma = some (values, argSteps))
     (hlookup : lookupPanFunction function functions = some (parameters, body))
+    (hparams : panValueParametersValid structs c function values = true)
     (hbind : bindPanValueParameters parameters values = some calleeLocals)
     (hbody : evalPanValueFfiProgSteps context primitive handler structs functions
       baseAddress topAddress bytesInWord bfuel calleeLocals g m f body ma c mh = some (res, bsteps))
+    (hescape : BodyEscapes res)
     (hret : ∀ cl cg cm cf vs, res = .returned cl cg cm cf vs →
       (panValueReturnValid structs c function vs &&
         panValueValuesWithinLimit structs vs) = true ∧
@@ -334,25 +352,13 @@ theorem callSteps_terminates
       baseAddress topAddress bytesInWord fuel l g m f info function arguments ma c mh
       = some r := by
   cases res with
-  | normal cl cg cm cf =>
-    refine ⟨bfuel + 1, (.normal l cg cm cf, argSteps + bsteps), ?_⟩
-    rw [evalPanValueFfiCallSteps, hargs]
-    simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody]
-    rfl
-  | broke cl cg cm cf =>
-    refine ⟨bfuel + 1, (.broke l cg cm cf, argSteps + bsteps), ?_⟩
-    rw [evalPanValueFfiCallSteps, hargs]
-    simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody]
-    rfl
-  | continued cl cg cm cf =>
-    refine ⟨bfuel + 1, (.continued l cg cm cf, argSteps + bsteps), ?_⟩
-    rw [evalPanValueFfiCallSteps, hargs]
-    simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody]
-    rfl
+  | normal _ _ _ _ => exact hescape.elim
+  | broke _ _ _ _ => exact hescape.elim
+  | continued _ _ _ _ => exact hescape.elim
   | finalFfi cl cg cm cf ev =>
     refine ⟨bfuel + 1, (.finalFfi (fun _ => none) cg cm cf ev, argSteps + bsteps), ?_⟩
     rw [evalPanValueFfiCallSteps, hargs]
-    simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody]
+    simp only [Option.bind_eq_bind, Option.bind_some, hlookup, if_pos hparams, hbind, hbody]
     rfl
   | returned cl cg cm cf vs =>
     obtain ⟨hvalid, hassign⟩ := hret cl cg cm cf vs rfl
@@ -360,7 +366,7 @@ theorem callSteps_terminates
     | none =>
       refine ⟨bfuel + 1, (.returned (fun _ => none) cg cm cf vs, argSteps + bsteps), ?_⟩
       rw [evalPanValueFfiCallSteps, hargs]
-      simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody, if_pos hvalid]
+      simp only [Option.bind_eq_bind, Option.bind_some, hlookup, if_pos hparams, hbind, hbody, if_pos hvalid]
       rfl
     | some pr =>
       obtain ⟨destination, handlerInfo⟩ := pr
@@ -368,7 +374,7 @@ theorem callSteps_terminates
       obtain ⟨nl, ng⟩ := lg
       refine ⟨bfuel + 1, (.normal nl ng cm cf, argSteps + bsteps), ?_⟩
       rw [evalPanValueFfiCallSteps, hargs]
-      simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody, if_pos hvalid, hlg]
+      simp only [Option.bind_eq_bind, Option.bind_some, hlookup, if_pos hparams, hbind, hbody, if_pos hvalid, hlg]
       rfl
   | raised cl cg cm cf e v =>
     obtain ⟨hvalid, hhandler⟩ := hraise cl cg cm cf e v rfl
@@ -376,7 +382,7 @@ theorem callSteps_terminates
     | none =>
       refine ⟨bfuel + 1, (.raised (fun _ => none) cg cm cf e v, argSteps + bsteps), ?_⟩
       rw [evalPanValueFfiCallSteps, hargs]
-      simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody, if_pos hvalid]
+      simp only [Option.bind_eq_bind, Option.bind_some, hlookup, if_pos hparams, hbind, hbody, if_pos hvalid]
       rfl
     | some pr =>
       obtain ⟨destination, handlerInfo⟩ := pr
@@ -384,7 +390,7 @@ theorem callSteps_terminates
       | none =>
         refine ⟨bfuel + 1, (.raised (fun _ => none) cg cm cf e v, argSteps + bsteps), ?_⟩
         rw [evalPanValueFfiCallSteps, hargs]
-        simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody, if_pos hvalid]
+        simp only [Option.bind_eq_bind, Option.bind_some, hlookup, if_pos hparams, hbind, hbody, if_pos hvalid]
         rfl
       | some triple =>
         obtain ⟨caught, hvar, hprog⟩ := triple
@@ -394,7 +400,7 @@ theorem callSteps_terminates
           obtain ⟨hra, hrb⟩ := hres
           refine ⟨max bfuel hfuel + 1, (hra, argSteps + bsteps + hrb), ?_⟩
           rw [evalPanValueFfiCallSteps, hargs]
-          simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind]
+          simp only [Option.bind_eq_bind, Option.bind_some, hlookup, if_pos hparams, hbind]
           rw [progMono context primitive handler structs functions baseAddress topAddress
         bytesInWord bfuel calleeLocals g m f body ma c mh (max bfuel hfuel) (_, bsteps)
             (Nat.le_max_left _ _) hbody]
@@ -405,7 +411,7 @@ theorem callSteps_terminates
           rfl
         · refine ⟨bfuel + 1, (.raised (fun _ => none) cg cm cf e v, argSteps + bsteps), ?_⟩
           rw [evalPanValueFfiCallSteps, hargs]
-          simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody, if_pos hvalid, if_neg hcaught]
+          simp only [Option.bind_eq_bind, Option.bind_some, hlookup, if_pos hparams, hbind, hbody, if_pos hvalid, if_neg hcaught]
           rfl
 
 
@@ -607,6 +613,7 @@ theorem callSteps_runs_returned
     (hargs : evalPanValueExpsCounted structs l g m baseAddress topAddress bytesInWord
       arguments ma = some (values, argSteps))
     (hlookup : lookupPanFunction function functions = some (parameters, body))
+    (hparams : panValueParametersValid structs c function values = true)
     (hbind : bindPanValueParameters parameters values = some calleeLocals)
     (hbody : evalPanValueFfiProgSteps context primitive handler structs functions
       baseAddress topAddress bytesInWord bfuel calleeLocals g m f body ma c mh
@@ -622,7 +629,7 @@ theorem callSteps_runs_returned
         argSteps + bsteps) := by
   subst hinfo
   rw [evalPanValueFfiCallSteps, hargs]
-  simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody, if_pos hvalid,
+  simp only [Option.bind_eq_bind, Option.bind_some, hlookup, if_pos hparams, hbind, hbody, if_pos hvalid,
     hassign]
   rfl
 
@@ -659,6 +666,7 @@ theorem callSteps_runs_returned_none
     (hargs : evalPanValueExpsCounted structs l g m baseAddress topAddress bytesInWord
       arguments ma = some (values, argSteps))
     (hlookup : lookupPanFunction function functions = some (parameters, body))
+    (hparams : panValueParametersValid structs c function values = true)
     (hbind : bindPanValueParameters parameters values = some calleeLocals)
     (hbody : evalPanValueFfiProgSteps context primitive handler structs functions
       baseAddress topAddress bytesInWord bfuel calleeLocals g m f body ma c mh
@@ -670,7 +678,7 @@ theorem callSteps_runs_returned_none
       = some (PanValueFfiControlResult.returned (fun _ => none) cg cm cf vs,
         argSteps + bsteps) := by
   rw [evalPanValueFfiCallSteps, hargs]
-  simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody, if_pos hvalid]
+  simp only [Option.bind_eq_bind, Option.bind_some, hlookup, if_pos hparams, hbind, hbody, if_pos hvalid]
   rfl
 
 /-- **What a `decCall` runs to.** The guest's `var x = f(...)` form: call with
