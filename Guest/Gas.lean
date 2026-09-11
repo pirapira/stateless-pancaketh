@@ -88,6 +88,27 @@ theorem state_gas_sum_decreases_spill {sgl gl amount : Word}
   rw [hzero]
   omega
 
+/-- The value `min` yields. Unsigned, like the guest's `<+`, and the pivot of
+the credit path: `credit_state_gas_refund` gives back `min(amount, spilled)`
+from the spill reservoir and the rest from the state reservoir. -/
+def minOf (a b : Word) : Word := if a < b then a else b
+
+theorem minOf_le_left (a b : Word) : (minOf a b).toNat ≤ a.toNat := by
+  unfold minOf
+  by_cases h : a < b
+  · rw [if_pos h]; omega
+  · rw [if_neg h]
+    simp only [BitVec.lt_def] at h
+    omega
+
+theorem minOf_le_right (a b : Word) : (minOf a b).toNat ≤ b.toNat := by
+  unfold minOf
+  by_cases h : a < b
+  · rw [if_pos h]
+    simp only [BitVec.lt_def] at h
+    omega
+  · rw [if_neg h]; omega
+
 /-- **`credit_state_gas_refund` moves the sum the wrong way.**
 `guest/src/evm.pnk:268` adds `min(amount, spilled)` to `EV_GAS_LEFT` and the
 rest of `amount` to `EV_STATE_GAS_LEFT`, so the sum grows by exactly `amount` —
@@ -109,6 +130,29 @@ theorem credit_state_gas_refund_increases_sum {gl sgl amount fromGl : Word}
   have h2 : (sgl + (amount - fromGl)).toNat = sgl.toNat + (amount.toNat - fromGl.toNat) := by
     rw [BitVec.toNat_add, hrem]
     omega
+  omega
+
+/-- The credit with its argument taken at the guest's own `min`, so the
+no-overflow side conditions are all that is left. `hfrom` is discharged by
+`minOf_le_left`: the guest never gives back more than it was asked for. -/
+theorem credit_state_gas_refund_increases_sum_min {gl sgl amount spilled : Word}
+    (hgl : gl.toNat + (minOf amount spilled).toNat < 2 ^ 64)
+    (hsgl : sgl.toNat + (amount.toNat - (minOf amount spilled).toNat) < 2 ^ 64)
+    (hpos : 1 ≤ amount.toNat) :
+    sgl.toNat + gl.toNat
+      < (sgl + (amount - minOf amount spilled)).toNat + (gl + minOf amount spilled).toNat :=
+  credit_state_gas_refund_increases_sum (minOf_le_left amount spilled) hgl hsgl hpos
+
+/-- **The half of the credit that *is* conserved.** Whatever goes back to
+`EV_GAS_LEFT` comes out of `EV_STATE_GAS_SPILLED`, exactly. So the credit only
+breaks the measure by the part it routes to the state reservoir --- the
+`amount - min(amount, spilled)` half --- and the spill counter alone is a
+sound (non-increasing) component. -/
+theorem credit_state_gas_refund_conserves_spill (amount spilled : Word) :
+    (spilled - minOf amount spilled).toNat + (minOf amount spilled).toNat
+      = spilled.toNat := by
+  have hle := minOf_le_right amount spilled
+  rw [toNat_sub_of_le hle]
   omega
 
 /-- `Cmp.notLower` is unsigned `>=`: `charge_state_gas`'s reservoir test is

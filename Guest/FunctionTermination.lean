@@ -1472,4 +1472,324 @@ theorem charge_state_gas_runs_raised
   rw [chargeStateGasBody_eq]
   exact ⟨_, _, hfinal⟩
 
+/-- The body of `min`, verbatim from `Guest.guestAst`. -/
+def minBody : Prog Word :=
+  match Guest.guestFn_min with
+  | .function info => info.body
+  | _ => Prog.skip
+
+theorem minBody_eq : minBody =
+    Prog.seq
+      (Prog.ite (Exp.cmp Cmp.lower (Exp.var VarKind.local "a") (Exp.var VarKind.local "b"))
+        (Prog.return (Exp.var VarKind.local "a"))
+        Prog.skip)
+      (Prog.return (Exp.var VarKind.local "b")) := by
+  rfl
+
+section
+variable (context : PanValueFfiContext Word) (primitive : PanPrimitiveHandler Word)
+  (handler : PanValueStatefulFfiHandler Word HostMemory) (structs : StructContext)
+  (functions : List (FunName × List VarName × Prog Word))
+  (baseAddress topAddress bytesInWord : Word)
+  (c : Option PanValueCallContracts)
+  (mh : Option (PanValueMemoryFfiHandler Word HostMemory))
+
+/-- **What `min`'s body runs to.** The second callee, and the simplest one —
+no `dec`, just the comparison and two returns. -/
+theorem min_runs
+    (l g : VarName → Option (PanValue Word)) (m : Memory) (f : FfiState HostMemory)
+    (a b : Word)
+    (ha : l "a" = some (PanValue.word a))
+    (hb : l "b" = some (PanValue.word b))
+    (hlimitA : panValuePayloadWithinLimit structs (PanValue.word a) = true)
+    (hlimitB : panValuePayloadWithinLimit structs (PanValue.word b) = true) :
+    ∃ l' steps, evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord 3 l g m f minBody
+      (some guestMemoryAccess) c mh
+      = some (PanValueFfiControlResult.returned l' g m f
+          [PanValue.word (minOf a b)], steps) := by
+  have hcond := evalCounted_cmp_locals structs l g m baseAddress topAddress bytesInWord
+    Cmp.lower "a" "b" a b ha hb
+  by_cases hz : ((RiscV.panRiscVCmp Cmp.lower a b) != 0) = true
+  · have hreta := StepCalculus.return_runs context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+      (Exp.var VarKind.local "a") l g m f _ _ 0
+      (by rw [evalPanValueExpCounted, eval_var_local, ha]; rfl) hlimitA
+    have hite := StepCalculus.ite_runs context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+      (thenBranch := Prog.return (Exp.var VarKind.local "a")) (elseBranch := Prog.skip)
+      l g m f _ _ 1 _ _ hcond (by rw [if_pos hz]; exact hreta)
+    have hfinal := StepCalculus.seq_runs_returned context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+      (second := Prog.return (Exp.var VarKind.local "b")) l g m f _ g m f 2 _ _ hite
+    have hmin : minOf a b = a := by
+      simp only [minOf, if_pos (cmp_lower_true_iff.mp hz)]
+    rw [minBody_eq, hmin]
+    exact ⟨_, _, hfinal⟩
+  · have hskip := StepCalculus.skip_runs context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh l g m f 0
+    have hite := StepCalculus.ite_runs context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _
+      (thenBranch := Prog.return (Exp.var VarKind.local "a")) (elseBranch := Prog.skip)
+      l g m f _ _ 1 _ _ hcond (by rw [if_neg hz]; exact hskip)
+    have hretb := StepCalculus.return_runs context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+      (Exp.var VarKind.local "b") l g m f _ _ 1
+      (by rw [evalPanValueExpCounted, eval_var_local, hb]; rfl) hlimitB
+    have hfinal := StepCalculus.seq_runs_normal context primitive handler structs functions
+      baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _ _ l g m f
+      l g m f 2 _ _ _ hite hretb
+    have hmin : minOf a b = b := by
+      simp only [minOf, if_neg (fun hlt => hz (cmp_lower_true_iff.mpr hlt))]
+    rw [minBody_eq, hmin]
+    exact ⟨_, _, hfinal⟩
+
+end
+
+/-- The body of `credit_state_gas_refund`, verbatim from `Guest.guestAst`. -/
+def creditStateGasBody : Prog Word :=
+  match Guest.guestFn_credit_state_gas_refund with
+  | .function info => info.body
+  | _ => Prog.skip
+
+/-- The memory `credit_state_gas_refund` leaves: `from_gl` of the refund goes
+back to `EV_GAS_LEFT` and comes off `EV_STATE_GAS_SPILLED`, and the remainder
+goes to the reservoir. -/
+def creditStateGasMemory (m : Memory) (e gl sgl amount spilled : Word) : Memory :=
+  fun current =>
+    if current == e + BitVec.ofNat 64 72 then
+      some (PanValue.word (sgl + (amount - minOf amount spilled)))
+    else if current == e + BitVec.ofNat 64 192 then
+      some (PanValue.word (spilled - minOf amount spilled))
+    else if current == e + BitVec.ofNat 64 64 then
+      some (PanValue.word (gl + minOf amount spilled))
+    else m current
+
+section
+variable (context : PanValueFfiContext Word) (primitive : PanPrimitiveHandler Word)
+  (handler : PanValueStatefulFfiHandler Word HostMemory) (structs : StructContext)
+  (functions : List (FunName × List VarName × Prog Word))
+  (baseAddress topAddress bytesInWord : Word)
+  (c : Option PanValueCallContracts)
+  (mh : Option (PanValueMemoryFfiHandler Word HostMemory))
+
+/-- **What `credit_state_gas_refund` runs to.** The counterpart to the charge
+functions, and the one that moves the measure the *wrong* way — see
+`credit_state_gas_refund_increases_sum`. Pinning down the state it leaves is
+what the conservation argument will have to reason about.
+
+Three stores, and the last reads `EV_STATE_GAS_LEFT` after the first two have
+run, hence the two disjointness hypotheses. -/
+theorem credit_state_gas_refund_runs
+    (l g : VarName → Option (PanValue Word)) (m : Memory) (f : FfiState HostMemory)
+    (e gl sgl amount spilled : Word)
+    (hev : g "ev" = some (PanValue.word e))
+    (hspilled : m (e + BitVec.ofNat 64 192) = some (PanValue.word spilled))
+    (hglM : m (e + BitVec.ofNat 64 64) = some (PanValue.word gl))
+    (hsglM : m (e + BitVec.ofNat 64 72) = some (PanValue.word sgl))
+    (hamount : l "amount" = some (PanValue.word amount))
+    (h72_192 : ((e + BitVec.ofNat 64 72) == (e + BitVec.ofNat 64 192)) = false)
+    (h72_64 : ((e + BitVec.ofNat 64 72) == (e + BitVec.ofNat 64 64)) = false)
+    (hlookup : lookupPanFunction "min" functions = some (["a", "b"], minBody))
+    (hlimitAmount : panValuePayloadWithinLimit structs (PanValue.word amount) = true)
+    (hlimitSpilled : panValuePayloadWithinLimit structs (PanValue.word spilled) = true)
+    (hlimit0 : panValuePayloadWithinLimit structs
+      (PanValue.word (BitVec.ofNat 64 0)) = true)
+    (hretValid : (panValueReturnValid structs c "min"
+        [PanValue.word (minOf amount spilled)] &&
+      panValueValuesWithinLimit structs [PanValue.word (minOf amount spilled)]) = true) :
+    ∃ l' steps, evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord 6 l g m f creditStateGasBody
+      (some guestMemoryAccess) c mh
+      = some (PanValueFfiControlResult.returned l' g
+          (creditStateGasMemory m e gl sgl amount spilled) f
+          [PanValue.word (BitVec.ofNat 64 0)], steps) := by
+  -- locals after `dec spilled`
+  have hL1spilled : updatePanValueMap l "spilled" (PanValue.word spilled) "spilled"
+      = some (PanValue.word spilled) := by simp [updatePanValueMap]
+  have hL1amount : updatePanValueMap l "spilled" (PanValue.word spilled) "amount"
+      = some (PanValue.word amount) := by simp [updatePanValueMap, hamount]
+  -- the `min` call
+  have hbindMin := add_sat_binds amount spilled
+  have hminA : updatePanValueMap (updatePanValueMap (fun _ => none) "a"
+      (PanValue.word amount)) "b" (PanValue.word spilled) "a"
+      = some (PanValue.word amount) := by simp [updatePanValueMap]
+  have hminB : updatePanValueMap (updatePanValueMap (fun _ => none) "a"
+      (PanValue.word amount)) "b" (PanValue.word spilled) "b"
+      = some (PanValue.word spilled) := by simp [updatePanValueMap]
+  obtain ⟨cl, bsteps, hminBody⟩ := min_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord c mh _ g m f amount spilled hminA hminB
+    hlimitAmount hlimitSpilled
+  have hcall := StepCalculus.callSteps_runs_returned_none context primitive handler structs
+    functions baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+    "min" _ _ g m f _ _ ["a", "b"] minBody _ 3 _ cl g m f _
+    (evalCounted_args_two_locals structs _ g m baseAddress topAddress bytesInWord
+      "amount" "spilled" amount spilled hL1amount hL1spilled)
+    hlookup hbindMin hminBody hretValid
+  -- locals with `from_gl` bound
+  have hL2 : ∀ n v, updatePanValueMap (updatePanValueMap l "spilled" (PanValue.word spilled))
+      "from_gl" (PanValue.word (minOf amount spilled)) n = v →
+      updatePanValueMap (updatePanValueMap l "spilled" (PanValue.word spilled))
+      "from_gl" (PanValue.word (minOf amount spilled)) n = v := fun _ _ h => h
+  have hFfrom : updatePanValueMap (updatePanValueMap l "spilled" (PanValue.word spilled))
+      "from_gl" (PanValue.word (minOf amount spilled)) "from_gl"
+      = some (PanValue.word (minOf amount spilled)) := by simp [updatePanValueMap]
+  have hFspilled : updatePanValueMap (updatePanValueMap l "spilled" (PanValue.word spilled))
+      "from_gl" (PanValue.word (minOf amount spilled)) "spilled"
+      = some (PanValue.word spilled) := by simp [updatePanValueMap]
+  have hFamount : updatePanValueMap (updatePanValueMap l "spilled" (PanValue.word spilled))
+      "from_gl" (PanValue.word (minOf amount spilled)) "amount"
+      = some (PanValue.word amount) := by simp [updatePanValueMap, hamount]
+  -- store 1: ev + 64 := (lds ev + 64) + from_gl
+  have haddr64 := eval_global_add_const structs
+    (updatePanValueMap (updatePanValueMap l "spilled" (PanValue.word spilled)) "from_gl"
+      (PanValue.word (minOf amount spilled))) g m baseAddress topAddress bytesInWord
+    "ev" e (BitVec.ofNat 64 64) hev
+  have hload64 := eval_load_global_add structs
+    (updatePanValueMap (updatePanValueMap l "spilled" (PanValue.word spilled)) "from_gl"
+      (PanValue.word (minOf amount spilled))) g m baseAddress topAddress bytesInWord
+    "ev" e (BitVec.ofNat 64 64) gl hev hglM
+  have hval64 : evalPanValueExp structs
+      (updatePanValueMap (updatePanValueMap l "spilled" (PanValue.word spilled)) "from_gl"
+        (PanValue.word (minOf amount spilled))) g m baseAddress topAddress bytesInWord
+      (Exp.op BinOp.add [Exp.load Shape.one (Exp.op BinOp.add
+          [Exp.var VarKind.global "ev", Exp.const (BitVec.ofNat 64 64)]),
+        Exp.var VarKind.local "from_gl"])
+      (some guestMemoryAccess) = some (PanValue.word (gl + minOf amount spilled)) := by
+    refine eval_op2 structs _ g m baseAddress topAddress bytesInWord BinOp.add _ _ gl
+      (minOf amount spilled) _ hload64 ?_ (wordOp_add gl (minOf amount spilled))
+    rw [eval_var_local]; exact hFfrom
+  have hs1 := store_runs structs _ g m baseAddress topAddress bytesInWord context
+    primitive handler functions c mh _ _ f _ _ haddr64 hval64
+  -- store 2: ev + 192 := spilled - from_gl, in the memory the first store left
+  have haddr192 := eval_global_add_const structs
+    (updatePanValueMap (updatePanValueMap l "spilled" (PanValue.word spilled)) "from_gl"
+      (PanValue.word (minOf amount spilled))) g
+    (fun cur => if cur == e + BitVec.ofNat 64 64 then
+      some (PanValue.word (gl + minOf amount spilled)) else m cur)
+    baseAddress topAddress bytesInWord "ev" e (BitVec.ofNat 64 192) hev
+  have hval192 : evalPanValueExp structs
+      (updatePanValueMap (updatePanValueMap l "spilled" (PanValue.word spilled)) "from_gl"
+        (PanValue.word (minOf amount spilled))) g
+      (fun cur => if cur == e + BitVec.ofNat 64 64 then
+        some (PanValue.word (gl + minOf amount spilled)) else m cur)
+      baseAddress topAddress bytesInWord
+      (Exp.op BinOp.sub [Exp.var VarKind.local "spilled", Exp.var VarKind.local "from_gl"])
+      (some guestMemoryAccess)
+      = some (PanValue.word (spilled - minOf amount spilled)) := by
+    refine eval_op2 structs _ g _ baseAddress topAddress bytesInWord BinOp.sub _ _ spilled
+      (minOf amount spilled) _ ?_ ?_ (wordOp_sub spilled (minOf amount spilled))
+    · rw [eval_var_local]; exact hFspilled
+    · rw [eval_var_local]; exact hFfrom
+  have hs2 := store_runs structs _ g
+    (fun cur => if cur == e + BitVec.ofNat 64 64 then
+      some (PanValue.word (gl + minOf amount spilled)) else m cur)
+    baseAddress topAddress bytesInWord context
+    primitive handler functions c mh _ _ f _ _ haddr192 hval192
+  -- store 3: ev + 72 := (load ev + 72) + (amount - from_gl), reading past the first two
+  have hsgl2 : (fun cur => if cur == e + BitVec.ofNat 64 192 then
+      some (PanValue.word (spilled - minOf amount spilled))
+    else (fun cur => if cur == e + BitVec.ofNat 64 64 then
+      some (PanValue.word (gl + minOf amount spilled)) else m cur) cur)
+      (e + BitVec.ofNat 64 72) = some (PanValue.word sgl) := by
+    simp only [h72_192, h72_64]
+    exact hsglM
+  have haddr72 := eval_global_add_const structs
+    (updatePanValueMap (updatePanValueMap l "spilled" (PanValue.word spilled)) "from_gl"
+      (PanValue.word (minOf amount spilled))) g
+    (fun cur => if cur == e + BitVec.ofNat 64 192 then
+      some (PanValue.word (spilled - minOf amount spilled))
+    else (fun cur => if cur == e + BitVec.ofNat 64 64 then
+      some (PanValue.word (gl + minOf amount spilled)) else m cur) cur)
+    baseAddress topAddress bytesInWord "ev" e (BitVec.ofNat 64 72) hev
+  have hload72 := eval_load_global_add structs
+    (updatePanValueMap (updatePanValueMap l "spilled" (PanValue.word spilled)) "from_gl"
+      (PanValue.word (minOf amount spilled))) g
+    (fun cur => if cur == e + BitVec.ofNat 64 192 then
+      some (PanValue.word (spilled - minOf amount spilled))
+    else (fun cur => if cur == e + BitVec.ofNat 64 64 then
+      some (PanValue.word (gl + minOf amount spilled)) else m cur) cur)
+    baseAddress topAddress bytesInWord "ev" e (BitVec.ofNat 64 72) sgl hev hsgl2
+  have hval72 : evalPanValueExp structs
+      (updatePanValueMap (updatePanValueMap l "spilled" (PanValue.word spilled)) "from_gl"
+        (PanValue.word (minOf amount spilled))) g
+      (fun cur => if cur == e + BitVec.ofNat 64 192 then
+        some (PanValue.word (spilled - minOf amount spilled))
+      else (fun cur => if cur == e + BitVec.ofNat 64 64 then
+        some (PanValue.word (gl + minOf amount spilled)) else m cur) cur)
+      baseAddress topAddress bytesInWord
+      (Exp.op BinOp.add [Exp.load Shape.one (Exp.op BinOp.add
+          [Exp.var VarKind.global "ev", Exp.const (BitVec.ofNat 64 72)]),
+        Exp.op BinOp.sub [Exp.var VarKind.local "amount", Exp.var VarKind.local "from_gl"]])
+      (some guestMemoryAccess)
+      = some (PanValue.word (sgl + (amount - minOf amount spilled))) := by
+    refine eval_op2 structs _ g _ baseAddress topAddress bytesInWord BinOp.add _ _ sgl
+      (amount - minOf amount spilled) _ hload72 ?_
+      (wordOp_add sgl (amount - minOf amount spilled))
+    refine eval_op2 structs _ g _ baseAddress topAddress bytesInWord BinOp.sub _ _ amount
+      (minOf amount spilled) _ ?_ ?_ (wordOp_sub amount (minOf amount spilled))
+    · rw [eval_var_local]; exact hFamount
+    · rw [eval_var_local]; exact hFfrom
+  have hs3 := store_runs structs _ g
+    (fun cur => if cur == e + BitVec.ofNat 64 192 then
+      some (PanValue.word (spilled - minOf amount spilled))
+    else (fun cur => if cur == e + BitVec.ofNat 64 64 then
+      some (PanValue.word (gl + minOf amount spilled)) else m cur) cur)
+    baseAddress topAddress bytesInWord context
+    primitive handler functions c mh _ _ f _ _ haddr72 hval72
+  -- the return
+  have hret := StepCalculus.return_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+    (Exp.const (BitVec.ofNat 64 0))
+    (updatePanValueMap (updatePanValueMap l "spilled" (PanValue.word spilled)) "from_gl"
+      (PanValue.word (minOf amount spilled))) g
+    (creditStateGasMemory m e gl sgl amount spilled) f _ _ 0
+    (by rw [evalPanValueExpCounted, eval_const]; rfl) hlimit0
+  -- chain the three stores and the return, innermost first
+  have hseq3 := StepCalculus.seq_runs_normal context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _ _ _ g
+    (fun cur => if cur == e + BitVec.ofNat 64 192 then
+      some (PanValue.word (spilled - minOf amount spilled))
+    else (fun cur => if cur == e + BitVec.ofNat 64 64 then
+      some (PanValue.word (gl + minOf amount spilled)) else m cur) cur) f
+    _ g (creditStateGasMemory m e gl sgl amount spilled) f 1 _ _ _ hs3 hret
+  have hs2' := StepCalculus.progMono context primitive handler structs functions
+    baseAddress topAddress bytesInWord 1 _ g
+    (fun cur => if cur == e + BitVec.ofNat 64 64 then
+      some (PanValue.word (gl + minOf amount spilled)) else m cur) f _
+    (some guestMemoryAccess) c mh 2 _ (by omega) hs2
+  have hseq2 := StepCalculus.seq_runs_normal context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _ _ _ g
+    (fun cur => if cur == e + BitVec.ofNat 64 64 then
+      some (PanValue.word (gl + minOf amount spilled)) else m cur) f
+    _ g
+    (fun cur => if cur == e + BitVec.ofNat 64 192 then
+      some (PanValue.word (spilled - minOf amount spilled))
+    else (fun cur => if cur == e + BitVec.ofNat 64 64 then
+      some (PanValue.word (gl + minOf amount spilled)) else m cur) cur) f 2 _ _ _ hs2' hseq3
+  have hs1' := StepCalculus.progMono context primitive handler structs functions
+    baseAddress topAddress bytesInWord 1 _ g m f _ (some guestMemoryAccess) c mh 3 _
+    (by omega) hs1
+  have hseq1 := StepCalculus.seq_runs_normal context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh _ _ _ g m f
+    _ g
+    (fun cur => if cur == e + BitVec.ofNat 64 64 then
+      some (PanValue.word (gl + minOf amount spilled)) else m cur) f 3 _ _ _ hs1' hseq2
+  have hdecCall := StepCalculus.decCall_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh
+    "from_gl" Shape.one "min"
+    [Exp.var VarKind.local "amount", Exp.var VarKind.local "spilled"] _
+    (updatePanValueMap l "spilled" (PanValue.word spilled)) g m f 4 _ _ _ g m f
+    (PanValue.word (minOf amount spilled)) _ hcall
+    (word_shape_matches structs (minOf amount spilled)) hseq1
+  have hdecval := evalCounted_load_global_add structs l g m baseAddress topAddress
+    bytesInWord "ev" e (BitVec.ofNat 64 192) spilled hev hspilled
+  have hfinal := StepCalculus.dec_runs context primitive handler structs functions
+    baseAddress topAddress bytesInWord (some guestMemoryAccess) c mh "spilled" Shape.one _ _
+    l g m f (PanValue.word spilled) _ 5 _ _ hdecval
+    (word_shape_matches structs spilled) hdecCall
+  exact ⟨_, _, hfinal⟩
+
+end
+
 end Guest
