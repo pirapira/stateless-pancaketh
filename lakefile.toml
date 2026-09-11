@@ -2,13 +2,14 @@ name = "Guest"
 version = "0.1.0"
 defaultTargets = ["Guest"]
 
-# Pinned to flapjack main after PR 521 (accelerator memory FFI dispatch takes
-# precedence over the byte-granular memory model). Bump deliberately (and
-# re-check lean-toolchain compatibility) rather than tracking main unpinned.
+# Pinned to flapjack main after PR 661 (`Flapjack.PanValueFfiClockFuel`), which
+# together with `Flapjack.PanValueFfiFuel` upstreams what used to live here as
+# `Guest/StepCalculus.lean`. Bump deliberately (and re-check lean-toolchain
+# compatibility) rather than tracking main unpinned.
 [[require]]
 name = "flapjack"
 git = "https://github.com/pirapira/flapjack"
-rev = "c55bb9cd6e8c4528d0f36fc97d1c2b899ae0bc01"
+rev = "8be718c479dc35db8023f734a62af51f56db8692"
 
 # ZisK accelerator semantics (RiscvZkvm.Rv64.ZiskAccel: Keccak-f, SHA-256
 # compress, Arith256/384Mod, secp256k1/BN254/BLS12-381 affine ops, BLAKE2b

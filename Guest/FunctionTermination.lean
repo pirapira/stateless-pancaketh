@@ -971,6 +971,8 @@ theorem charge_state_gas_add_sat_call
       (PanValue.word (BitVec.ofNat 64 18446744073709551615)) = true)
     (hlimitSum : panValuePayloadWithinLimit structs
       (PanValue.word (sgl + gl)) = true)
+    (hparamsValid : panValueParametersValid structs c "add_sat"
+      [PanValue.word sgl, PanValue.word gl] = true)
     (hretValid : (panValueReturnValid structs c "add_sat"
         [PanValue.word (addSatOf sgl gl)] &&
       panValueValuesWithinLimit structs [PanValue.word (addSatOf sgl gl)]) = true) :
@@ -994,7 +996,7 @@ theorem charge_state_gas_add_sat_call
     "add_sat" _ l g m f _ _ ["a", "b"] addSatBody _ 4 _ cl g m f _
     (evalCounted_args_two_locals structs l g m baseAddress topAddress bytesInWord
       "sgl" "gl" sgl gl hsgl hgl)
-    hlookup hcallee hbody hretValid⟩
+    hlookup hparamsValid hcallee hbody hretValid⟩
 
 
 /-- **What `charge_state_gas`'s spill body runs to**, from the point where
@@ -1149,6 +1151,8 @@ theorem charge_state_gas_runs_spill
     (hlimitSum : panValuePayloadWithinLimit structs (PanValue.word (sgl + gl)) = true)
     (hlimit0 : panValuePayloadWithinLimit structs
       (PanValue.word (BitVec.ofNat 64 0)) = true)
+    (hparamsValid : panValueParametersValid structs c "add_sat"
+      [PanValue.word sgl, PanValue.word gl] = true)
     (hretValid : (panValueReturnValid structs c "add_sat"
         [PanValue.word (addSatOf sgl gl)] &&
       panValueValuesWithinLimit structs [PanValue.word (addSatOf sgl gl)]) = true) :
@@ -1167,7 +1171,7 @@ theorem charge_state_gas_runs_spill
     simp [updatePanValueMap, hamount]
   obtain ⟨csteps, hcall⟩ := charge_state_gas_add_sat_call context primitive handler structs
     functions baseAddress topAddress bytesInWord c mh _ g m f sgl gl hL2sgl hL2gl
-    hlookup hlimitMax hlimitSum hretValid
+    hlookup hlimitMax hlimitSum hparamsValid hretValid
   have hcall' := StepCalculus.callMono context primitive handler structs functions
     baseAddress topAddress bytesInWord 5 _ g m f none "add_sat" _
     (some guestMemoryAccess) c mh 7 _ (by omega) hcall
@@ -1378,6 +1382,8 @@ theorem charge_state_gas_runs_raised
     (hlimitMax : panValuePayloadWithinLimit structs
       (PanValue.word (BitVec.ofNat 64 18446744073709551615)) = true)
     (hlimitSum : panValuePayloadWithinLimit structs (PanValue.word (sgl + gl)) = true)
+    (hparamsValid : panValueParametersValid structs c "add_sat"
+      [PanValue.word sgl, PanValue.word gl] = true)
     (hretValid : (panValueReturnValid structs c "add_sat"
         [PanValue.word (addSatOf sgl gl)] &&
       panValueValuesWithinLimit structs [PanValue.word (addSatOf sgl gl)]) = true)
@@ -1398,7 +1404,7 @@ theorem charge_state_gas_runs_raised
     simp [updatePanValueMap, hamount]
   obtain ⟨csteps, hcall⟩ := charge_state_gas_add_sat_call context primitive handler structs
     functions baseAddress topAddress bytesInWord c mh _ g m f sgl gl hL2sgl hL2gl
-    hlookup hlimitMax hlimitSum hretValid
+    hlookup hlimitMax hlimitSum hparamsValid hretValid
   have hL3tot : updatePanValueMap (updatePanValueMap (updatePanValueMap l "sgl"
       (PanValue.word sgl)) "gl" (PanValue.word gl)) "tot"
       (PanValue.word (addSatOf sgl gl)) "tot" = some (PanValue.word (addSatOf sgl gl)) := by
@@ -1595,6 +1601,8 @@ theorem credit_state_gas_refund_runs
     (hlimitSpilled : panValuePayloadWithinLimit structs (PanValue.word spilled) = true)
     (hlimit0 : panValuePayloadWithinLimit structs
       (PanValue.word (BitVec.ofNat 64 0)) = true)
+    (hparamsValid : panValueParametersValid structs c "min"
+      [PanValue.word amount, PanValue.word spilled] = true)
     (hretValid : (panValueReturnValid structs c "min"
         [PanValue.word (minOf amount spilled)] &&
       panValueValuesWithinLimit structs [PanValue.word (minOf amount spilled)]) = true) :
@@ -1625,7 +1633,7 @@ theorem credit_state_gas_refund_runs
     "min" _ _ g m f _ _ ["a", "b"] minBody _ 3 _ cl g m f _
     (evalCounted_args_two_locals structs _ g m baseAddress topAddress bytesInWord
       "amount" "spilled" amount spilled hL1amount hL1spilled)
-    hlookup hbindMin hminBody hretValid
+    hlookup hparamsValid hbindMin hminBody hretValid
   -- locals with `from_gl` bound
   have hL2 : ∀ n v, updatePanValueMap (updatePanValueMap l "spilled" (PanValue.word spilled))
       "from_gl" (PanValue.word (minOf amount spilled)) n = v →
