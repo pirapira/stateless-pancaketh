@@ -830,15 +830,14 @@ the refund never exceeds what was previously charged — which for the five
 
 `charge_gas_decreases_gas` needs `1 <= amount`. The census settles that for 70
 of the 87 handlers, because they charge a literal. The remaining 17 *compute*
-their charge, and reading them off the source they have exactly two shapes:
+their charge, and reading them off the source they fall into four shapes:
 
 | shape | handlers |
 |---|---|
-| `add_sat(base + per * w, x.0)` | `op_keccak`, `op_extcodecopy`, `op_returndatacopy`, `op_mcopy`, `op_log` |
+| `add_sat(base + per * w, x.0)` | `op_keccak`, `op_calldatacopy`, `op_codecopy`, `op_extcodecopy`, `op_returndatacopy`, `op_mcopy`, `op_log` |
 | `access_gas_cost(addr)`, alone or `+ G_WARM_ACCESS` | `op_balance`, `op_extcodesize`, `op_extcodehash` |
 | `base + per * n` with no `add_sat` | `op_exp` |
 | cost paid by the child frame | `op_create`, `op_call`, `op_callcode`, `op_delegatecall`, `op_create2`, `op_staticcall` |
-| copy cost with a memory-extension term | `op_calldatacopy`, `op_codecopy` |
 
 Three arithmetic lemmas in `Guest/Gas.lean` cover the first three rows, and all
 three say the same thing --- **the base cost survives**:
@@ -883,6 +882,46 @@ This is also the first guest function proved whose branch hypothesis is about a
 *callee's return value* rather than about memory or a local, so it is the shape
 every "did the lookup say yes" test in the guest will take.
 
+#### The word count is bounded by its own shift
+
+`words_of n` is `ceil32(n) >>> 5`. So **whatever it is handed, its result is
+below `2^59`** — no fact about `ceil32` is needed, and in particular no
+no-wrap assumption about the `n + 31` inside it. `shiftRight_lt` /
+`shiftRight_five_lt` is that, and it is what makes the word-metered charges
+positive *unconditionally*. Worth recording because the obvious route is to
+bound `n`, and `n` is attacker-controlled; the shift makes that unnecessary.
+
+That gives the whole `add_sat` row, with no side conditions:
+
+| handler | charge | lemma | side condition |
+|---|---|---|---|
+| `op_keccak` | `add_sat(30 + 6*w, x.0)` | `keccak_charge_pos` | none |
+| `op_calldatacopy`, `op_codecopy`, `op_returndatacopy`, `op_mcopy` | `add_sat(3 + 3*w, x.0)` | `copy_charge_pos` | none |
+| `op_extcodecopy` | `add_sat(acc + 100 + 3*w, x.0)` | `extcodecopy_charge_pos` | `acc <= 3000` |
+| `op_log` | `add_sat(375 + 375*ntopics, x.0)` | `log_charge_pos` | `ntopics <= 4` |
+| `op_balance`, `op_extcodehash` | `access_gas_cost(addr)` | `access_gas_cost_charge_pos` | none |
+| `op_extcodesize` | `access_gas_cost(addr) + 100` | `access_plus_warm_pos` | `acc <= 3000` |
+| `op_exp` | `10 + 50*nb`, **no `add_sat`** | `exp_charge_pos` | `nb <= 32` |
+
+`op_calldatacopy` and `op_codecopy` are in the copy row because both delegate
+to `copy_from_buffer(3, ...)` (`guest/src/evm.pnk:1344`), which is where the
+charge actually happens — neither handler charges anything itself. That is the
+sort of thing the census flags and a reader has to resolve.
+
+The three side conditions are each a fact about one *other* function, not about
+arithmetic: `acc <= 3000` is `access_gas_cost`'s range (its two return values
+are 100 and 3000, so it follows from the pair of `_runs` lemmas above),
+`ntopics <= 4` is a fact about `op_dispatch`'s opcode decode, and `nb <= 32`
+is `u256_byte_length`'s postcondition.
+
+`op_exp` is the only one that genuinely needs its input bounded, because it is
+the only handler in the list that does *not* go through `add_sat` — the
+`add_pos_of_no_carry` asymmetry showing up in the guest's own source.
+
+**That leaves the call/create six**, which are different in kind: their cost is
+paid by the child frame, so they need the summed-over-frames measure rather
+than a positivity lemma.
+
 #### What is still missing for the measure
 
 * **The five `SG_NEW_ACCOUNT` credits**, whose conservation is structural (a
@@ -892,9 +931,11 @@ every "did the lookup say yes" test in the guest will take.
   state condition, not a flag set alongside the charge.
 * **The measure summed over live frames**, since gas moves between them.
 * **`1 <= amount` is per-opcode.** The census settles 70 of 87 handlers. Of
-  the 17 dynamically-metered ones, the `access_gas_cost` three are done and the
-  `add_sat` five reduce to a range fact about their word count; `op_exp` needs
-  `nb <= 32`; the call/create six have cost paid by the child frame.
+  the 17 dynamically-metered ones, **eleven now have their arithmetic done** —
+  seven with no side condition at all, four modulo one named range fact each
+  (see the table above). The **call/create six** are what is left, and they
+  are different in kind: their cost is paid by the child frame, so they need
+  the summed-over-frames measure rather than a positivity lemma.
 
 ## What the bound itself needs
 

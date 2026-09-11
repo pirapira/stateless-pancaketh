@@ -289,6 +289,105 @@ theorem cmp_notEqual_true_iff {a b : Word} :
   · intro h hab; simp [hab] at h
   · intro h; simp [h]
 
+/-! ### The word count is bounded by its own shift
+
+`words_of n` is `ceil32(n) >>> 5`, so **whatever it is handed, its result is
+below `2^59`** --- no fact about `ceil32` is needed, and in particular no
+no-wrap assumption about the `n + 31` inside it. That is what makes the
+word-metered charges positive *unconditionally*, which was not obvious before
+looking: the obvious route is to bound `n`, and `n` is attacker-controlled. -/
+
+theorem shiftRight_lt (x : Word) (n : Nat) (h : n ≤ 64) :
+    (x >>> n).toNat < 2 ^ (64 - n) := by
+  rw [BitVec.toNat_ushiftRight, Nat.shiftRight_eq_div_pow]
+  have hx : x.toNat < 2 ^ 64 := x.isLt
+  have hsplit : (2 : Nat) ^ 64 = 2 ^ n * 2 ^ (64 - n) := by
+    rw [← Nat.pow_add]
+    congr 1
+    omega
+  refine Nat.div_lt_of_lt_mul ?_
+  rw [← hsplit]
+  exact hx
+
+theorem shiftRight_five_lt (x : Word) : (x >>> 5).toNat < 2 ^ 59 :=
+  shiftRight_lt x 5 (by omega)
+
+/-- **The word-metered base cost is positive.** `base + perWord * words_of(n)`,
+for any `base` that is positive and not absurdly large and any small
+per-word rate. Covers `op_keccak`'s `30 + 6 * w`, the copy handlers' `3 + 3 * w`
+and `op_extcodecopy`'s `acc + 100 + 3 * w`. -/
+theorem word_metered_cost_pos {base perWord x : Word}
+    (hpos : 1 ≤ base.toNat) (hsmall : base.toNat < 2 ^ 62) (hper : perWord.toNat ≤ 8) :
+    1 ≤ (base + perWord * (x >>> 5)).toNat := by
+  have hw := shiftRight_five_lt x
+  refine linear_cost_pos hpos ?_
+  have : perWord.toNat * (x >>> 5).toNat ≤ 8 * 2 ^ 59 :=
+    Nat.mul_le_mul (by omega) (by omega)
+  omega
+
+/-- ... and it survives the `add_sat` against the memory-extension cost, which
+is the form the handlers actually charge. -/
+theorem word_metered_charge_pos {base perWord x extra : Word}
+    (hpos : 1 ≤ base.toNat) (hsmall : base.toNat < 2 ^ 62) (hper : perWord.toNat ≤ 8) :
+    1 ≤ (addSatOf (base + perWord * (x >>> 5)) extra).toNat :=
+  add_sat_pos (word_metered_cost_pos hpos hsmall hper)
+
+/-- `op_keccak`: `add_sat(G_KECCAK256_BASE + G_KECCAK256_PER_WORD * w, x.0)`,
+positive with no side condition at all. -/
+theorem keccak_charge_pos (x extra : Word) :
+    1 ≤ (addSatOf (BitVec.ofNat 64 30 + BitVec.ofNat 64 6 * (x >>> 5)) extra).toNat :=
+  word_metered_charge_pos (by decide) (by decide) (by decide)
+
+/-- `op_returndatacopy` and `op_mcopy`:
+`add_sat(3 + G_COPY_PER_WORD * w, x.0)`, likewise unconditional. -/
+theorem copy_charge_pos (x extra : Word) :
+    1 ≤ (addSatOf (BitVec.ofNat 64 3 + BitVec.ofNat 64 3 * (x >>> 5)) extra).toNat :=
+  word_metered_charge_pos (by decide) (by decide) (by decide)
+
+/-- `op_extcodecopy`: the base is `acc + G_WARM_ACCESS`, with `acc` coming from
+`access_gas_cost`, so the bound on it comes from that function rather than
+from a literal. -/
+theorem extcodecopy_charge_pos {acc x extra : Word} (hacc : acc.toNat ≤ 3000) :
+    1 ≤ (addSatOf (acc + BitVec.ofNat 64 100 + BitVec.ofNat 64 3 * (x >>> 5))
+      extra).toNat := by
+  refine word_metered_charge_pos ?_ ?_ (by decide)
+  · rw [BitVec.toNat_add]
+    have : (BitVec.ofNat 64 100 : Word).toNat = 100 := by decide
+    omega
+  · rw [BitVec.toNat_add]
+    have : (BitVec.ofNat 64 100 : Word).toNat = 100 := by decide
+    omega
+
+/-- `op_log`: `add_sat(G_LOG_BASE + G_LOG_TOPIC * ntopics, x.0)`. `ntopics` is
+read off the opcode byte, so its bound is a fact about `op_dispatch` rather
+than about arithmetic --- hence the hypothesis. -/
+theorem log_charge_pos {ntopics extra : Word} (h : ntopics.toNat ≤ 4) :
+    1 ≤ (addSatOf (BitVec.ofNat 64 375 + BitVec.ofNat 64 375 * ntopics) extra).toNat := by
+  refine add_sat_pos (linear_cost_pos (by decide) ?_)
+  have h375 : (BitVec.ofNat 64 375 : Word).toNat = 375 := by decide
+  have : (375 : Nat) * ntopics.toNat ≤ 375 * 4 := Nat.mul_le_mul_left _ h
+  rw [h375]
+  omega
+
+/-- `op_exp`: `G_EXP_BASE + G_EXP_PER_BYTE * nb`, with **no** `add_sat` --- so
+unlike the copy handlers this one genuinely needs its input bounded, and
+`nb <= 32` is a fact about `u256_byte_length`. -/
+theorem exp_charge_pos {nb : Word} (h : nb.toNat ≤ 32) :
+    1 ≤ (BitVec.ofNat 64 10 + BitVec.ofNat 64 50 * nb).toNat := by
+  refine linear_cost_pos (by decide) ?_
+  have h10 : (BitVec.ofNat 64 10 : Word).toNat = 10 := by decide
+  have h50 : (BitVec.ofNat 64 50 : Word).toNat = 50 := by decide
+  have : (50 : Nat) * nb.toNat ≤ 50 * 32 := Nat.mul_le_mul_left _ h
+  rw [h10, h50]
+  omega
+
+/-- `op_extcodesize`: `access_gas_cost(addr) + G_WARM_ACCESS`. -/
+theorem access_plus_warm_pos {acc : Word} (hpos : 1 ≤ acc.toNat)
+    (hsmall : acc.toNat ≤ 3000) : 1 ≤ (acc + BitVec.ofNat 64 100).toNat := by
+  refine add_pos_of_no_carry hpos ?_
+  have : (BitVec.ofNat 64 100 : Word).toNat = 100 := by decide
+  omega
+
 /-- `Cmp.notLower` is false exactly when the charge exceeds what is there —
 the spill path's entry condition, and the complement of
 `cmp_notLower_true_of_le`. -/
