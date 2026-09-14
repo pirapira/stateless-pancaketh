@@ -64,6 +64,16 @@ as `trap=<code>`.
 
 * `cake` (prebuilt, bootstrapped CakeML compiler with Pancake): `~/cakeml/developers/bin/cake`
   (or set `CAKE=`). Version pinned by the `cakeml` submodule.
+* `flapjack` (Lean 4 port of the Pancake compiler, `lake exe flapjack-compile`):
+  version pinned by the `flapjack` submodule. Not yet able to build the guest;
+  the blocking issues found against the pinned commit are
+  [flapjack#1015](https://github.com/pirapira/flapjack/issues/1015) (nested
+  expressions exhaust the Word-to-Stack temporary pool, 15 guest functions),
+  [flapjack#1016](https://github.com/pirapira/flapjack/issues/1016) (FFI calls
+  such as `@halt` fail in the linked output modes) and
+  [flapjack#1017](https://github.com/pirapira/flapjack/issues/1017)
+  (undiagnosable lowering errors). The most informative way to re-test is
+  `flapjack-compile --hex guest/build/guest.pp.pnk`.
 * `riscv64-unknown-elf-{as,ld}` (Ubuntu `binutils-riscv64-unknown-elf`).
 * `spike_run`: `SPIKE_SRC=~/riscv-isa-sim evm-asm/scripts/spike/build.sh`
   (needs a built riscv-isa-sim and `libssl-dev`).
