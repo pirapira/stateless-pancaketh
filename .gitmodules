@@ -4,3 +4,6 @@
 [submodule "cakeml"]
 	path = cakeml
 	url = https://github.com/CakeML/cakeml
+[submodule "flapjack"]
+	path = flapjack
+	url = https://github.com/pirapira/flapjack.git
