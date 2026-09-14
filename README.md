@@ -65,14 +65,18 @@ as `trap=<code>`.
 * `cake` (prebuilt, bootstrapped CakeML compiler with Pancake): `~/cakeml/developers/bin/cake`
   (or set `CAKE=`). Version pinned by the `cakeml` submodule.
 * `flapjack` (Lean 4 port of the Pancake compiler, `lake exe flapjack-compile`):
-  version pinned by the `flapjack` submodule. Not yet able to build the guest;
-  the blocking issues found against the pinned commit are
-  [flapjack#1015](https://github.com/pirapira/flapjack/issues/1015) (nested
-  expressions exhaust the Word-to-Stack temporary pool, 15 guest functions),
-  [flapjack#1016](https://github.com/pirapira/flapjack/issues/1016) (FFI calls
-  such as `@halt` fail in the linked output modes) and
-  [flapjack#1017](https://github.com/pirapira/flapjack/issues/1017)
-  (undiagnosable lowering errors). The most informative way to re-test is
+  version pinned by the `flapjack` submodule. Not yet able to build the guest.
+  At the pinned commit the smoke test `guest/src/hello.pnk` compiles and links
+  against `guest/runtime/start.S`, but the compiled `main` differs from `cake`'s
+  and faults under Spike
+  ([flapjack#1022](https://github.com/pirapira/flapjack/issues/1022); causes:
+  [flapjack#1020](https://github.com/pirapira/flapjack/issues/1020) constants
+  truncated to 12 bits, [flapjack#1021](https://github.com/pirapira/flapjack/issues/1021)
+  FFI calls lowered as raw `ecall`). The full guest stops at `sha256_block`;
+  9 of 797 functions still exceed the Word-to-Stack temporary pool
+  ([flapjack#1015](https://github.com/pirapira/flapjack/issues/1015)), and
+  [flapjack#1017](https://github.com/pirapira/flapjack/issues/1017) tracks the
+  remaining diagnostics gaps. The most informative way to re-test is
   `flapjack-compile --hex guest/build/guest.pp.pnk`.
 * `riscv64-unknown-elf-{as,ld}` (Ubuntu `binutils-riscv64-unknown-elf`).
 * `spike_run`: `SPIKE_SRC=~/riscv-isa-sim evm-asm/scripts/spike/build.sh`
