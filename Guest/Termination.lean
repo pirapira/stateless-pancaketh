@@ -642,6 +642,67 @@ theorem call_runs
   rw [evalPanValueFfiProgSteps, hcall]
   rfl
 
+/-- **What a call with no destination runs to.** `Prog.decCall` calls with
+`info = none`, so `callSteps_runs_returned` — which needs a destination to
+assign to — does not apply to it. Here the callee's return values are handed
+back as a `.returned` with the locals cleared, which is what `decCall` then
+binds its variable from. -/
+theorem callSteps_runs_returned_none
+    (function : FunName) (arguments : List (Exp α))
+    (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)
+    (values : List (PanValue α)) (argSteps : Nat)
+    (parameters : List VarName) (body : Prog α)
+    (calleeLocals : VarName → Option (PanValue α))
+    (bfuel : Nat) (bsteps : Nat)
+    (cl cg : VarName → Option (PanValue α)) (cm : α → Option (PanValue α))
+    (cf : FfiState σ) (vs : List (PanValue α))
+    (hargs : evalPanValueExpsCounted structs l g m baseAddress topAddress bytesInWord
+      arguments ma = some (values, argSteps))
+    (hlookup : lookupPanFunction function functions = some (parameters, body))
+    (hbind : bindPanValueParameters parameters values = some calleeLocals)
+    (hbody : evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord bfuel calleeLocals g m f body ma c mh
+      = some (PanValueFfiControlResult.returned cl cg cm cf vs, bsteps))
+    (hvalid : (panValueReturnValid structs c function vs &&
+      panValueValuesWithinLimit structs vs) = true) :
+    evalPanValueFfiCallSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord (bfuel + 1) l g m f none function arguments ma c mh
+      = some (PanValueFfiControlResult.returned (fun _ => none) cg cm cf vs,
+        argSteps + bsteps) := by
+  rw [evalPanValueFfiCallSteps, hargs]
+  simp only [Option.bind_eq_bind, Option.bind_some, hlookup, hbind, hbody, if_pos hvalid]
+  rfl
+
+/-- **What a `decCall` runs to.** The guest's `var x = f(...)` form: call with
+no destination, check the single returned value against the declared shape,
+run the body with `x` bound, and restore `x` on the way out.
+
+Note that the body runs in the *callee's* globals, memory and FFI state — a
+call is not transparent to the heap — while the locals are the caller's
+extended with `x`. -/
+theorem decCall_runs (name : VarName) (shape : Shape) (function : FunName)
+    (arguments : List (Exp α)) (body : Prog α)
+    (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)
+    (fuel callSteps bodySteps : Nat)
+    (cl cg : VarName → Option (PanValue α)) (cm : α → Option (PanValue α))
+    (cf : FfiState σ) (value : PanValue α)
+    (bodyResult : PanValueFfiControlResult α σ)
+    (hcall : evalPanValueFfiCallSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord fuel l g m f none function arguments ma c mh
+      = some (PanValueFfiControlResult.returned cl cg cm cf [value], callSteps))
+    (hshape : panShapeMatches (panValueShape structs value) shape = true)
+    (hbody : evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord fuel (updatePanValueMap l name value) cg cm cf
+      body ma c mh = some (bodyResult, bodySteps)) :
+    evalPanValueFfiProgSteps context primitive handler structs functions
+      baseAddress topAddress bytesInWord (fuel + 1) l g m f
+      (Prog.decCall name shape function arguments body) ma c mh
+      = some (restorePanValueFfiLocal name (l name) bodyResult,
+        callSteps + bodySteps + 1) := by
+  rw [evalPanValueFfiProgSteps, hcall]
+  simp only [Option.bind_eq_bind, Option.bind_some, if_pos hshape, hbody]
+  rfl
+
 /-- What a `raise` runs to. -/
 theorem raise_runs (exception : ExceptionId) (value : Exp α)
     (l g : VarName → Option (PanValue α)) (m : α → Option (PanValue α)) (f : FfiState σ)

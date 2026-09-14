@@ -19,6 +19,9 @@ discharged from facts about the state rather than assumed.
 * `eval_cmp_locals` — a comparison of two word locals. Always succeeds:
   `RiscV.panRiscVCmp` is total, so the only way a guest comparison fails to
   evaluate is an unbound or non-word operand.
+* `evalCounted_args_two_locals` — a two-local argument list, which is the
+  shape of every call the guest makes with two scalar arguments. The list case
+  is the *nested* `evalPanValueExp.evalPanValueExps`, not the top-level name.
 * `store_terminates` — **a word store terminates as soon as its two expressions
   evaluate.** There is no further obligation, because the access model's
   `domain` is `fun _ => true`.
@@ -117,6 +120,18 @@ theorem evalCounted_cmp_locals (op : Cmp) (n1 n2 : VarName) (a b : Word)
   rw [evalPanValueExpCounted,
     eval_cmp_locals structs l g m baseAddress topAddress bytesInWord op n1 n2 a b h1 h2]
   rfl
+
+/-- A two-local argument list, which is every call the guest makes with two
+scalar arguments. -/
+theorem evalCounted_args_two_locals (n1 n2 : VarName) (a b : Word)
+    (h1 : l n1 = some (PanValue.word a)) (h2 : l n2 = some (PanValue.word b)) :
+    evalPanValueExpsCounted structs l g m baseAddress topAddress bytesInWord
+      [Exp.var VarKind.local n1, Exp.var VarKind.local n2] (some guestMemoryAccess)
+      = some ([PanValue.word a, PanValue.word b],
+          panValueExpsStepCost
+            ([Exp.var VarKind.local n1, Exp.var VarKind.local n2] : List (Exp Word))) := by
+  rw [evalPanValueExpsCounted]
+  simp [evalPanValueExps, evalPanValueExp.evalPanValueExps, evalPanValueExp, h1, h2]
 
 section Store
 variable (context : PanValueFfiContext Word) (primitive : PanPrimitiveHandler Word)
