@@ -231,22 +231,26 @@ theorem add_sat_ge (a b : Word) :
 
 `charge_gas_decreases_gas` needs `1 <= amount`. `lake exe opcode-census`
 settles that for 70 of the 87 handlers because they charge a literal; the
-remaining 17 *compute* their charge, and every one of them has one of three
-shapes:
+remaining 17 *compute* their charge. Six of them --- `op_create`, `op_call`,
+`op_callcode`, `op_delegatecall`, `op_create2`, `op_staticcall` --- are paid by
+the child frame and need the summed-over-frames measure rather than an
+arithmetic lemma. The other 11 have one of four shapes:
 
-* `add_sat(base + per * w, x.0)` --- `op_keccak`, `op_extcodecopy`,
-  `op_returndatacopy`, `op_mcopy`;
+* `add_sat(base + per * w, x.0)` --- `op_keccak`, `op_calldatacopy`,
+  `op_codecopy`, `op_extcodecopy`, `op_returndatacopy`, `op_mcopy`;
 * `add_sat(add_sat(base + per * ntopics, x.0), dc.0)`, or `WORD_MAX` if the
-  inner multiply overflowed --- `op_log`, the same shape one `add_sat` deeper;
+  data-cost multiply `mul64x64(G_LOG_DATA_PER_BYTE, n)` overflowed ---
+  `op_log`, the same shape one `add_sat` deeper;
 * a plain sum whose first summand is a function result --- `op_balance` and
   `op_extcodehash` charge `access_gas_cost(addr)` directly; `op_extcodesize`
   charges `access_gas_cost(addr) + G_WARM_ACCESS`, one plain-sum layer
-  further out.
+  further out;
+* `base + per * n` with no `add_sat` --- `op_exp`.
 
-All three reduce to **the base cost survives**, which is what these three
-lemmas say (`add_sat_pos` applies twice for `op_log`'s extra layer). What they
-do not settle is the *range* facts about the inputs, which are per-handler and
-belong with each handler. -/
+All four reduce to **the base cost survives**, which is what these lemmas say
+(`add_sat_pos` applies twice for `op_log`'s extra layer). What they do not
+settle is the *range* facts about the inputs, which are per-handler and belong
+with each handler. -/
 
 /-- **Saturating addition never loses its left summand.** So a charge of the
 form `add_sat(base, extra)` is at least `base`, whatever `extra` is and
@@ -287,11 +291,12 @@ theorem linear_cost_pos {base per count : Word} (hbase : 1 ≤ base.toNat)
   omega
 
 /-- **`linear_cost_pos`, stated against a bound on `count` instead of the exact
-product.** Every handler that uses `linear_cost_pos` has a concrete upper bound
-`B` on its `count` (`op_exp`'s `nb <= 32`, `op_log`'s `ntopics <= 4`) rather
-than the product's own no-wrap fact, so this is the form they actually call:
-supply `B` and a single `by decide` in place of naming the multiplication out
-and rewriting the literals by hand. -/
+product.** Every caller of `linear_cost_pos` in this file has a concrete upper
+bound `B` on its `count` rather than the product's own no-wrap fact, so this
+is the form they actually use: `op_exp`'s `nb <= 32`, `op_log`'s
+`ntopics <= 4`, and `word_metered_cost_pos`'s `words_of n < 2 ^ 59` (from
+`shiftRight_five_lt`) below. Supply `B` and a single `by decide`/`omega` in
+place of naming the multiplication out and rewriting the literals by hand. -/
 theorem linear_cost_pos_of_bound {base per count : Word} {B : Nat}
     (hbase : 1 ≤ base.toNat) (hcount : count.toNat ≤ B)
     (hfits : base.toNat + per.toNat * B < 2 ^ 64) :
@@ -335,12 +340,8 @@ per-word rate. Covers `op_keccak`'s `30 + 6 * w`, the copy handlers' `3 + 3 * w`
 and `op_extcodecopy`'s `acc + 100 + 3 * w`. -/
 theorem word_metered_cost_pos {base perWord x : Word}
     (hpos : 1 ≤ base.toNat) (hsmall : base.toNat < 2 ^ 62) (hper : perWord.toNat ≤ 8) :
-    1 ≤ (base + perWord * (x >>> 5)).toNat := by
-  have hw := shiftRight_five_lt x
-  refine linear_cost_pos hpos ?_
-  have : perWord.toNat * (x >>> 5).toNat ≤ 8 * 2 ^ 59 :=
-    Nat.mul_le_mul (by omega) (by omega)
-  omega
+    1 ≤ (base + perWord * (x >>> 5)).toNat :=
+  linear_cost_pos_of_bound hpos (Nat.le_of_lt (shiftRight_five_lt x)) (by omega)
 
 /-- ... and it survives the `add_sat` against the memory-extension cost, which
 is the form the handlers actually charge. -/

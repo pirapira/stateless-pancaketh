@@ -835,13 +835,13 @@ their charge, and reading them off the source they fall into five shapes:
 | shape | handlers |
 |---|---|
 | `add_sat(base + per * w, x.0)` | `op_keccak`, `op_calldatacopy`, `op_codecopy`, `op_extcodecopy`, `op_returndatacopy`, `op_mcopy` |
-| `add_sat(add_sat(base + per * ntopics, x.0), dc.0)`, or `WORD_MAX` | `op_log` |
+| `add_sat(add_sat(base + per * ntopics, x.0), dc.0)` | `op_log` |
 | `access_gas_cost(addr)`, alone or `+ G_WARM_ACCESS` | `op_balance`, `op_extcodesize`, `op_extcodehash` |
 | `base + per * n` with no `add_sat` | `op_exp` |
 | cost paid by the child frame | `op_create`, `op_call`, `op_callcode`, `op_delegatecall`, `op_create2`, `op_staticcall` |
 
-Three arithmetic lemmas in `Guest/Gas.lean` cover the first four rows, and all
-three say the same thing --- **the base cost survives** (`op_log`'s row applies
+The arithmetic lemmas in `Guest/Gas.lean` cover the first four rows, and all of
+them say the same thing --- **the base cost survives** (`op_log`'s row applies
 `add_sat_pos` twice, once per nested `add_sat`):
 
 * `add_sat_ge_left` --- saturating addition never loses its left summand, so
@@ -853,6 +853,11 @@ three say the same thing --- **the base cost survives** (`op_log`'s row applies
   asymmetry is the reason the guest reaches for `add_sat` wherever the second
   summand is attacker-influenced, and it is why `op_exp`'s row is separate from
   `op_keccak`'s.
+* `linear_cost_pos_of_bound` --- `linear_cost_pos` restated against an upper
+  bound `B` on `count` instead of re-deriving the exact no-wrap product each
+  time. `op_exp` (`B = 32`), `op_log`'s base step (`B = 4`), and
+  `word_metered_cost_pos` below (`B = 2^59`, from `shiftRight_five_lt`) all go
+  through this form.
 
 What these do *not* settle is the range facts about the inputs --- `nb <= 32`
 for `op_exp`, a bound on `words_of n` for the copy costs. Those are per-handler
@@ -905,7 +910,7 @@ That gives the whole `add_sat` row, with no side conditions:
 | `op_keccak` | `add_sat(30 + 6*w, x.0)` | `keccak_charge_pos` | none |
 | `op_calldatacopy`, `op_codecopy`, `op_returndatacopy`, `op_mcopy` | `add_sat(3 + 3*w, x.0)` | `copy_charge_pos` | none |
 | `op_extcodecopy` | `add_sat(acc + 100 + 3*w, x.0)` | `extcodecopy_charge_pos` | `acc <= 3000` |
-| `op_log` | `add_sat(add_sat(375 + 375*ntopics, x.0), dc.0)`, or `WORD_MAX` if `dc.1 != 0` | `log_charge_pos` | `ntopics <= 4` |
+| `op_log` | `add_sat(add_sat(375 + 375*ntopics, x.0), dc.0)`, or `WORD_MAX` if `dc.1 != 0` | `log_charge_pos` (+ `decide` for the `WORD_MAX` branch) | `ntopics <= 4` |
 | `op_balance`, `op_extcodehash` | `access_gas_cost(addr)` | `access_gas_cost_charge_pos` | none |
 | `op_extcodesize` | `access_gas_cost(addr) + 100` | `access_plus_warm_pos` | `1 <= acc <= 3000` |
 | `op_exp` | `10 + 50*nb`, **no `add_sat`** | `exp_charge_pos` | `nb <= 32` |
@@ -918,18 +923,32 @@ sort of thing the census flags and a reader has to resolve.
 The side conditions are each a fact about one *other* function, not about
 arithmetic: `acc <= 3000` (and, for `op_extcodesize`, `1 <= acc` too) is
 `access_gas_cost`'s range, which now follows directly from
-`access_gas_cost_charge_pos` rather than from the pair of `_runs` lemmas above
---- `extcodecopy_charge_pos` only asks for the upper half, `access_plus_warm_pos`
-asks for both. `ntopics <= 4` is a fact about `op_dispatch`'s opcode decode,
-and `nb <= 32` is `u256_byte_length`'s postcondition.
+`access_gas_cost_charge_pos` rather than from the pair of `_runs` lemmas
+above. `ntopics <= 4` is a fact about `op_dispatch`'s opcode decode, and
+`nb <= 32` is `u256_byte_length`'s postcondition.
 
-Two rows genuinely need their input bounded, for different reasons. `op_exp`
-is the only handler in the list that does *not* go through `add_sat` at all
---- the `add_pos_of_no_carry` asymmetry showing up in the guest's own source.
-`op_log` does go through `add_sat`, twice, but its *base* (`375 + 375*ntopics`)
-is built by a plain `+`/`*` before either `add_sat` sees it, and that base is
-exactly `0` at `ntopics = 2^64 - 1` for any coefficient --- so it needs the
-bound too, despite the `add_sat`s downstream.
+Four of the seven rows above carry a real side condition, and all four are the
+same shape underneath: a plain `+` sits somewhere in the charge, either ahead
+of whatever `add_sat` is downstream of it or with no `add_sat` at all, and the
+bound is what rules out that `+` wrapping.
+
+* `op_extcodecopy`: `acc + 100 + 3*w` is a plain sum before the outer
+  `add_sat` against `x.0` ever sees it; it wraps at `acc = 2^64 - 100`.
+* `op_log`: its *base* (`375 + 375*ntopics`) is built by a plain `+`/`*`
+  before either of its two `add_sat`s sees it, and that base is exactly `0`
+  at `ntopics = 2^64 - 1` for any coefficient.
+* `op_extcodesize` and `op_exp` have **no** `add_sat` at all --- `acc + 100`
+  and `10 + 50*nb` *are* the whole charge, the `add_pos_of_no_carry` /
+  `linear_cost_pos` asymmetry showing up directly in the guest's own source.
+  `op_extcodesize` needs both halves of `access_gas_cost`'s range: `1 <= acc`
+  for positivity, because `acc` is a callee's result rather than a literal,
+  and `acc <= 3000` for no-carry. `op_exp` only needs the no-carry half
+  (`nb <= 32`), since its base is the literal `10`, already positive by
+  `decide`.
+
+`op_keccak` and the copy handlers need none, because `shiftRight_five_lt`
+bounds their `w` unconditionally; `op_balance`/`op_extcodehash` need none,
+because nothing is added past `access_gas_cost(addr)` itself.
 
 **That leaves the call/create six**, which are different in kind: their cost is
 paid by the child frame, so they need the summed-over-frames measure rather
@@ -945,8 +964,10 @@ than a positivity lemma.
 * **The measure summed over live frames**, since gas moves between them.
 * **`1 <= amount` is per-opcode.** The census settles 70 of 87 handlers. Of
   the 17 dynamically-metered ones, **eleven now have their arithmetic done** —
-  seven with no side condition at all, four modulo one named range fact each
-  (see the table above). The **call/create six** are what is left, and they
+  seven with no side condition at all, four modulo a range fact about one
+  other function each (see the table above; `op_extcodesize`'s is two-sided,
+  both halves from `access_gas_cost_charge_pos`). The **call/create six** are
+  what is left, and they
   are different in kind: their cost is paid by the child frame, so they need
   the summed-over-frames measure rather than a positivity lemma.
 
