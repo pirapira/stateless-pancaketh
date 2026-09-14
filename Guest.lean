@@ -8,7 +8,7 @@ import Guest.Accel
 import Guest.InputDecode
 import Guest.Model
 import Guest.FrameBound
-import Guest.StepCalculus
+import Flapjack.PanValueFfiFuel
 import Guest.Termination
 import Guest.Memory
 import Guest.Expressions

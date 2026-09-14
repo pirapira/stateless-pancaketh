@@ -7,7 +7,7 @@ Status of the three `sorry`s of `Guest/StepBound.lean`:
 | `declaredBlockGasLimit` | **done** — `Guest/InputDecode.lean`, differentially validated against the guest |
 | `guestPancakeStepBound` | open |
 | `guest_terminates_within_step_bound` | open — was **false as stated**; [the obstruction](#the-obstruction) is fixed, the bound itself is what is left |
-| *foundation* | [`Guest/StepCalculus.lean`](#the-step-calculus-gueststepcalculuslean) — fuel monotonicity, without which no two cost lemmas compose |
+| *foundation* | [fuel monotonicity](#the-step-calculus-flapjackpanvalueffifuel) — upstreamed to `Flapjack/PanValueFfiFuel.lean`; without it no two cost lemmas compose |
 
 Two guest bugs were found on the way, both of which made the theorem false as
 stated and both now fixed: [`@trap` returning](#the-obstruction), and
@@ -224,7 +224,7 @@ The two options not taken:
 Option 1 also *helps* the bound: every resource-exhaustion path becomes
 immediate termination rather than a continuation that has to be bounded.
 
-## The step calculus (`Guest/StepCalculus.lean`)
+## The step calculus (`Flapjack.PanValueFfiFuel`)
 
 `TerminatesWithin` asks for *some* fuel at which the run returns. Proving that
 compositionally — a cost lemma per function, combined along the call graph —
@@ -232,17 +232,20 @@ means combining sub-proofs carried at different fuels, and that needs **fuel
 monotonicity**: a successful run is unchanged, same control result *and* same
 step count, at any larger fuel.
 
-Flapjack does not have it. `Flapjack/PanSteppedSemantics.lean` proves the
+Flapjack did not have it. `Flapjack/PanSteppedSemantics.lean` proves the
 `_fst`/`_snd` projections relating the stepped evaluator to the unstepped one,
-and nothing about varying the fuel; `Flapjack/PanValueFfiSemantics.lean` has one
-theorem, `evalPanValueFfiProgramStepped_fst`. So the issue's remark that "the
-stepped semantics is compositional (steps add up), so per-function cost lemmas
-compose" is true of the *definition* — `.seq` returns
-`firstSteps + secondSteps + 1` — but there was no theorem to compose with.
+and nothing about varying the fuel. So the issue's remark that "the stepped
+semantics is compositional (steps add up), so per-function cost lemmas compose"
+was true of the *definition* — `.seq` returns `firstSteps + secondSteps + 1` —
+but there was no theorem to compose with.
 
-`Guest/StepCalculus.lean` supplies it, `sorry`-free:
+This started life here as `Guest/StepCalculus.lean` so the pinned revision did
+not have to move, and is now upstream in `Flapjack/PanValueFfiFuel.lean`
+(flapjack #662) and `Flapjack/PanValueFfiClockFuel.lean` (flapjack #661), both
+`sorry`-free. The local copy is deleted and the pin bumped; flapjack #659 is
+what this closes.
 
-* `progMono`, `callMono` — for the mutually recursive
+* `Flapjack.StepCalculus.progMono`, `callMono` — for the mutually recursive
   `evalPanValueFfiProgSteps` / `evalPanValueFfiCallSteps`, by the
   functional-induction principle `evalPanValueFfiProgSteps.induct` (25 cases;
   18 are the constructors whose body does not mention fuel and close by
@@ -260,9 +263,31 @@ and `.while`'s next iteration also recurses at `fuel`, so fuel bounds syntactic
 nesting and call depth as well as iteration count. Monotonicity is what makes
 that workable — a bound proved for a sub-program stays true in a larger context.
 
-This belongs upstream in flapjack. It lives here so the pinned revision does not
-have to move, in namespace `Guest.StepCalculus` rather than `Flapjack.*` so a
-re-pin cannot collide with it.
+### What the re-pin changed underneath
+
+592 flapjack commits, and only three things reached the termination calculus —
+worth recording, because each is a *tightening* of the model rather than a
+refactor:
+
+1. **A callee's parameters are now checked against its contract.**
+   `evalPanValueFfiCallSteps` gates `bindPanValueParameters` behind
+   `panValueParametersValid`, so every call rule carries that as a hypothesis
+   (`hparams`), in the same style as the return-validity one it already had.
+2. **A body that does not leave the callee is stuck.** `.normal`, `.broke` and
+   `.continued` coming out of a function body are now `none`, where `.normal`
+   used to be passed through. A Pancake body has to `return`, `raise`, or end
+   in a final FFI event. `BodyEscapes` (`Guest/Termination.lean`) names the
+   three outcomes a call can consume, and `callSteps_terminates` takes it as a
+   hypothesis instead of claiming a result for all six.
+3. **Comparison is a class now.** `PanCmp` replaced the bare `LT`/`DecidableRel`
+   pair at the point of use, and RiscV words have their own instance —
+   `lower` unsigned, `less` *signed*. The generic `panCmpOfLt` fallback makes
+   both signed, so a module stating rules over an abstract `α` has to carry
+   `[PanCmp α]` or it silently instantiates to the wrong comparison at `Word`.
+
+Nothing else in the guest needed a change, which is a reasonable signal that
+the `_runs` layer is stated against the semantics rather than against its
+implementation.
 
 ## A second evaluation-failure path: BLAKE2F (fixed)
 

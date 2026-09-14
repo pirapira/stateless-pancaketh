@@ -1,6 +1,6 @@
 import Guest.Model
 import Guest.InputDecode
-import Guest.StepCalculus
+import Flapjack.PanValueFfiFuel
 
 /-!
 # Goal 1: the guest terminates within a constant number of Pancake steps
@@ -66,7 +66,7 @@ def TerminatesWithin (input : InputBlob) (bound : Nat) : Prop :=
   ∃ fuel result steps,
     runGuestStepped input fuel = some (result, steps) ∧ steps ≤ bound
 
-/-- Fuel monotonicity for the guest run, from `Guest.StepCalculus`: a
+/-- Fuel monotonicity for the guest run, from `Flapjack.StepCalculus`: a
 successful run keeps its control result and its step count at any larger fuel.
 Every compositional step bound needs this, to bring sub-runs proved at their own
 fuels to a common one. -/
