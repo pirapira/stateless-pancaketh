@@ -871,7 +871,11 @@ fun 1 access_gas_cost(1 addr) {
 
 `access_gas_cost_runs_warm` and `access_gas_cost_runs_cold` are the two paths
 at fuel `k + 4`, and `access_gas_cost_charge_pos` combines them: whichever
-branch is taken, the function returns a positive word.
+branch is taken, the function returns exactly `100` or `3000` --- the
+`cost = 100 ∨ cost = 3000` conclusion is what `access_plus_warm_pos` and
+`extcodecopy_charge_pos` use below for the `acc <= 3000` side condition on
+`op_extcodesize` / `op_extcodecopy`, rather than a caller re-deriving it from
+`access_gas_cost_runs_warm` / `_runs_cold` by hand.
 
 The two callees remain hypotheses --- `is_warm_address` and `warm_address` are
 `htab` probes, which need the load-factor invariant `2*count <= cap` first.
@@ -898,7 +902,7 @@ That gives the whole `add_sat` row, with no side conditions:
 | `op_keccak` | `add_sat(30 + 6*w, x.0)` | `keccak_charge_pos` | none |
 | `op_calldatacopy`, `op_codecopy`, `op_returndatacopy`, `op_mcopy` | `add_sat(3 + 3*w, x.0)` | `copy_charge_pos` | none |
 | `op_extcodecopy` | `add_sat(acc + 100 + 3*w, x.0)` | `extcodecopy_charge_pos` | `acc <= 3000` |
-| `op_log` | `add_sat(375 + 375*ntopics, x.0)` | `log_charge_pos` | `ntopics <= 4` |
+| `op_log` | `add_sat(add_sat(375 + 375*ntopics, x.0), dc.0)`, or `WORD_MAX` if `dc.1 != 0` | `log_charge_pos` | `ntopics <= 4` |
 | `op_balance`, `op_extcodehash` | `access_gas_cost(addr)` | `access_gas_cost_charge_pos` | none |
 | `op_extcodesize` | `access_gas_cost(addr) + 100` | `access_plus_warm_pos` | `acc <= 3000` |
 | `op_exp` | `10 + 50*nb`, **no `add_sat`** | `exp_charge_pos` | `nb <= 32` |
