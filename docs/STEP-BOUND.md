@@ -830,17 +830,19 @@ the refund never exceeds what was previously charged — which for the five
 
 `charge_gas_decreases_gas` needs `1 <= amount`. The census settles that for 70
 of the 87 handlers, because they charge a literal. The remaining 17 *compute*
-their charge, and reading them off the source they fall into four shapes:
+their charge, and reading them off the source they fall into five shapes:
 
 | shape | handlers |
 |---|---|
-| `add_sat(base + per * w, x.0)` | `op_keccak`, `op_calldatacopy`, `op_codecopy`, `op_extcodecopy`, `op_returndatacopy`, `op_mcopy`, `op_log` |
+| `add_sat(base + per * w, x.0)` | `op_keccak`, `op_calldatacopy`, `op_codecopy`, `op_extcodecopy`, `op_returndatacopy`, `op_mcopy` |
+| `add_sat(add_sat(base + per * ntopics, x.0), dc.0)`, or `WORD_MAX` | `op_log` |
 | `access_gas_cost(addr)`, alone or `+ G_WARM_ACCESS` | `op_balance`, `op_extcodesize`, `op_extcodehash` |
 | `base + per * n` with no `add_sat` | `op_exp` |
 | cost paid by the child frame | `op_create`, `op_call`, `op_callcode`, `op_delegatecall`, `op_create2`, `op_staticcall` |
 
-Three arithmetic lemmas in `Guest/Gas.lean` cover the first three rows, and all
-three say the same thing --- **the base cost survives**:
+Three arithmetic lemmas in `Guest/Gas.lean` cover the first four rows, and all
+three say the same thing --- **the base cost survives** (`op_log`'s row applies
+`add_sat_pos` twice, once per nested `add_sat`):
 
 * `add_sat_ge_left` --- saturating addition never loses its left summand, so
   `add_sat(base, extra)` is at least `base` whatever `extra` is and whether or
@@ -871,11 +873,12 @@ fun 1 access_gas_cost(1 addr) {
 
 `access_gas_cost_runs_warm` and `access_gas_cost_runs_cold` are the two paths
 at fuel `k + 4`, and `access_gas_cost_charge_pos` combines them: whichever
-branch is taken, the function returns exactly `100` or `3000` --- the
-`cost = 100 ∨ cost = 3000` conclusion is what `access_plus_warm_pos` and
-`extcodecopy_charge_pos` use below for the `acc <= 3000` side condition on
-`op_extcodesize` / `op_extcodecopy`, rather than a caller re-deriving it from
-`access_gas_cost_runs_warm` / `_runs_cold` by hand.
+branch is taken, the function returns exactly `100` or `3000`, exported as the
+plain `Nat` bounds `1 <= cost.toNat ∧ cost.toNat <= 3000` rather than the
+disjunction they come from --- both halves `access_plus_warm_pos` and
+`extcodecopy_charge_pos` need below for `op_extcodesize` / `op_extcodecopy`,
+so a caller can hand either bound straight to them instead of re-deriving it
+from `access_gas_cost_runs_warm` / `_runs_cold` by hand.
 
 The two callees remain hypotheses --- `is_warm_address` and `warm_address` are
 `htab` probes, which need the load-factor invariant `2*count <= cap` first.
@@ -904,7 +907,7 @@ That gives the whole `add_sat` row, with no side conditions:
 | `op_extcodecopy` | `add_sat(acc + 100 + 3*w, x.0)` | `extcodecopy_charge_pos` | `acc <= 3000` |
 | `op_log` | `add_sat(add_sat(375 + 375*ntopics, x.0), dc.0)`, or `WORD_MAX` if `dc.1 != 0` | `log_charge_pos` | `ntopics <= 4` |
 | `op_balance`, `op_extcodehash` | `access_gas_cost(addr)` | `access_gas_cost_charge_pos` | none |
-| `op_extcodesize` | `access_gas_cost(addr) + 100` | `access_plus_warm_pos` | `acc <= 3000` |
+| `op_extcodesize` | `access_gas_cost(addr) + 100` | `access_plus_warm_pos` | `1 <= acc <= 3000` |
 | `op_exp` | `10 + 50*nb`, **no `add_sat`** | `exp_charge_pos` | `nb <= 32` |
 
 `op_calldatacopy` and `op_codecopy` are in the copy row because both delegate
@@ -912,15 +915,21 @@ to `copy_from_buffer(3, ...)` (`guest/src/evm.pnk:1344`), which is where the
 charge actually happens — neither handler charges anything itself. That is the
 sort of thing the census flags and a reader has to resolve.
 
-The three side conditions are each a fact about one *other* function, not about
-arithmetic: `acc <= 3000` is `access_gas_cost`'s range (its two return values
-are 100 and 3000, so it follows from the pair of `_runs` lemmas above),
-`ntopics <= 4` is a fact about `op_dispatch`'s opcode decode, and `nb <= 32`
-is `u256_byte_length`'s postcondition.
+The side conditions are each a fact about one *other* function, not about
+arithmetic: `acc <= 3000` (and, for `op_extcodesize`, `1 <= acc` too) is
+`access_gas_cost`'s range, which now follows directly from
+`access_gas_cost_charge_pos` rather than from the pair of `_runs` lemmas above
+--- `extcodecopy_charge_pos` only asks for the upper half, `access_plus_warm_pos`
+asks for both. `ntopics <= 4` is a fact about `op_dispatch`'s opcode decode,
+and `nb <= 32` is `u256_byte_length`'s postcondition.
 
-`op_exp` is the only one that genuinely needs its input bounded, because it is
-the only handler in the list that does *not* go through `add_sat` — the
-`add_pos_of_no_carry` asymmetry showing up in the guest's own source.
+Two rows genuinely need their input bounded, for different reasons. `op_exp`
+is the only handler in the list that does *not* go through `add_sat` at all
+--- the `add_pos_of_no_carry` asymmetry showing up in the guest's own source.
+`op_log` does go through `add_sat`, twice, but its *base* (`375 + 375*ntopics`)
+is built by a plain `+`/`*` before either `add_sat` sees it, and that base is
+exactly `0` at `ntopics = 2^64 - 1` for any coefficient --- so it needs the
+bound too, despite the `add_sat`s downstream.
 
 **That leaves the call/create six**, which are different in kind: their cost is
 paid by the child frame, so they need the summed-over-frames measure rather

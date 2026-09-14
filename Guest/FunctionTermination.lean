@@ -1954,15 +1954,15 @@ theorem access_gas_cost_runs_cold
   exact ⟨_, _, hfinal⟩
 
 /-- **`access_gas_cost` always charges something.** Whichever branch it takes
-it returns exactly `100` (warm) or `3000` (cold), so in particular a positive
-word, which is the `1 <= amount` hypothesis `charge_gas_decreases_gas` wants,
-for the two handlers that charge `access_gas_cost(addr)` directly
-(`op_balance`, `op_extcodehash`). The `cost = 100 ∨ cost = 3000` conclusion is
-what `access_plus_warm_pos` and `extcodecopy_charge_pos` need for
-`op_extcodesize` / `op_extcodecopy`, which charge `access_gas_cost(addr)` plus
-something else, so a caller no longer has to re-case-split on
-`access_gas_cost_runs_warm` / `_runs_cold` by hand to recover the `<= 3000`
-half of that range.
+it returns exactly `100` (warm) or `3000` (cold), so `1 <= cost.toNat` ---
+the hypothesis `charge_gas_decreases_gas` wants, for the two handlers that
+charge `access_gas_cost(addr)` directly (`op_balance`, `op_extcodehash`) ---
+and also `cost.toNat <= 3000`, which `access_plus_warm_pos` and
+`extcodecopy_charge_pos` need for `op_extcodesize` / `op_extcodecopy` (which
+charge `access_gas_cost(addr)` plus something else). Exporting both halves as
+plain `Nat` bounds, rather than the `100 ∨ 3000` disjunction they came from,
+means a caller can hand either one straight to those lemmas instead of
+re-case-splitting on `access_gas_cost_runs_warm` / `_runs_cold` by hand.
 
 The two callees are still hypotheses: `is_warm_address` and `warm_address` are
 `htab` probes, which need the load-factor invariant before they can be
@@ -1993,18 +1993,18 @@ theorem access_gas_cost_charge_pos
         baseAddress topAddress bytesInWord (k + 4) l g m f accessGasCostBody
         (some guestMemoryAccess) c mh
         = some (PanValueFfiControlResult.returned l' g' m' f' [PanValue.word cost], steps)
-      ∧ (cost = BitVec.ofNat 64 100 ∨ cost = BitVec.ofNat 64 3000) := by
+      ∧ 1 ≤ cost.toNat ∧ cost.toNat ≤ 3000 := by
   by_cases hzero : wv = BitVec.ofNat 64 0
   · subst hzero
     obtain ⟨nl, ng, nm, nf, wsteps, hw⟩ := hWarm rfl
     obtain ⟨l', steps, hrun⟩ := access_gas_cost_runs_cold context primitive handler structs
       functions baseAddress topAddress bytesInWord c mh l g cg m cm f cf cl nl ng nm nf
       k csteps wsteps hIsWarm hw hlimit3000
-    exact ⟨l', ng, nm, nf, _, steps, hrun, Or.inr rfl⟩
+    exact ⟨l', ng, nm, nf, _, steps, hrun, by decide, by decide⟩
   · obtain ⟨l', steps, hrun⟩ := access_gas_cost_runs_warm context primitive handler structs
       functions baseAddress topAddress bytesInWord c mh l g cg m cm f cf cl wv k csteps
       (by simpa using hzero) hIsWarm hlimit100
-    exact ⟨l', cg, cm, cf, _, steps, hrun, Or.inl rfl⟩
+    exact ⟨l', cg, cm, cf, _, steps, hrun, by decide, by decide⟩
 
 end
 
