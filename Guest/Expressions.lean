@@ -121,6 +121,31 @@ theorem evalCounted_cmp_locals (op : Cmp) (n1 n2 : VarName) (a b : Word)
     eval_cmp_locals structs l g m baseAddress topAddress bytesInWord op n1 n2 a b h1 h2]
   rfl
 
+/-- A comparison of a local against a literal. The guest's `w != 0` idiom,
+which is how it tests every "did the callee say yes" result --- as in
+`access_gas_cost`'s `if w != 0`. -/
+theorem eval_cmp_local_const (op : Cmp) (n : VarName) (a k : Word)
+    (h : l n = some (PanValue.word a)) :
+    evalPanValueExp structs l g m baseAddress topAddress bytesInWord
+      (Exp.cmp op (Exp.var VarKind.local n) (Exp.const k))
+      (some guestMemoryAccess) = some (PanValue.word (RiscV.panRiscVCmp op a k)) := by
+  rw [evalPanValueExp]
+  rw [eval_var_local structs l g m baseAddress topAddress bytesInWord n,
+    eval_const structs l g m baseAddress topAddress bytesInWord k, h]
+  rfl
+
+theorem evalCounted_cmp_local_const (op : Cmp) (n : VarName) (a k : Word)
+    (h : l n = some (PanValue.word a)) :
+    evalPanValueExpCounted structs l g m baseAddress topAddress bytesInWord
+      (Exp.cmp op (Exp.var VarKind.local n) (Exp.const k))
+      (some guestMemoryAccess)
+      = some (PanValue.word (RiscV.panRiscVCmp op a k),
+          panValueExpStepCost
+            (Exp.cmp op (Exp.var VarKind.local n) (Exp.const k) : Exp Word)) := by
+  rw [evalPanValueExpCounted,
+    eval_cmp_local_const structs l g m baseAddress topAddress bytesInWord op n a k h]
+  rfl
+
 /-- A two-local argument list, which is every call the guest makes with two
 scalar arguments. -/
 theorem evalCounted_args_two_locals (n1 n2 : VarName) (a b : Word)
@@ -132,6 +157,17 @@ theorem evalCounted_args_two_locals (n1 n2 : VarName) (a b : Word)
             ([Exp.var VarKind.local n1, Exp.var VarKind.local n2] : List (Exp Word))) := by
   rw [evalPanValueExpsCounted]
   simp [evalPanValueExps, evalPanValueExp.evalPanValueExps, evalPanValueExp, h1, h2]
+
+/-- A one-local argument list: the shape of `access_gas_cost(addr)`,
+`is_warm_address(addr)` and every other single-scalar call. -/
+theorem evalCounted_args_one_local (n : VarName) (a : Word)
+    (h : l n = some (PanValue.word a)) :
+    evalPanValueExpsCounted structs l g m baseAddress topAddress bytesInWord
+      [Exp.var VarKind.local n] (some guestMemoryAccess)
+      = some ([PanValue.word a],
+          panValueExpsStepCost ([Exp.var VarKind.local n] : List (Exp Word))) := by
+  rw [evalPanValueExpsCounted]
+  simp [evalPanValueExps, evalPanValueExp.evalPanValueExps, evalPanValueExp, h]
 
 section Store
 variable (context : PanValueFfiContext Word) (primitive : PanPrimitiveHandler Word)

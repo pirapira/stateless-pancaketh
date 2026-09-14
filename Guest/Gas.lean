@@ -203,12 +203,18 @@ theorem add_no_carry {a b : Word} (h : a.toNat + b.toNat < 2 ^ 64) :
   simp only [BitVec.toNat_add, Nat.reducePow]
   omega
 
+/-- What `add_sat` computes: the true sum, or `WORD_MAX` if that carried. The
+guest's own overflow test is `s <+ a`, which `add_sat_saturates` shows detects
+exactly the carry. -/
+def addSatOf (a b : Word) : Word :=
+  if (a + b) < a then BitVec.ofNat 64 18446744073709551615 else a + b
+
 /-- What `add_sat` is *for*: its result dominates the true sum, capped at the
 word size. This is the only property `charge_state_gas` needs of it — the
 `tot >=+ amount` test then rules out a borrow in `gl - rem`. -/
 theorem add_sat_ge (a b : Word) :
-    min (a.toNat + b.toNat) (2 ^ 64 - 1)
-      ≤ (if (a + b) < a then (BitVec.ofNat 64 18446744073709551615) else a + b).toNat := by
+    min (a.toNat + b.toNat) (2 ^ 64 - 1) ≤ (addSatOf a b).toNat := by
+  unfold addSatOf
   by_cases hc : (a + b) < a
   · rw [if_pos hc]
     have : (BitVec.ofNat 64 18446744073709551615).toNat = 2 ^ 64 - 1 := by decide
@@ -220,6 +226,167 @@ theorem add_sat_ge (a b : Word) :
       | inr h => exact absurd ((add_sat_saturates a b).mpr h) hc
     rw [add_no_carry hno]
     omega
+
+/-! ## Positivity of a computed charge
+
+`charge_gas_decreases_gas` needs `1 <= amount`. `lake exe opcode-census`
+settles that for 70 of the 87 handlers because they charge a literal; the
+remaining 17 *compute* their charge, and every one of them has one of two
+shapes:
+
+* `add_sat(base + per * w, x.0)` --- `op_keccak`, `op_extcodecopy`,
+  `op_returndatacopy`, `op_mcopy`, `op_log`;
+* a plain sum whose first summand is a function result --- `op_balance`,
+  `op_extcodesize`, `op_extcodehash`, all three `access_gas_cost(addr)`.
+
+Both reduce to **the base cost survives**, which is what these three lemmas
+say. What they do not settle is the *range* facts about the inputs, which are
+per-handler and belong with each handler. -/
+
+/-- **Saturating addition never loses its left summand.** So a charge of the
+form `add_sat(base, extra)` is at least `base`, whatever `extra` is and
+whether or not the sum carried --- which is exactly the point of `add_sat`. -/
+theorem add_sat_ge_left (a b : Word) : a.toNat ≤ (addSatOf a b).toNat := by
+  have h := add_sat_ge a b
+  have ha : a.toNat < 2 ^ 64 := a.isLt
+  omega
+
+/-- **A positive base cost survives `add_sat`.** The `1 <= amount` half of the
+census claim, for every handler that charges through `add_sat`. -/
+theorem add_sat_pos {a b : Word} (h : 1 ≤ a.toNat) : 1 ≤ (addSatOf a b).toNat := by
+  have := add_sat_ge_left a b
+  omega
+
+/-- **A positive base cost survives a plain `+`, given no carry.** Unlike
+`add_sat_pos` this one has a side condition, because a plain `+` wraps: with
+`a = 1` and `b = 2^64 - 1` the sum is `0`. That is the whole reason the guest
+uses `add_sat` wherever the second summand is attacker-influenced. -/
+theorem add_pos_of_no_carry {a b : Word} (hpos : 1 ≤ a.toNat)
+    (hno : a.toNat + b.toNat < 2 ^ 64) : 1 ≤ (a + b).toNat := by
+  rw [add_no_carry hno]
+  omega
+
+/-- **A `base + per * count` charge is positive when the base is.** The shape
+of `op_keccak`'s `G_KECCAK256_BASE + G_KECCAK256_PER_WORD * w` and
+`op_exp`'s `G_EXP_BASE + G_EXP_PER_BYTE * nb`, before `add_sat` sees it. The
+side condition is a genuine obligation, not bookkeeping: `per * count` wraps
+for a large enough `count`, and the bound on `count` is what each handler has
+to supply about its own input. -/
+theorem linear_cost_pos {base per count : Word} (hbase : 1 ≤ base.toNat)
+    (hfits : base.toNat + per.toNat * count.toNat < 2 ^ 64) :
+    1 ≤ (base + per * count).toNat := by
+  have hmul : (per * count).toNat = per.toNat * count.toNat := by
+    rw [BitVec.toNat_mul]
+    omega
+  rw [BitVec.toNat_add, hmul]
+  omega
+
+/-- `Cmp.notEqual` as a proposition: the guest's `w != 0` test. -/
+theorem cmp_notEqual_true_iff {a b : Word} :
+    ((RiscV.panRiscVCmp Cmp.notEqual a b) != 0) = true ↔ a ≠ b := by
+  simp [RiscV.panRiscVCmp]
+  constructor
+  · intro h hab; simp [hab] at h
+  · intro h; simp [h]
+
+/-! ### The word count is bounded by its own shift
+
+`words_of n` is `ceil32(n) >>> 5`, so **whatever it is handed, its result is
+below `2^59`** --- no fact about `ceil32` is needed, and in particular no
+no-wrap assumption about the `n + 31` inside it. That is what makes the
+word-metered charges positive *unconditionally*, which was not obvious before
+looking: the obvious route is to bound `n`, and `n` is attacker-controlled. -/
+
+theorem shiftRight_lt (x : Word) (n : Nat) (h : n ≤ 64) :
+    (x >>> n).toNat < 2 ^ (64 - n) := by
+  rw [BitVec.toNat_ushiftRight, Nat.shiftRight_eq_div_pow]
+  have hx : x.toNat < 2 ^ 64 := x.isLt
+  have hsplit : (2 : Nat) ^ 64 = 2 ^ n * 2 ^ (64 - n) := by
+    rw [← Nat.pow_add]
+    congr 1
+    omega
+  refine Nat.div_lt_of_lt_mul ?_
+  rw [← hsplit]
+  exact hx
+
+theorem shiftRight_five_lt (x : Word) : (x >>> 5).toNat < 2 ^ 59 :=
+  shiftRight_lt x 5 (by omega)
+
+/-- **The word-metered base cost is positive.** `base + perWord * words_of(n)`,
+for any `base` that is positive and not absurdly large and any small
+per-word rate. Covers `op_keccak`'s `30 + 6 * w`, the copy handlers' `3 + 3 * w`
+and `op_extcodecopy`'s `acc + 100 + 3 * w`. -/
+theorem word_metered_cost_pos {base perWord x : Word}
+    (hpos : 1 ≤ base.toNat) (hsmall : base.toNat < 2 ^ 62) (hper : perWord.toNat ≤ 8) :
+    1 ≤ (base + perWord * (x >>> 5)).toNat := by
+  have hw := shiftRight_five_lt x
+  refine linear_cost_pos hpos ?_
+  have : perWord.toNat * (x >>> 5).toNat ≤ 8 * 2 ^ 59 :=
+    Nat.mul_le_mul (by omega) (by omega)
+  omega
+
+/-- ... and it survives the `add_sat` against the memory-extension cost, which
+is the form the handlers actually charge. -/
+theorem word_metered_charge_pos {base perWord x extra : Word}
+    (hpos : 1 ≤ base.toNat) (hsmall : base.toNat < 2 ^ 62) (hper : perWord.toNat ≤ 8) :
+    1 ≤ (addSatOf (base + perWord * (x >>> 5)) extra).toNat :=
+  add_sat_pos (word_metered_cost_pos hpos hsmall hper)
+
+/-- `op_keccak`: `add_sat(G_KECCAK256_BASE + G_KECCAK256_PER_WORD * w, x.0)`,
+positive with no side condition at all. -/
+theorem keccak_charge_pos (x extra : Word) :
+    1 ≤ (addSatOf (BitVec.ofNat 64 30 + BitVec.ofNat 64 6 * (x >>> 5)) extra).toNat :=
+  word_metered_charge_pos (by decide) (by decide) (by decide)
+
+/-- `op_returndatacopy` and `op_mcopy`:
+`add_sat(3 + G_COPY_PER_WORD * w, x.0)`, likewise unconditional. -/
+theorem copy_charge_pos (x extra : Word) :
+    1 ≤ (addSatOf (BitVec.ofNat 64 3 + BitVec.ofNat 64 3 * (x >>> 5)) extra).toNat :=
+  word_metered_charge_pos (by decide) (by decide) (by decide)
+
+/-- `op_extcodecopy`: the base is `acc + G_WARM_ACCESS`, with `acc` coming from
+`access_gas_cost`, so the bound on it comes from that function rather than
+from a literal. -/
+theorem extcodecopy_charge_pos {acc x extra : Word} (hacc : acc.toNat ≤ 3000) :
+    1 ≤ (addSatOf (acc + BitVec.ofNat 64 100 + BitVec.ofNat 64 3 * (x >>> 5))
+      extra).toNat := by
+  refine word_metered_charge_pos ?_ ?_ (by decide)
+  · rw [BitVec.toNat_add]
+    have : (BitVec.ofNat 64 100 : Word).toNat = 100 := by decide
+    omega
+  · rw [BitVec.toNat_add]
+    have : (BitVec.ofNat 64 100 : Word).toNat = 100 := by decide
+    omega
+
+/-- `op_log`: `add_sat(G_LOG_BASE + G_LOG_TOPIC * ntopics, x.0)`. `ntopics` is
+read off the opcode byte, so its bound is a fact about `op_dispatch` rather
+than about arithmetic --- hence the hypothesis. -/
+theorem log_charge_pos {ntopics extra : Word} (h : ntopics.toNat ≤ 4) :
+    1 ≤ (addSatOf (BitVec.ofNat 64 375 + BitVec.ofNat 64 375 * ntopics) extra).toNat := by
+  refine add_sat_pos (linear_cost_pos (by decide) ?_)
+  have h375 : (BitVec.ofNat 64 375 : Word).toNat = 375 := by decide
+  have : (375 : Nat) * ntopics.toNat ≤ 375 * 4 := Nat.mul_le_mul_left _ h
+  rw [h375]
+  omega
+
+/-- `op_exp`: `G_EXP_BASE + G_EXP_PER_BYTE * nb`, with **no** `add_sat` --- so
+unlike the copy handlers this one genuinely needs its input bounded, and
+`nb <= 32` is a fact about `u256_byte_length`. -/
+theorem exp_charge_pos {nb : Word} (h : nb.toNat ≤ 32) :
+    1 ≤ (BitVec.ofNat 64 10 + BitVec.ofNat 64 50 * nb).toNat := by
+  refine linear_cost_pos (by decide) ?_
+  have h10 : (BitVec.ofNat 64 10 : Word).toNat = 10 := by decide
+  have h50 : (BitVec.ofNat 64 50 : Word).toNat = 50 := by decide
+  have : (50 : Nat) * nb.toNat ≤ 50 * 32 := Nat.mul_le_mul_left _ h
+  rw [h10, h50]
+  omega
+
+/-- `op_extcodesize`: `access_gas_cost(addr) + G_WARM_ACCESS`. -/
+theorem access_plus_warm_pos {acc : Word} (hpos : 1 ≤ acc.toNat)
+    (hsmall : acc.toNat ≤ 3000) : 1 ≤ (acc + BitVec.ofNat 64 100).toNat := by
+  refine add_pos_of_no_carry hpos ?_
+  have : (BitVec.ofNat 64 100 : Word).toNat = 100 := by decide
+  omega
 
 /-- `Cmp.notLower` is false exactly when the charge exceeds what is there —
 the spill path's entry condition, and the complement of
