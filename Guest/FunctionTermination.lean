@@ -1799,9 +1799,11 @@ end
 /-! ## `access_gas_cost`: the first computed charge proved positive
 
 `lake exe opcode-census` leaves 17 handlers whose charge is computed rather
-than literal. Three of them --- `op_balance`, `op_extcodesize`,
-`op_extcodehash` --- charge `access_gas_cost(addr)`, so they share one
-obligation, and this is it. -/
+than literal. Two of them --- `op_balance` and `op_extcodehash` --- charge
+`access_gas_cost(addr)` directly, so they share one obligation, and this is
+it. (`op_extcodesize` charges `access_gas_cost(addr) + G_WARM_ACCESS`, one
+plain-sum layer further out, so it needs `access_plus_warm_pos` in
+`Guest/Gas.lean` as well.) -/
 
 /-- The body of `access_gas_cost`, verbatim from `Guest.guestAst`. -/
 def accessGasCostBody : Prog Word :=
@@ -1952,10 +1954,15 @@ theorem access_gas_cost_runs_cold
   exact ⟨_, _, hfinal⟩
 
 /-- **`access_gas_cost` always charges something.** Whichever branch it takes
-it returns a positive word --- 100 warm, 3000 cold --- which is the `1 <= amount`
-hypothesis `charge_gas_decreases_gas` wants, for the three handlers that charge
-`access_gas_cost(addr)` directly (`op_balance`, `op_extcodesize`,
-`op_extcodehash`).
+it returns exactly `100` (warm) or `3000` (cold), so `1 <= cost.toNat` ---
+the hypothesis `charge_gas_decreases_gas` wants, for the two handlers that
+charge `access_gas_cost(addr)` directly (`op_balance`, `op_extcodehash`) ---
+and also `cost.toNat <= 3000`, which `access_plus_warm_pos` and
+`extcodecopy_charge_pos` need for `op_extcodesize` / `op_extcodecopy` (which
+charge `access_gas_cost(addr)` plus something else). Exporting both halves as
+plain `Nat` bounds, rather than the `100 ∨ 3000` disjunction they came from,
+means a caller can hand either one straight to those lemmas instead of
+re-case-splitting on `access_gas_cost_runs_warm` / `_runs_cold` by hand.
 
 The two callees are still hypotheses: `is_warm_address` and `warm_address` are
 `htab` probes, which need the load-factor invariant before they can be
@@ -1986,18 +1993,18 @@ theorem access_gas_cost_charge_pos
         baseAddress topAddress bytesInWord (k + 4) l g m f accessGasCostBody
         (some guestMemoryAccess) c mh
         = some (PanValueFfiControlResult.returned l' g' m' f' [PanValue.word cost], steps)
-      ∧ 1 ≤ cost.toNat := by
+      ∧ 1 ≤ cost.toNat ∧ cost.toNat ≤ 3000 := by
   by_cases hzero : wv = BitVec.ofNat 64 0
   · subst hzero
     obtain ⟨nl, ng, nm, nf, wsteps, hw⟩ := hWarm rfl
     obtain ⟨l', steps, hrun⟩ := access_gas_cost_runs_cold context primitive handler structs
       functions baseAddress topAddress bytesInWord c mh l g cg m cm f cf cl nl ng nm nf
       k csteps wsteps hIsWarm hw hlimit3000
-    exact ⟨l', ng, nm, nf, _, steps, hrun, by decide⟩
+    exact ⟨l', ng, nm, nf, _, steps, hrun, by decide, by decide⟩
   · obtain ⟨l', steps, hrun⟩ := access_gas_cost_runs_warm context primitive handler structs
       functions baseAddress topAddress bytesInWord c mh l g cg m cm f cf cl wv k csteps
       (by simpa using hzero) hIsWarm hlimit100
-    exact ⟨l', cg, cm, cf, _, steps, hrun, by decide⟩
+    exact ⟨l', cg, cm, cf, _, steps, hrun, by decide, by decide⟩
 
 end
 

@@ -231,17 +231,26 @@ theorem add_sat_ge (a b : Word) :
 
 `charge_gas_decreases_gas` needs `1 <= amount`. `lake exe opcode-census`
 settles that for 70 of the 87 handlers because they charge a literal; the
-remaining 17 *compute* their charge, and every one of them has one of two
-shapes:
+remaining 17 *compute* their charge. Six of them --- `op_create`, `op_call`,
+`op_callcode`, `op_delegatecall`, `op_create2`, `op_staticcall` --- are paid by
+the child frame and need the summed-over-frames measure rather than an
+arithmetic lemma. The other 11 have one of four shapes:
 
-* `add_sat(base + per * w, x.0)` --- `op_keccak`, `op_extcodecopy`,
-  `op_returndatacopy`, `op_mcopy`, `op_log`;
-* a plain sum whose first summand is a function result --- `op_balance`,
-  `op_extcodesize`, `op_extcodehash`, all three `access_gas_cost(addr)`.
+* `add_sat(base + per * w, x.0)` --- `op_keccak`, `op_calldatacopy`,
+  `op_codecopy`, `op_extcodecopy`, `op_returndatacopy`, `op_mcopy`;
+* `add_sat(add_sat(base + per * ntopics, x.0), dc.0)`, or `WORD_MAX` if the
+  data-cost multiply `mul64x64(G_LOG_DATA_PER_BYTE, n)` overflowed ---
+  `op_log`, the same shape one `add_sat` deeper;
+* a plain sum whose first summand is a function result --- `op_balance` and
+  `op_extcodehash` charge `access_gas_cost(addr)` directly; `op_extcodesize`
+  charges `access_gas_cost(addr) + G_WARM_ACCESS`, one plain-sum layer
+  further out;
+* `base + per * n` with no `add_sat` --- `op_exp`.
 
-Both reduce to **the base cost survives**, which is what these three lemmas
-say. What they do not settle is the *range* facts about the inputs, which are
-per-handler and belong with each handler. -/
+All four reduce to **the base cost survives**, which is what these lemmas say
+(`add_sat_pos` applies twice for `op_log`'s extra layer). What they do not
+settle is the *range* facts about the inputs, which are per-handler and belong
+with each handler. -/
 
 /-- **Saturating addition never loses its left summand.** So a charge of the
 form `add_sat(base, extra)` is at least `base`, whatever `extra` is and
@@ -281,6 +290,19 @@ theorem linear_cost_pos {base per count : Word} (hbase : 1 ≤ base.toNat)
   rw [BitVec.toNat_add, hmul]
   omega
 
+/-- **`linear_cost_pos`, stated against a bound on `count` instead of the exact
+product.** Every caller of `linear_cost_pos` in this file has a concrete upper
+bound `B` on its `count` rather than the product's own no-wrap fact, so this
+is the form they actually use: `op_exp`'s `nb <= 32`, `op_log`'s
+`ntopics <= 4`, and `word_metered_cost_pos`'s `words_of n < 2 ^ 59` (from
+`shiftRight_five_lt`) below. Supply `B` and a single `by decide`/`omega` in
+place of naming the multiplication out and rewriting the literals by hand. -/
+theorem linear_cost_pos_of_bound {base per count : Word} {B : Nat}
+    (hbase : 1 ≤ base.toNat) (hcount : count.toNat ≤ B)
+    (hfits : base.toNat + per.toNat * B < 2 ^ 64) :
+    1 ≤ (base + per * count).toNat :=
+  linear_cost_pos hbase (by have := Nat.mul_le_mul_left per.toNat hcount; omega)
+
 /-- `Cmp.notEqual` as a proposition: the guest's `w != 0` test. -/
 theorem cmp_notEqual_true_iff {a b : Word} :
     ((RiscV.panRiscVCmp Cmp.notEqual a b) != 0) = true ↔ a ≠ b := by
@@ -318,12 +340,8 @@ per-word rate. Covers `op_keccak`'s `30 + 6 * w`, the copy handlers' `3 + 3 * w`
 and `op_extcodecopy`'s `acc + 100 + 3 * w`. -/
 theorem word_metered_cost_pos {base perWord x : Word}
     (hpos : 1 ≤ base.toNat) (hsmall : base.toNat < 2 ^ 62) (hper : perWord.toNat ≤ 8) :
-    1 ≤ (base + perWord * (x >>> 5)).toNat := by
-  have hw := shiftRight_five_lt x
-  refine linear_cost_pos hpos ?_
-  have : perWord.toNat * (x >>> 5).toNat ≤ 8 * 2 ^ 59 :=
-    Nat.mul_le_mul (by omega) (by omega)
-  omega
+    1 ≤ (base + perWord * (x >>> 5)).toNat :=
+  linear_cost_pos_of_bound hpos (Nat.le_of_lt (shiftRight_five_lt x)) (by omega)
 
 /-- ... and it survives the `add_sat` against the memory-extension cost, which
 is the form the handlers actually charge. -/
@@ -358,28 +376,33 @@ theorem extcodecopy_charge_pos {acc x extra : Word} (hacc : acc.toNat ≤ 3000) 
     have : (BitVec.ofNat 64 100 : Word).toNat = 100 := by decide
     omega
 
-/-- `op_log`: `add_sat(G_LOG_BASE + G_LOG_TOPIC * ntopics, x.0)`. `ntopics` is
-read off the opcode byte, so its bound is a fact about `op_dispatch` rather
-than about arithmetic --- hence the hypothesis. -/
-theorem log_charge_pos {ntopics extra : Word} (h : ntopics.toNat ≤ 4) :
-    1 ≤ (addSatOf (BitVec.ofNat 64 375 + BitVec.ofNat 64 375 * ntopics) extra).toNat := by
-  refine add_sat_pos (linear_cost_pos (by decide) ?_)
-  have h375 : (BitVec.ofNat 64 375 : Word).toNat = 375 := by decide
-  have : (375 : Nat) * ntopics.toNat ≤ 375 * 4 := Nat.mul_le_mul_left _ h
-  rw [h375]
-  omega
+/-- `op_log`: `cost = add_sat(G_LOG_BASE + G_LOG_TOPIC * ntopics, x.0)`, then
+either `cost = WORD_MAX` if the data-cost multiply
+`dc = mul64x64(G_LOG_DATA_PER_BYTE, n)` overflowed (`dc.1 != 0`), or
+`cost = add_sat(cost, dc.0)`. The `WORD_MAX` branch is `1 ≤ WORD_MAX.toNat` by
+`decide` and is not part of this lemma, which --- like every sibling lemma
+here --- is stated over the bare term for the branch that does not short
+circuit: two nested `add_sat`s over the same base, so `add_sat_pos` applies
+twice. The data-cost step (`dc0`, `extra`) needs no side condition of its own,
+same as `add_sat_ge_left` gives for free.
+
+`ntopics` still needs a bound, though: `G_LOG_BASE + G_LOG_TOPIC * ntopics` is
+a plain `+`/`*`, not `add_sat`, and for *any* coefficient `k`,
+`k + k * (2 ^ 64 - 1) = k * 2 ^ 64 = 0` in `Word` --- so at `ntopics = 2 ^ 64 - 1`
+the base itself is exactly `0`, and `add_sat_pos` has nothing to survive on.
+Unlike the shift-bounded word counts above, this is not unconditionally
+positive; `ntopics <= 4` is what `op_dispatch` actually guarantees. -/
+theorem log_charge_pos {ntopics extra dc0 : Word} (h : ntopics.toNat ≤ 4) :
+    1 ≤ (addSatOf (addSatOf (BitVec.ofNat 64 375 + BitVec.ofNat 64 375 * ntopics) extra)
+      dc0).toNat :=
+  add_sat_pos (add_sat_pos (linear_cost_pos_of_bound (by decide) h (by decide)))
 
 /-- `op_exp`: `G_EXP_BASE + G_EXP_PER_BYTE * nb`, with **no** `add_sat` --- so
 unlike the copy handlers this one genuinely needs its input bounded, and
 `nb <= 32` is a fact about `u256_byte_length`. -/
 theorem exp_charge_pos {nb : Word} (h : nb.toNat ≤ 32) :
-    1 ≤ (BitVec.ofNat 64 10 + BitVec.ofNat 64 50 * nb).toNat := by
-  refine linear_cost_pos (by decide) ?_
-  have h10 : (BitVec.ofNat 64 10 : Word).toNat = 10 := by decide
-  have h50 : (BitVec.ofNat 64 50 : Word).toNat = 50 := by decide
-  have : (50 : Nat) * nb.toNat ≤ 50 * 32 := Nat.mul_le_mul_left _ h
-  rw [h10, h50]
-  omega
+    1 ≤ (BitVec.ofNat 64 10 + BitVec.ofNat 64 50 * nb).toNat :=
+  linear_cost_pos_of_bound (by decide) h (by decide)
 
 /-- `op_extcodesize`: `access_gas_cost(addr) + G_WARM_ACCESS`. -/
 theorem access_plus_warm_pos {acc : Word} (hpos : 1 ≤ acc.toNat)
