@@ -65,19 +65,23 @@ as `trap=<code>`.
 * `cake` (prebuilt, bootstrapped CakeML compiler with Pancake): `~/cakeml/developers/bin/cake`
   (or set `CAKE=`). Version pinned by the `cakeml` submodule.
 * `flapjack` (Lean 4 port of the Pancake compiler, `lake exe flapjack-compile`):
-  version pinned by the `flapjack` submodule. Not yet able to build the guest.
-  At the pinned commit the smoke test `guest/src/hello.pnk` compiles and links
+  version pinned by the `flapjack` submodule (currently the head of
+  [flapjack#1019](https://github.com/pirapira/flapjack/pull/1019)). Not yet able
+  to build the guest. The smoke test `guest/src/hello.pnk` compiles and links
   against `guest/runtime/start.S`, but the compiled `main` differs from `cake`'s
   and faults under Spike
   ([flapjack#1022](https://github.com/pirapira/flapjack/issues/1022); causes:
   [flapjack#1020](https://github.com/pirapira/flapjack/issues/1020) constants
   truncated to 12 bits, [flapjack#1021](https://github.com/pirapira/flapjack/issues/1021)
-  FFI calls lowered as raw `ecall`). The full guest stops at `sha256_block`;
-  9 of 797 functions still exceed the Word-to-Stack temporary pool
-  ([flapjack#1015](https://github.com/pirapira/flapjack/issues/1015)), and
-  [flapjack#1017](https://github.com/pirapira/flapjack/issues/1017) tracks the
-  remaining diagnostics gaps. The most informative way to re-test is
-  `flapjack-compile --hex guest/build/guest.pp.pnk`.
+  FFI calls lowered as raw `ecall`). Compiling the full guest takes about 35 s
+  in every mode, almost all of it in three list operations of the register
+  allocator ([flapjack#1033](https://github.com/pirapira/flapjack/issues/1033));
+  the default mode additionally re-runs a second allocation for functions with
+  calls ([flapjack#1032](https://github.com/pirapira/flapjack/issues/1032)).
+  Re-test with `flapjack-compile --hex guest/build/guest.pp.pnk`. Remaining
+  lowering gaps are tracked in
+  [flapjack#1015](https://github.com/pirapira/flapjack/issues/1015) and
+  diagnostics in [flapjack#1017](https://github.com/pirapira/flapjack/issues/1017).
 * `riscv64-unknown-elf-{as,ld}` (Ubuntu `binutils-riscv64-unknown-elf`).
 * `spike_run`: `SPIKE_SRC=~/riscv-isa-sim evm-asm/scripts/spike/build.sh`
   (needs a built riscv-isa-sim and `libssl-dev`).
