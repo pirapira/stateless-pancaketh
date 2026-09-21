@@ -159,7 +159,9 @@ pipeline against a real chain block (the devnet-7 block from issue #54),
 see [docs/ZISK-PROVE-REAL-BLOCK.md](docs/ZISK-PROVE-REAL-BLOCK.md). For the
 same pipeline with the guest compiled by `flapjack` instead of `cake`
 (including the correctness comparison between the two compilers' output),
-see [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md).
+see [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md), and for the
+real-block pipeline with the flapjack-compiled guest, see
+[docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md](docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md).
 
 ## Testing
 
