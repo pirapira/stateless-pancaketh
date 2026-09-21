@@ -3,7 +3,9 @@
 # Pancake source -> RISC-V ELF obeying the evm-asm stateless-guest contract.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 CAKE="${CAKE:-$HOME/cakeml/developers/bin/cake}"
+COMPILER="${COMPILER:-cake}"
 AS="${RISCV_AS:-riscv64-unknown-elf-as}"
 LD="${RISCV_LD:-riscv64-unknown-elf-ld}"
 CPP="${CPP:-cpp}"
@@ -18,7 +20,22 @@ if [[ "${ACCEL:-0}" == "1" ]]; then
   cpp_debug_args+=(-DZISK_ACCEL)   # ZisK accelerator CSRs via FFI stubs in runtime/start.S
 fi
 "$CPP" "${cpp_debug_args[@]}" -P -w -nostdinc -I "$HERE/src" -x c "$src" | grep -v '^#' > "$b.pp.pnk"
-"$CAKE" --pancake --target=riscv < "$b.pp.pnk" > "$b.cake.S"
+# COMPILER=cake (default) uses the bootstrapped/prebuilt cake binary; COMPILER=flapjack
+# uses the Lean 4 port (lake exe flapjack-compile, pinned by the flapjack lake dependency)
+# instead, emitting the same cake-style assembly frame consumed below.
+case "$COMPILER" in
+  cake)
+    "$CAKE" --pancake --target=riscv < "$b.pp.pnk" > "$b.cake.S"
+    ;;
+  flapjack)
+    ppabs="$(cd "$(dirname "$b.pp.pnk")" && pwd)/$(basename "$b.pp.pnk")"
+    (cd "$ROOT" && lake exe flapjack-compile --assembly "$ppabs") > "$b.cake.S"
+    ;;
+  *)
+    echo "build.sh: unknown COMPILER='$COMPILER' (want 'cake' or 'flapjack')" >&2
+    exit 1
+    ;;
+esac
 # cake's .S uses C-preprocessor macros (cdecl, makesym); run cpp first.
 "$CPP" -P -x assembler-with-cpp "$b.cake.S" > "$b.cake.s"
 "$AS" -march=rv64imac -mno-relax -o "$b.cake.o" "$b.cake.s"

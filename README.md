@@ -65,23 +65,19 @@ as `trap=<code>`.
 * `cake` (prebuilt, bootstrapped CakeML compiler with Pancake): `~/cakeml/developers/bin/cake`
   (or set `CAKE=`). Version pinned by the `cakeml` submodule.
 * `flapjack` (Lean 4 port of the Pancake compiler, `lake exe flapjack-compile`):
-  version pinned by the `flapjack` submodule (currently the head of
-  [flapjack#1019](https://github.com/pirapira/flapjack/pull/1019)). Not yet able
-  to build the guest. The smoke test `guest/src/hello.pnk` compiles and links
-  against `guest/runtime/start.S`, but the compiled `main` differs from `cake`'s
-  and faults under Spike
-  ([flapjack#1022](https://github.com/pirapira/flapjack/issues/1022); causes:
-  [flapjack#1020](https://github.com/pirapira/flapjack/issues/1020) constants
-  truncated to 12 bits, [flapjack#1021](https://github.com/pirapira/flapjack/issues/1021)
-  FFI calls lowered as raw `ecall`). Compiling the full guest takes about 35 s
-  in every mode, almost all of it in three list operations of the register
-  allocator ([flapjack#1033](https://github.com/pirapira/flapjack/issues/1033));
-  the default mode additionally re-runs a second allocation for functions with
-  calls ([flapjack#1032](https://github.com/pirapira/flapjack/issues/1032)).
-  Re-test with `flapjack-compile --hex guest/build/guest.pp.pnk`. Remaining
-  lowering gaps are tracked in
-  [flapjack#1015](https://github.com/pirapira/flapjack/issues/1015) and
-  diagnostics in [flapjack#1017](https://github.com/pirapira/flapjack/issues/1017).
+  version pinned by the `flapjack` *lake* dependency in `lakefile.toml` (see
+  `lake-manifest.json` for the exact commit; the `flapjack` git submodule is a
+  separate, uninitialized checkout used only by other tooling, not by
+  `lake`). As of that pin, `flapjack-compile` builds the full guest (software
+  and `ACCEL=1`) and its output is instruction-for-instruction identical to
+  `cake`'s: same bytes, same Spike/ziskemu step counts, same 40
+  static-analysis warnings, on the 30-fixture baseline, and
+  `tools/eest-run.py` reports `30/30 PASS(full)` against the Python oracle
+  for the flapjack build. Select it with `COMPILER=flapjack guest/build.sh
+  ...` (`guest/build.sh`'s default, `COMPILER=cake`, is unchanged); see
+  [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md) for a full
+  ziskemu/`cargo-zisk prove` run and the correctness comparison against
+  `cake`.
 * `riscv64-unknown-elf-{as,ld}` (Ubuntu `binutils-riscv64-unknown-elf`).
 * `spike_run`: `SPIKE_SRC=~/riscv-isa-sim evm-asm/scripts/spike/build.sh`
   (needs a built riscv-isa-sim and `libssl-dev`).
@@ -160,7 +156,10 @@ For running the guest under `ziskemu` and generating an actual ZisK STARK
 proof of an execution (small example plus an EEST test fixture, with recorded
 timings), see [docs/ZISK-PROVE.md](docs/ZISK-PROVE.md). For the same
 pipeline against a real chain block (the devnet-7 block from issue #54),
-see [docs/ZISK-PROVE-REAL-BLOCK.md](docs/ZISK-PROVE-REAL-BLOCK.md).
+see [docs/ZISK-PROVE-REAL-BLOCK.md](docs/ZISK-PROVE-REAL-BLOCK.md). For the
+same pipeline with the guest compiled by `flapjack` instead of `cake`
+(including the correctness comparison between the two compilers' output),
+see [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md).
 
 ## Testing
 
