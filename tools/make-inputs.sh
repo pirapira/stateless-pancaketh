@@ -9,6 +9,17 @@ cd "$ROOT"
 TAG="$(cat "$ROOT/evm-asm/scripts/eest-fixture-tag.txt")"
 FX="${EEST_FIXTURES_DIR:-$ROOT/evm-asm/gen-out/eest-fixtures/$TAG/fixtures/fixtures}"
 
+ensure_fixtures() {
+  [[ -d "$FX" ]] && return 0
+  echo "fixtures not found at $FX; fetching $TAG..." >&2
+  "$ROOT/evm-asm/scripts/eest-fetch-fixtures.sh" "$TAG"
+  [[ -d "$FX" ]] || {
+    echo "fixtures still not found at $FX after fetching $TAG" \
+      "(see evm-asm/gen-out/eest-fixtures/$TAG/.not-available if present)" >&2
+    exit 1
+  }
+}
+
 usage() {
   cat <<'USAGE'
 Usage:
@@ -43,10 +54,7 @@ if [[ "${1:-}" == "--all" ]]; then
   if [[ "$OUT" == /* ]]; then
     OUT="$(python3 -c 'import os, sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' "$OUT" "$ROOT")"
   fi
-  [[ -d "$FX" ]] || {
-    echo "fixtures not found at $FX (run evm-asm/scripts/eest-fetch-fixtures.sh $TAG)" >&2
-    exit 1
-  }
+  ensure_fixtures
   if [[ -f "$OUT/manifest.tsv" ]]; then
     echo "manifest already exists; reusing inputs in $OUT (no reconversion)"
     exit 0
@@ -60,7 +68,7 @@ fi
 
 N="${1:-50}"; shift || true
 OUT="${OUT_DIR:-$ROOT/work/inputs}"
-[[ -d "$FX" ]] || { echo "fixtures not found at $FX (run evm-asm/scripts/eest-fetch-fixtures.sh $TAG)" >&2; exit 1; }
+ensure_fixtures
 rm -rf "$OUT"; mkdir -p "$OUT"
 python3 "$ROOT/evm-asm/scripts/eest-stateless-to-input.py" --fixtures-dir "$FX" --out-dir "$OUT" --limit "$N" "$@"
 echo "manifest: $OUT/manifest.tsv"
