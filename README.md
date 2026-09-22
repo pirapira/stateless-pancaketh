@@ -50,16 +50,17 @@ unchanged, as an alternative to evm-asm's hand-written/codegen RV64 guest.
   [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md) for a full
   ziskemu/`cargo-zisk prove` run.
 * `riscv64-unknown-elf-{as,ld}` (Ubuntu `binutils-riscv64-unknown-elf`).
-* `spike_run`, a custom driver built on top of Spike (`riscv-isa-sim`).
-  Clone and build `riscv-isa-sim` once (needs `libboost-all-dev` and
+* `spike_run`, a custom driver built on top of Spike (`riscv-isa-sim`,
+  checked out as this repo's `riscv-isa-sim` submodule — see "Quick start"
+  below to initialize it). Build it once (needs `libboost-all-dev` and
   `device-tree-compiler`), then build `spike_run` against it (needs
-  `libssl-dev`):
+  `libssl-dev`); `evm-asm/scripts/spike/build.sh` finds the submodule at its
+  default `SPIKE_SRC` path, no override needed:
 
   ```bash
-  git clone https://github.com/riscv-software-src/riscv-isa-sim.git ~/riscv-isa-sim
-  mkdir -p ~/riscv-isa-sim/build
-  (cd ~/riscv-isa-sim/build && ../configure && make -j"$(nproc)")
-  SPIKE_SRC=~/riscv-isa-sim evm-asm/scripts/spike/build.sh
+  mkdir -p riscv-isa-sim/build
+  (cd riscv-isa-sim/build && ../configure && make -j"$(nproc)")
+  evm-asm/scripts/spike/build.sh
   ```
 * ZisK toolchain via `ziskup` (https://ziskup.zisk.tech): `ziskup -v 0.18.0
   --provingkey`, giving `~/.zisk/bin/ziskemu` for step counts and
@@ -68,20 +69,22 @@ unchanged, as an alternative to evm-asm's hand-written/codegen RV64 guest.
 
 ## Quick start
 
-`tools/make-inputs.sh` needs the `evm-asm` submodule (for the EEST fixture
-tag and converter); if it was not fetched with the initial clone (e.g.
-`git clone --recurse-submodules`), initialize it first:
+This repo's `evm-asm` submodule (EEST fixture tag and converter) and
+`riscv-isa-sim` submodule (Spike) are needed; if they were not fetched with
+the initial clone (e.g. `git clone --recurse-submodules`), initialize both:
 
 ```bash
-git submodule update --init evm-asm
+git submodule update --init evm-asm riscv-isa-sim
 ```
 
 `tools/eest-run.py` uses Spike by default and needs
-`evm-asm/scripts/spike/spike_run` built first (see "Toolchain" above for the
-one-time `riscv-isa-sim` build this depends on):
+`evm-asm/scripts/spike/spike_run` built first (see "Toolchain" above for
+the `riscv-isa-sim` build prerequisites):
 
 ```bash
-SPIKE_SRC=~/riscv-isa-sim evm-asm/scripts/spike/build.sh
+mkdir -p riscv-isa-sim/build
+(cd riscv-isa-sim/build && ../configure && make -j"$(nproc)")
+evm-asm/scripts/spike/build.sh
 ```
 
 ```bash
