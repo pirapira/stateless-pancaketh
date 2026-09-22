@@ -224,7 +224,7 @@ new main baseline, regenerate it with the same `bench.py` command using
 
 ## Plan
 
-1. Port the stateless guest to Pancake, compiled by a formally verified compiler.
+1. Port the Pancake compiler, formally verified in HOL, to Lean (flapjack).
 2. Prove a more useful version of "source terminates ⇒ RISC-V terminates," aware of step counts.
 3. Bound the number of source steps under 200M gas.
 4. Bound memory usage under 200M gas.
