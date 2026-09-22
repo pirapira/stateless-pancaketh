@@ -13,11 +13,11 @@ flapjack's output was checked for correctness against the guest's original
 toolchain separately; see
 [docs/FLAPJACK-CORRECTNESS.md](FLAPJACK-CORRECTNESS.md).
 
-Follow `README.md`'s "Quick start" first. This document assumes it has
-already been run: submodules initialized, `lake` and `spike_run` built,
-and `tools/make-inputs.sh 50` plus `tools/build_both.sh` already producing
-`work/inputs/manifest.tsv`, `guest/build/guest.elf`, and
-`guest/build/guest-accel.elf`.
+Follow [README.md's "Quick start"](../README.md#quick-start) first. This
+document assumes it has already been run: submodules initialized, `lake`
+and `spike_run` built, and `tools/make-inputs.sh 50` plus
+`tools/build_both.sh` already producing `work/inputs/manifest.tsv`,
+`guest/build/guest.elf`, and `guest/build/guest-accel.elf`.
 
 ## Prerequisites
 
