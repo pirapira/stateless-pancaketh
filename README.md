@@ -1,10 +1,8 @@
 # stateless-pancaketh
 
-A stateless Ethereum guest implementation written in
-[Pancake](https://cakeml.org/pancake), an imperative language whose compiler
-is formally verified in HOL4 (as part of CakeML) and, via
-[flapjack](https://github.com/pirapira/flapjack), currently being ported to
-Lean 4 — run as a RISC-V zkVM guest.
+Ethereum stateless guest in [Pancake](https://cakeml.org/pancake). Pancake is
+a programming language with a formally verified compiler (currently being
+ported to [Lean](https://github.com/pirapira/flapjack)).
 
 ## Goal
 
@@ -14,10 +12,6 @@ execution-specs' Amsterdam `run_stateless_guest`) to Pancake source in
 evm-asm's `stateless_guest` (input at `0x40000000`, output at `0xa0010000`,
 halt via `ecall a7=93`), so evm-asm's `spike_run` and `ziskemu` can run it
 unchanged, as an alternative to evm-asm's hand-written/codegen RV64 guest.
-
-Trust story: the Pancake compiler is verified end-to-end (Pancake semantics →
-RISC-V machine code), so the remaining verification obligation is
-"Pancake source ≡ SpecRef", instead of proving a hand-written RV64 program.
 
 ## Status
 

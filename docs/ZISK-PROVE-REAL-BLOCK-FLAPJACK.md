@@ -7,11 +7,12 @@ block `115260`, the same block used for the gist comparison in
 [issue #54](https://github.com/pirapira/stateless-pancaketh/issues/54)
 (`M5: reproduce the gist comparison on devnet-7 block 115260`), with the
 guest compiled by `flapjack` (the Lean 4 port of the Pancake compiler,
-`lake exe flapjack-compile`) instead of `cake`. See
-[docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) for the compiler-swap
-mechanics (`COMPILER=flapjack guest/build.sh ...`), the guest-build
-prerequisites, and the correctness comparison against `cake` on the
-30-fixture baseline; this document only adds the real-block-specific steps.
+`lake exe flapjack-compile`) instead of `cake`. Follow
+[docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) first: it covers the
+guest-build prerequisites, the compiler-swap mechanics
+(`COMPILER=flapjack guest/build.sh ...`), and the correctness comparison
+against `cake` on the 30-fixture baseline. This document only adds the
+real-block-specific steps below.
 
 Because of the size of a full block (568,669-byte stateless input, vs. a few
 KB for an EEST fixture), this uses the **accelerated** guest
@@ -34,6 +35,17 @@ hour. `nice` is used throughout, per the same CPU-load note as
   result"), and the `eest-stateless-to-input.py --verify-input-parity`
   conversion step (below) independently reproduces that same
   expected-output hex from the archive.
+
+## Prerequisites
+
+Everything in [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md)'s
+"Prerequisites" section (flapjack as a `lake` dependency,
+`riscv64-unknown-elf-{as,ld}` and `cpp`, and the ZisK 0.18.0 toolchain via
+`ziskup`), plus:
+
+* `curl` and a `tar` with zstd support (Ubuntu: `zstd`) to fetch and extract
+  the block archive.
+* Python 3 for `evm-asm/scripts/eest-stateless-to-input.py`.
 
 ## Fixture
 
