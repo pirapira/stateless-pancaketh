@@ -50,8 +50,17 @@ unchanged, as an alternative to evm-asm's hand-written/codegen RV64 guest.
   [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md) for a full
   ziskemu/`cargo-zisk prove` run.
 * `riscv64-unknown-elf-{as,ld}` (Ubuntu `binutils-riscv64-unknown-elf`).
-* `spike_run`: `SPIKE_SRC=~/riscv-isa-sim evm-asm/scripts/spike/build.sh`
-  (needs a built riscv-isa-sim and `libssl-dev`).
+* `spike_run`, a custom driver built on top of Spike (`riscv-isa-sim`).
+  Clone and build `riscv-isa-sim` once (needs `libboost-all-dev` and
+  `device-tree-compiler`), then build `spike_run` against it (needs
+  `libssl-dev`):
+
+  ```bash
+  git clone https://github.com/riscv-software-src/riscv-isa-sim.git ~/riscv-isa-sim
+  mkdir -p ~/riscv-isa-sim/build
+  (cd ~/riscv-isa-sim/build && ../configure && make -j"$(nproc)")
+  SPIKE_SRC=~/riscv-isa-sim evm-asm/scripts/spike/build.sh
+  ```
 * ZisK toolchain via `ziskup` (https://ziskup.zisk.tech): `ziskup -v 0.18.0
   --provingkey`, giving `~/.zisk/bin/ziskemu` for step counts and
   `~/.zisk/bin/cargo-zisk` for STARK proofs.
@@ -65,6 +74,14 @@ tag and converter); if it was not fetched with the initial clone (e.g.
 
 ```bash
 git submodule update --init evm-asm
+```
+
+`tools/eest-run.py` uses Spike by default and needs
+`evm-asm/scripts/spike/spike_run` built first (see "Toolchain" above for the
+one-time `riscv-isa-sim` build this depends on):
+
+```bash
+SPIKE_SRC=~/riscv-isa-sim evm-asm/scripts/spike/build.sh
 ```
 
 ```bash
