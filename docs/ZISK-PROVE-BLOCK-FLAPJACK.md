@@ -1,4 +1,4 @@
-# Prove a real chain block on ZisK, guest compiled by flapjack
+# Prove a chain block on ZisK, guest compiled by flapjack
 
 This does the same `ziskemu`-run-plus-proof pipeline as
 [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) against an actual
@@ -12,14 +12,8 @@ guest compiled by `flapjack` (the Lean 4 port of the Pancake compiler,
 guest-build prerequisites. This document only adds the real-block-specific
 steps below.
 
-Because of the size of a full block (568,669-byte stateless input, vs. a few
-KB for an EEST fixture), this uses the **accelerated** guest
-(`guest-accel.elf`, `ACCEL=1` build) rather than the software guest: issue
-#54 already measured the software guest at `6,152,130,715` ZisK steps versus
-`256,756,696` for the accelerated guest on this same block (a 23.96x
-difference), and proving cost scales with step count, so proving the
-software guest here would take on the order of a day rather than half an
-hour. `nice` is used throughout, per the same CPU-load note as
+This uses the **accelerated** guest (`guest-accel.elf`, `ACCEL=1` build).
+`nice` is used throughout, per the same CPU-load note as
 [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md).
 
 The flapjack-compiled `guest-accel.elf` was checked for correctness on this
@@ -112,6 +106,7 @@ Final proof:
 ```bash
 time nice -n 15 cargo-zisk prove -e guest/build/guest-accel.elf -i "$INPUT" \
   -l -o work/proof-block115260.json -y
+cargo-zisk verify -p work/proof-block115260.json
 ```
 
 Recorded result: **127 AIR instances** (63× Main, 16× Mem, 10× BinaryAdd,
@@ -153,9 +148,7 @@ knowing if reproducing this on a busy shared machine.
   synthetic EEST test case — see
   [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) for the
   smaller/faster fixture-based walkthrough.
-* The *software* guest was not proved here — based on issue #54's ~24x
-  larger step count for the software guest on this block, it would
-  plausibly take on the order of hours.
+* The *software* guest was not proved here.
 * `work/gist/archive`, `work/gist/inputs`, and the proof file are left out
   of version control (large, regenerable); this doc is the reproducible
   record.

@@ -35,7 +35,7 @@ unchanged, as an alternative to evm-asm's hand-written/codegen RV64 guest.
 * **A real chain block.** The guest reproduces a real `glamsterdam-devnet-7`
   block (`115260`, 65.3M gas) exactly, matching the network's recorded
   output byte-for-byte, on both the `cake`- and `flapjack`-compiled guests —
-  see [docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md](docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md)
+  see [docs/ZISK-PROVE-BLOCK-FLAPJACK.md](docs/ZISK-PROVE-BLOCK-FLAPJACK.md)
   and [issue #54](https://github.com/pirapira/stateless-pancaketh/issues/54).
 
 ## Toolchain
@@ -126,7 +126,7 @@ Next steps:
   [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md).
 * For the same pipeline against a real chain block (the devnet-7 block from
   issue #54), see
-  [docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md](docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md).
+  [docs/ZISK-PROVE-BLOCK-FLAPJACK.md](docs/ZISK-PROVE-BLOCK-FLAPJACK.md).
 * For the correctness comparison against the guest's original toolchain,
   see [docs/FLAPJACK-CORRECTNESS.md](docs/FLAPJACK-CORRECTNESS.md).
 

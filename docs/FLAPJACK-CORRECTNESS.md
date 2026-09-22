@@ -5,7 +5,7 @@ bootstrapped/prebuilt `cake` binary this guest was originally built with
 (`cake --pancake --target=riscv`, from the HOL4-verified CakeML compiler).
 Before treating flapjack's ziskemu/proving numbers as meaningful,
 [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) and
-[docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md](ZISK-PROVE-REAL-BLOCK-FLAPJACK.md)
+[docs/ZISK-PROVE-BLOCK-FLAPJACK.md](ZISK-PROVE-BLOCK-FLAPJACK.md)
 both check the flapjack-compiled guest against a fresh `cake`-compiled one
 first. This document records those checks; neither of the two documents
 above needs `cake` for anything else.
@@ -62,7 +62,7 @@ Versions used:
 
 ## Real chain block (`glamsterdam-devnet-7` #115260)
 
-Before proving `docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md`'s recorded run, the
+Before proving `docs/ZISK-PROVE-BLOCK-FLAPJACK.md`'s recorded run, the
 flapjack-compiled `guest-accel.elf` was checked against a fresh
 `cake`-compiled `guest-accel.elf` (same `guest/src`) on this exact block:
 
