@@ -115,6 +115,14 @@ types with `--only` when running the slower software reference cases.
 
 ## Quick start
 
+`tools/make-inputs.sh` needs the `evm-asm` submodule (for the EEST fixture
+tag and converter); if it was not fetched with the initial clone (e.g.
+`git clone --recurse-submodules`), initialize it first:
+
+```bash
+git submodule update --init evm-asm
+```
+
 ```bash
 tools/make-inputs.sh 50                       # work/inputs/manifest.tsv
 tools/build_both.sh                            # software + accelerated ELFs
