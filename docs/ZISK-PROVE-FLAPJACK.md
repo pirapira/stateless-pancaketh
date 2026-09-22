@@ -1,39 +1,41 @@
 # Run the flapjack-compiled guest under ziskemu and produce a ZisK proof
 
-This walks through emulating the guest with `ziskemu` (for step counts) and
-generating an actual STARK proof of a real execution with `cargo-zisk
-prove`, with the guest compiled by `flapjack` (the Lean 4 port of the
-Pancake compiler, `lake exe flapjack-compile`). It starts with a tiny
-example (`hello.pnk`) to validate the pipeline cheaply, then does the same
-with an EEST test fixture (a synthetic single-block, single-transaction
-test case, not a chain block).
+This walks through emulating the guest with `ziskemu` — for step counts,
+and as a cheap preliminary check before the much more expensive
+`cargo-zisk prove` — and then generating an actual STARK proof of a real
+execution with `cargo-zisk prove`, with the guest compiled by `flapjack`
+(the Lean 4 port of the Pancake compiler, `lake exe flapjack-compile`). It
+starts with a tiny example (`hello.pnk`) to validate the pipeline cheaply,
+then does the same with an EEST test fixture (a synthetic single-block,
+single-transaction test case, not a chain block).
 
 flapjack's output was checked for correctness against the guest's original
 toolchain separately; see
 [docs/FLAPJACK-CORRECTNESS.md](FLAPJACK-CORRECTNESS.md).
 
+Follow `README.md`'s "Quick start" first. This document assumes it has
+already been run: submodules initialized, `lake` and `spike_run` built,
+and `tools/make-inputs.sh 50` plus `tools/build_both.sh` already producing
+`work/inputs/manifest.tsv`, `guest/build/guest.elf`, and
+`guest/build/guest-accel.elf`.
+
 ## Prerequisites
 
-* `flapjack` is a `lake` dependency of this repo (`lakefile.toml`'s
-  `[[require]] name = "flapjack"`), pinned by commit; no separate checkout or
-  bootstrap step is needed beyond `lake build` (which `lake exe
-  flapjack-compile` triggers on first use). `guest/build.sh` uses it by
-  default.
-* `riscv64-unknown-elf-{as,ld}` and `cpp` (Ubuntu `binutils-riscv64-unknown-elf`).
-* A ZisK toolchain installed via `ziskup` (https://ziskup.zisk.tech):
-  `ziskup -v 0.18.0 --provingkey`, then `cargo-zisk check-setup` (it
-  regenerates constant-tree files for a new key on first run, which takes a
-  couple of minutes). Two `ziskup` gotchas hit while preparing this
-  document, worth knowing before you run it:
-  * `ziskup --provingkey` with no `-v` installs the latest release first,
-    silently swapping out a pinned older `ziskemu`/`cargo-zisk`. Always pass
-    `-v <version>`.
-  * The installer's "Configuring CPU binaries" step is unreliable when
-    switching versions in an existing `~/.zisk`: it can leave `ziskemu`
-    updated but `cargo-zisk` on the old version (`cargo-zisk --version` will
-    show it). If so, the correctly-versioned binary is already on disk as
-    `~/.zisk/bin/cargo-zisk-cpu`; `cp ~/.zisk/bin/cargo-zisk-cpu
-    ~/.zisk/bin/cargo-zisk` fixes it without a full reinstall.
+A ZisK toolchain installed via `ziskup` (https://ziskup.zisk.tech):
+`ziskup -v 0.18.0 --provingkey`, then `cargo-zisk check-setup` (it
+regenerates constant-tree files for a new key on first run, which takes a
+couple of minutes). Two `ziskup` gotchas hit while preparing this
+document, worth knowing before you run it:
+
+* `ziskup --provingkey` with no `-v` installs the latest release first,
+  silently swapping out a pinned older `ziskemu`/`cargo-zisk`. Always pass
+  `-v <version>`.
+* The installer's "Configuring CPU binaries" step is unreliable when
+  switching versions in an existing `~/.zisk`: it can leave `ziskemu`
+  updated but `cargo-zisk` on the old version (`cargo-zisk --version` will
+  show it). If so, the correctly-versioned binary is already on disk as
+  `~/.zisk/bin/cargo-zisk-cpu`; `cp ~/.zisk/bin/cargo-zisk-cpu
+  ~/.zisk/bin/cargo-zisk` fixes it without a full reinstall.
 
 Versions used for the run recorded below:
 
@@ -51,24 +53,22 @@ CPU-minutes of user time over 5-6 minutes wall-clock). Run `cargo-zisk
 prove`/`execute` under `nice` so it does not starve other work on a shared
 machine, as done in every command below.
 
-## Fetch fixtures and build the guest with flapjack
+## Build `hello.elf`
+
+Quick start already builds `guest/build/guest.elf` and
+`guest/build/guest-accel.elf`, and its `work/inputs/manifest.tsv` (50
+fixtures) already includes fixture 00000: `tools/make-inputs.sh`'s fixture
+selection is sorted, so `--limit 1` and `--limit 50` agree on which fixture
+comes first. The one artifact `tools/build_both.sh` doesn't build is this
+walkthrough's small example:
 
 ```bash
-TAG="$(cat evm-asm/scripts/eest-fixture-tag.txt)"
-evm-asm/scripts/eest-fetch-fixtures.sh "$TAG"   # or copy an existing evm-asm/gen-out
-tools/make-inputs.sh 1                          # work/inputs: just fixture 00000
-mkdir -p guest/build
-COMPILER=flapjack guest/build.sh guest/src/hello.pnk guest/build/hello.elf
-COMPILER=flapjack guest/build.sh guest/src/main.pnk guest/build/guest.elf
-ACCEL=1 COMPILER=flapjack guest/build.sh guest/src/main.pnk guest/build/guest-accel.elf
+guest/build.sh guest/src/hello.pnk guest/build/hello.elf
 ```
 
-`guest/build.sh` for `main.pnk` with `COMPILER=flapjack` takes about 40s
-(`flapjack-compile` + `as` + `ld`) the first time in a session (it includes
-compiling flapjack itself via `lake`; a warm `lake` build cache brings the
-compile step itself down to under a second); `hello.pnk` builds in well under
-a second. `flapjack-compile` emits 40 static-analysis warnings on
-`main.pnk` (non-fatal), which is expected and not a build failure.
+It builds in well under a second. (The 40 static-analysis warnings
+`flapjack-compile` prints while Quick start builds `main.pnk` are
+non-fatal and expected, not specific to this walkthrough.)
 
 ## Small example: `hello.pnk`
 

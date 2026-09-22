@@ -29,9 +29,8 @@ exact block before proving; see
 ## Prerequisites
 
 Everything in [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md)'s
-"Prerequisites" section (flapjack as a `lake` dependency,
-`riscv64-unknown-elf-{as,ld}` and `cpp`, and the ZisK 0.18.0 toolchain via
-`ziskup`), plus:
+"Prerequisites" section (the ZisK 0.18.0 toolchain via `ziskup`; that
+document also assumes README's "Quick start" has already been run), plus:
 
 * `curl` and a `tar` with zstd support (Ubuntu: `zstd`) to fetch and extract
   the block archive.
