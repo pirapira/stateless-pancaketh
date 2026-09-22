@@ -70,8 +70,7 @@ unchanged, as an alternative to evm-asm's hand-written/codegen RV64 guest.
 ## Quick start
 
 This repo's `evm-asm` submodule (EEST fixture tag and converter) and
-`riscv-isa-sim` submodule (Spike) are needed; if they were not fetched with
-the initial clone (e.g. `git clone --recurse-submodules`), initialize both:
+`riscv-isa-sim` submodule (Spike) are needed; initialize them if missing:
 
 ```bash
 git submodule update --init evm-asm riscv-isa-sim
