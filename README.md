@@ -40,6 +40,17 @@ unchanged, as an alternative to evm-asm's hand-written/codegen RV64 guest.
 
 ## Toolchain
 
+* `lake` (Lean 4's build tool), via `elan` (the Lean version manager):
+
+  ```bash
+  curl https://elan.lean-lang.org/elan-init.sh -sSf | sh
+  ```
+
+  `elan` puts `lake`/`lean` on `PATH` (`~/.elan/bin`; open a new shell if
+  they're not found right after installing) and, on the first `lake`
+  invocation in this repo, fetches the toolchain pinned by
+  `lean-toolchain` (`leanprover/lean4:v4.33.1`) automatically — no
+  separate Lean install needed.
 * `flapjack` (Lean 4 port of the Pancake compiler, `lake exe flapjack-compile`):
   version pinned by the `flapjack` *lake* dependency in `lakefile.toml` (see
   `lake-manifest.json` for the exact commit; the `flapjack` git submodule is a
@@ -87,6 +98,10 @@ mkdir -p riscv-isa-sim/build
 make -C riscv-isa-sim/build -j"$(nproc)"
 evm-asm/scripts/spike/build.sh
 ```
+
+`tools/build_both.sh` compiles the guest with `flapjack` by default, which
+needs `lake` on `PATH` (see "Toolchain" above to install it via `elan` if
+it isn't already):
 
 ```bash
 tools/make-inputs.sh 50                       # work/inputs/manifest.tsv
