@@ -1,8 +1,8 @@
 # stateless-pancaketh
 
 Ethereum stateless guest in [Pancake](https://cakeml.org/pancake). Pancake is
-a programming language with a formally verified compiler (currently being
-ported to [Lean](https://github.com/pirapira/flapjack)).
+a programming language with a formally verified compiler (currently
+[being ported](https://github.com/pirapira/flapjack) to Lean).
 
 ## Goal
 
@@ -114,6 +114,14 @@ The checker also covers pairing and field-tower records; select those record
 types with `--only` when running the slower software reference cases.
 
 ## Quick start
+
+`tools/make-inputs.sh` needs the `evm-asm` submodule (for the EEST fixture
+tag and converter); if it was not fetched with the initial clone (e.g.
+`git clone --recurse-submodules`), initialize it first:
+
+```bash
+git submodule update --init evm-asm
+```
 
 ```bash
 tools/make-inputs.sh 50                       # work/inputs/manifest.tsv
