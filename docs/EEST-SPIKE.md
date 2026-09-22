@@ -5,7 +5,9 @@ This is the complete `tests-zkevm` stateless-fixture run, not the small
 with the fixture's `statelessOutputBytes` and reports root, success, and tail
 regions. The command below uses the accelerated guest under Spike: `ACCEL=1`
 selects the same precompile acceleration points that Spike implements, while
-the runner itself remains Spike-only. No ziskemu is needed.
+the runner itself remains Spike-only. No ziskemu is needed. The guest is
+built with `flapjack` (`guest/build.sh`'s default `COMPILER`); pass
+`COMPILER=cake` instead to use a bootstrapped/prebuilt CakeML `cake` binary.
 
 ## Prerequisites
 
@@ -17,31 +19,27 @@ sudo apt-get install -y build-essential binutils-riscv64-unknown-elf \
   device-tree-compiler libboost-all-dev libssl-dev python3 git curl tar
 ```
 
-Also provide a bootstrapped CakeML `cake` executable built from the pinned
-`cakeml` submodule. Set `CAKE` if it is not at
-`cakeml/developers/bin/cake`.
+`flapjack` is a `lake` dependency of this repo (`lakefile.toml`), pinned by
+commit; no separate checkout or bootstrap step is needed beyond `lake
+build` (triggered automatically on first use).
 
 ## Fresh checkout and pinned Spike backend
 
-The recorded run used these revisions:
+The recorded run below (see "Recorded result") used these revisions; the
+`riscv-isa-sim` pin still applies to a fresh run today, since Spike itself
+is unaffected by which Pancake compiler builds the guest:
 
 | Component | Revision / tag |
 | --- | --- |
-| `stateless-pancaketh` | `1489defbef04e9c22be83152ad53af145f2094b8` |
 | `evm-asm` submodule | `f6b685c3d1d26a4850c908480261ac4903afc566` |
-| `cakeml` submodule | `e65826102d9be83d411fa0390e5794a3682d82f4` |
 | `riscv-isa-sim` | `55b4658dbf574ba0b714083ec436ce2cb5be1998` |
 | EEST fixtures | `tests-zkevm@v0.6.2` |
 
-Clone the repository and initialize exactly the submodule revisions recorded
-above:
+Clone the repository:
 
 ```bash
-RESULT_COMMIT=1489defbef04e9c22be83152ad53af145f2094b8
 git clone --recurse-submodules https://github.com/pirapira/stateless-pancaketh.git
 cd stateless-pancaketh
-git checkout "$RESULT_COMMIT"
-git submodule update --init --recursive
 ```
 
 Build the pinned Spike driver. `SPIKE_SRC` may point at an existing
@@ -79,18 +77,15 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 RESULT_COMMIT="$(git rev-parse HEAD)"
 TAG="$(tr -d '[:space:]' < evm-asm/scripts/eest-fixture-tag.txt)"
-CAKE="${CAKE:-$REPO_ROOT/cakeml/developers/bin/cake}"
 SPIKE_RUN="${SPIKE_RUN:-$REPO_ROOT/evm-asm/scripts/spike/spike_run}"
 JOBS="${EEST_JOBS:-32}"
 RUN_ROOT="$REPO_ROOT/work/eest-spike-$RESULT_COMMIT"
 
-test "$RESULT_COMMIT" = 1489defbef04e9c22be83152ad53af145f2094b8
-test -x "$CAKE"
 test -x "$SPIKE_RUN"
 
 evm-asm/scripts/eest-fetch-fixtures.sh "$TAG"
 tools/make-inputs.sh --all "$RUN_ROOT/inputs"
-CAKE="$CAKE" ACCEL=1 guest/build.sh guest/src/main.pnk \
+ACCEL=1 guest/build.sh guest/src/main.pnk \
   "$RUN_ROOT/guest-accel.elf"
 
 set +e
@@ -125,7 +120,11 @@ inspection and reruns with `--from-json` or `--labels`.
 
 Run on stateless-pancaketh commit
 `1489defbef04e9c22be83152ad53af145f2094b8`, with 32 Spike workers and the
-accelerated guest:
+accelerated guest, built with `cake` (the only compiler `guest/build.sh`
+supported at that commit; today's default is `flapjack`, which builds an
+instruction-for-instruction identical guest — see the "Status" section of
+`README.md` and [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) for
+the correctness comparison):
 
 ```text
 records: 26104
@@ -136,4 +135,6 @@ eest-run exit: 0
 
 There were no fixture failures. The commit-qualified run directory and result
 JSON are the reproducible record for this passing revision; the tracked
-`work/sweep/all.json.gz` is not used by this command.
+`work/sweep/all.json.gz` is not used by this command. This full-corpus sweep
+has not yet been independently re-run with `flapjack`; the procedure above
+builds with it by default for anyone reproducing this today.

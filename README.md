@@ -1,87 +1,66 @@
 # stateless-pancaketh
 
-Experiment: an Ethereum **stateless guest** written in
-[Pancake](https://cakeml.org/pancake) (an imperative language with a formally verified compiler)
-and run as a RISC-V zkVM guest, as an alternative
-route to evm-asm's hand-written/codegen RV64 guest.
+A stateless Ethereum guest implementation written in
+[Pancake](https://cakeml.org/pancake), an imperative language whose compiler
+is formally verified in HOL4 (as part of CakeML) and, via
+[flapjack](https://github.com/pirapira/flapjack), currently being ported to
+Lean 4 — run as a RISC-V zkVM guest.
 
 ## Goal
 
-1. Port `evm-asm/EvmAsm/Stateless/SpecRef` (the pure-Lean functional port of
-   execution-specs' Amsterdam `run_stateless_guest`) to Pancake source in
-   `guest/src/`.
-2. Compile it with the **verified** `cake --pancake --target=riscv` compiler
-   to an ELF that obeys the same guest contract as evm-asm's
-   `stateless_guest` (input at `0x40000000`, output at `0xa0010000`, halt via
-   `ecall a7=93`), so evm-asm's `spike_run` and `ziskemu` can run it unchanged.
-3. Run it against the EEST `tests-zkevm` fixtures (same fixture selection as
-   `evm-asm/scripts/eest-specref-check.sh`) and compare the output regions
-   root / succ / tail exactly like that harness.
-4. Measure instruction counts (`spike_run` minstret, ziskemu steps) and
-   compare with the evm-asm codegen guest and reth, in the style of
-   https://gist.github.com/pirapira/a5cc0088ade5ac31fcbed3b562e3e9b1 .
+Port `evm-asm/EvmAsm/Stateless/SpecRef` (the pure-Lean functional port of
+execution-specs' Amsterdam `run_stateless_guest`) to Pancake source in
+`guest/src/`, compiled to a RISC-V ELF that obeys the same guest contract as
+evm-asm's `stateless_guest` (input at `0x40000000`, output at `0xa0010000`,
+halt via `ecall a7=93`), so evm-asm's `spike_run` and `ziskemu` can run it
+unchanged, as an alternative to evm-asm's hand-written/codegen RV64 guest.
 
 Trust story: the Pancake compiler is verified end-to-end (Pancake semantics →
 RISC-V machine code), so the remaining verification obligation is
 "Pancake source ≡ SpecRef", instead of proving a hand-written RV64 program.
 
-## Layout
+## Status
 
-| Path | Ports (SpecRef Lean module) |
-|------|------|
-| `guest/src/lib/{mem,arith,htab}.pnk` | bump allocator, division, hash tables (Python dict/set stand-ins) |
-| `guest/src/lib/{sha256,keccak}.pnk` | `Crypto.lean` |
-| `guest/src/lib/u256.pnk` | 256-bit arithmetic (`InstructionsCore.lean` U256 semantics) |
-| `guest/src/lib/rlp.pnk` | `EvmAsm/EL/RLP` (strict decode, encode) |
-| `guest/src/lib/secp256k1.pnk` | `Secp256k1Recover.lean` |
-| `guest/src/ssz.pnk` | `SszCodec.lean`, `Ssz.lean` (decode + hash_tree_root) |
-| `guest/src/header.pnk` | `Stateless.lean` headers, `BlocksRlp.lean`, `Gas.lean` blob/base-fee rules |
-| `guest/src/mpt.pnk` | `WitnessState.lean`, `IncrementalMpt*.lean` (node DB, trie read/write, roots) |
-| `guest/src/tx.pnk` | `Transactions.lean` (5 tx types, signing hashes, intrinsic gas, sender recovery) |
-| `guest/src/state.pnk` | `StateTracker.lean`, `WitnessReads.lean` (journal-based rollback) |
-| `guest/src/bal.pnk` | `BlockAccessLists.lean` (EIP-7928 builder, encoding, hash) |
-| `guest/src/evm.pnk`, `evm_calls.pnk` | `Vm.lean`, `InstructionsCore/Env.lean`, `Interpreter.lean` (frames, opcodes, calls, creates, EIP-7702) |
-| `guest/src/precompiles*.pnk` | `Precompiles*.lean` |
-| `guest/src/block.pnk` | bloom, receipts, requests, `WitnessStateRoot.lean` post-state root |
-| `guest/src/fork.pnk` | `SeamShell.lean`, `Fork.lean`, `ElExecute.lean` (pre-checks, apply_body, post checks) |
-| `guest/src/main.pnk` | `Guest.lean` `run_stateless_guest` |
-| `guest/runtime/start.S` | bare-metal shim (`_start`, `cml_exit`, FFI `halt`/`trap`) |
-| `guest/build.sh`, `tools/build_both.sh` | software or software + `ZISK_ACCEL` builds |
-| `guest/test/`, `tools/check_*.sh`, `tools/gen_*_vectors.py` | unit tests against Python oracles |
-| `tools/eest-run.py` | EEST manifest runner (spike_run or `--ziskemu`), root/succ/tail classification, step counts |
-| `tools/spike_prof/` | spike variant with a PC histogram + per-function aggregation |
-| `guest/PANCAKE-NOTES.md` | Pancake language rules and project conventions (read before editing `.pnk`) |
-
-Debug bytes in the output region (past the 69-byte result, ignored by the harness):
-`[69]` failure class, `[70]` failure code (see `throw` sites in `fork.pnk`), and
-`[100]` the last stage marker. Fatal guest traps use `[32] = 0xEE`, `[33]` as the
-reason code, `[40]` as the heap pointer, and `[48]` as the journal count. Trap
-codes are 1 allocation exhausted, 2 division by zero, 3 base-fee overflow, 4
-`jset` journal full, and 5 `jdel` journal full, 6 frame-memory arena exhausted, 7 frame-scratch arena exhausted; `tools/eest-run.py` displays them
-as `trap=<code>`.
+* **Same RISC-V code from both compilers.** `flapjack` (the Lean 4 port of
+  Pancake, `lake exe flapjack-compile`) builds the full guest and produces
+  code that is instruction-for-instruction identical to the original
+  HOL-verified `cake --pancake --target=riscv` compiler's output: same
+  bytes, same Spike/ziskemu step counts, same static-analysis warnings, and
+  `30/30 PASS(full)` for each, on the 30-fixture correctness baseline. See
+  [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md).
+* **EEST fixtures.** The guest passes the entire `tests-zkevm` corpus: a
+  pinned, reproducible run ([docs/EEST-SPIKE.md](docs/EEST-SPIKE.md)) with
+  the accelerated guest reports 26,104/26,104 records (26,096 `PASS(full)`,
+  8 expected `PASS(malformed)` rejects), 0 failures. Day-to-day CI
+  (`tools/check_all.sh`) ratchets a sampled 838-fixture baseline
+  (`tools/eest-baseline.json`) on every change instead of the full corpus;
+  it currently shows 0 unexpected failures, plus 2 allowed `ERROR`s from two
+  BLS12-381 G2-MSM fixtures that exceed the Spike runner's step cap on the
+  unaccelerated software guest only (a harness limitation, not an output
+  mismatch).
+* **A real chain block.** The guest reproduces a real `glamsterdam-devnet-7`
+  block (`115260`, 65.3M gas) exactly, matching the network's recorded
+  output byte-for-byte, on both the `cake`- and `flapjack`-compiled guests —
+  see [docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md](docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md)
+  and [issue #54](https://github.com/pirapira/stateless-pancaketh/issues/54).
 
 ## Toolchain
 
-* `cake` (prebuilt, bootstrapped CakeML compiler with Pancake): `~/cakeml/developers/bin/cake`
-  (or set `CAKE=`). Version pinned by the `cakeml` submodule.
 * `flapjack` (Lean 4 port of the Pancake compiler, `lake exe flapjack-compile`):
   version pinned by the `flapjack` *lake* dependency in `lakefile.toml` (see
   `lake-manifest.json` for the exact commit; the `flapjack` git submodule is a
   separate, uninitialized checkout used only by other tooling, not by
-  `lake`). As of that pin, `flapjack-compile` builds the full guest (software
-  and `ACCEL=1`) and its output is instruction-for-instruction identical to
-  `cake`'s: same bytes, same Spike/ziskemu step counts, same 40
-  static-analysis warnings, on the 30-fixture baseline, and
-  `tools/eest-run.py` reports `30/30 PASS(full)` against the Python oracle
-  for the flapjack build. Select it with `COMPILER=flapjack guest/build.sh
-  ...` (`guest/build.sh`'s default, `COMPILER=cake`, is unchanged); see
+  `lake`). `guest/build.sh` uses it by default (triggering `lake build` on
+  first use); see the "Status" section above for the correctness comparison
+  against the original HOL-verified compiler, and
   [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md) for a full
-  ziskemu/`cargo-zisk prove` run and the correctness comparison against
-  `cake`.
+  ziskemu/`cargo-zisk prove` run.
 * `riscv64-unknown-elf-{as,ld}` (Ubuntu `binutils-riscv64-unknown-elf`).
 * `spike_run`: `SPIKE_SRC=~/riscv-isa-sim evm-asm/scripts/spike/build.sh`
   (needs a built riscv-isa-sim and `libssl-dev`).
-* `ziskemu` (`~/.zisk/bin/ziskemu`) for ZisK step counts.
+* ZisK toolchain via `ziskup` (https://ziskup.zisk.tech): `ziskup -v 0.18.0
+  --provingkey`, giving `~/.zisk/bin/ziskemu` for step counts and
+  `~/.zisk/bin/cargo-zisk` for STARK proofs.
 * Python oracle: `uv run --directory evm-asm/execution-specs python ...`.
 
 ## Tools
@@ -196,49 +175,13 @@ new main baseline, regenerate it with the same `bench.py` command using
 `work/bench/baseline-main.json`, force-add that ignored file with
 `git add -f`, and paste the comparator output into the performance PR.
 
-## Lean proofs
+## Plan
 
-The repo is also a Lake project (`lakefile.toml`, library `Guest`) depending
-on [flapjack](https://github.com/pirapira/flapjack), the Lean port of the
-Pancake compiler, pinned by commit. `lake build` checks it.
+1. Port the stateless guest to Pancake, compiled by a formally verified compiler.
+2. Prove a more useful version of "source terminates ⇒ RISC-V terminates," aware of step counts.
+3. Bound the number of source steps under 200M gas.
+4. Bound memory usage under 200M gas.
+5. Combine these into an autoresearch-ready theorem.
 
-* `Guest/guest.pp.pnk` is the cpp-expanded `ZISK_ACCEL` guest as
-  `guest/build.sh` feeds it to `cake` (the deployed build), and
-  `Guest/Ast.lean` is its parse by flapjack's Pancake parser, committed as Lean
-  terms (`Guest.guestAst`). `Guest/guest-software.pp.pnk` and
-  `Guest/SoftwareAst.lean` (`Guest.Software.guestAst`) are the same for the
-  default build with all crypto in Pancake. Regenerate all four with
-  `tools/gen-guest-ast.sh` after editing `guest/src`.
-* `Guest/AstParse.lean` proves, by `native_decide`, that parsing each committed
-  source gives exactly the committed AST, so the rest of the development
-  states things about the ASTs without re-running the parser.
-* `Guest/Accel.lean` gives the accelerator `@ffi` calls of the `ZISK_ACCEL`
-  build their ZisK semantics on memory, reusing the concrete definitions in
-  [riscv-zkvm](https://github.com/Verified-zkEVM/riscv-zkvm)
-  (`RiscvZkvm.Rv64.ZiskAccel`, shared with evm-asm). `Guest.runGuestStepped`
-  runs the accelerated guest under flapjack's stateful-FFI stepped semantics,
-  with the host's input and output regions behind the shared-memory oracle;
-  executing it needs the `ExtCall` dispatch fix of flapjack #520 (verified
-  locally with that fix: 12 of 13 EEST fixtures match, one still running).
-* `Guest/Model.lean` is the guest as a flapjack program: initial state per
-  `guest/src/config.h`, primitive/FFI handlers, CakeML's aligned-cell memory
-  model, and the step-counted run `Guest.runGuestStepped`. It is computable;
-  `lake exe run-guest [input.bin]` executes it on a `tools/make-inputs.sh`
-  input and prints the result, the Pancake step count, and the output region;
-  `lake exe trace-guest [input.bin]` locates the statement where a failing or
-  exception-raising run goes wrong. The module docstring lists the modelling
-  caveats.
-* `Guest/StepBound.lean` states the first goal: the guest terminates within a
-  constant number of Pancake source steps (flapjack's step-counted semantics)
-  whenever the declared block gas limit is at most 200M.
-* `lake exe frame-bound` prints a source-level, oracle-free upper estimate of
-  every function's stack frame (all variables spilled: parameter and local
-  words plus the largest statement's expression temporaries), the ingredient
-  for a stack bound of the form `8 · (F · call depth + 3 · handlers)`; heap,
-  scratch and frame-memory usage are the guest's own bump allocators and so are
-  source-level quantities already.
-
-## Status / plan
-
-See `PLAN.md`. Deliberate numeric-width and saturation boundaries are
-documented in [docs/ENVELOPE.md](docs/ENVELOPE.md).
+See `PLAN.md` for the detailed milestone log. Deliberate numeric-width and
+saturation boundaries are documented in [docs/ENVELOPE.md](docs/ENVELOPE.md).
