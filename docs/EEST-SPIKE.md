@@ -11,109 +11,33 @@ built with `flapjack` (`guest/build.sh`'s default `COMPILER`); pass
 
 ## Prerequisites
 
-On Debian or Ubuntu, install the host tools and RISC-V binutils:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y build-essential binutils-riscv64-unknown-elf \
-  device-tree-compiler libboost-all-dev libssl-dev python3 git curl tar
-```
-
-`flapjack` is a `lake` dependency of this repo (`lakefile.toml`), pinned by
-commit; no separate checkout or bootstrap step is needed beyond `lake
-build` (triggered automatically on first use).
-
-## Fresh checkout and pinned Spike backend
-
-The recorded run below (see "Recorded result") used these revisions; the
-`riscv-isa-sim` pin still applies to a fresh run today, since Spike itself
-is unaffected by which Pancake compiler builds the guest:
-
-| Component | Revision / tag |
-| --- | --- |
-| `evm-asm` submodule | `f6b685c3d1d26a4850c908480261ac4903afc566` |
-| `riscv-isa-sim` | `55b4658dbf574ba0b714083ec436ce2cb5be1998` |
-| EEST fixtures | `tests-zkevm@v0.6.2` |
-
-Clone the repository:
-
-```bash
-git clone --recurse-submodules https://github.com/pirapira/stateless-pancaketh.git
-cd stateless-pancaketh
-```
-
-Build the pinned Spike driver. `SPIKE_SRC` may point at an existing
-`riscv-isa-sim` checkout; the default puts it beside this repository.
-
-```bash
-REPO_ROOT="$(pwd)"
-SPIKE_COMMIT=55b4658dbf574ba0b714083ec436ce2cb5be1998
-SPIKE_SRC="${SPIKE_SRC:-$REPO_ROOT/../riscv-isa-sim}"
-JOBS="${EEST_JOBS:-32}"
-
-if [[ ! -d "$SPIKE_SRC/.git" ]]; then
-  git clone https://github.com/riscv-software-src/riscv-isa-sim.git "$SPIKE_SRC"
-fi
-git -C "$SPIKE_SRC" fetch origin "$SPIKE_COMMIT"
-git -C "$SPIKE_SRC" checkout --detach "$SPIKE_COMMIT"
-mkdir -p "$SPIKE_SRC/build"
-if [[ ! -f "$SPIKE_SRC/build/Makefile" ]]; then
-  (cd "$SPIKE_SRC/build" && ../configure --prefix="$SPIKE_SRC/build/install")
-fi
-make -C "$SPIKE_SRC/build" -j"$JOBS"
-SPIKE_SRC="$SPIKE_SRC" SPIKE_BUILD="$SPIKE_SRC/build" \
-  "$REPO_ROOT/evm-asm/scripts/spike/build.sh"
-```
+Follow `README.md`'s "Quick start" section first: it covers cloning, the
+`lake`/`elan`, `riscv64-unknown-elf-{as,ld}`, and Spike-build
+(`libboost-all-dev`, `device-tree-compiler`, `libssl-dev`) prerequisites,
+initializing the `evm-asm` and `riscv-isa-sim` submodules, and building
+`spike_run`. This document only adds the full-corpus-specific steps below,
+against the EEST fixture tag this repo currently pins
+(`evm-asm/scripts/eest-fixture-tag.txt`; `tests-zkevm@v0.6.2` for the
+recorded run below).
 
 ## Fetch, convert, build, and run all fixtures
 
-The output directory is named with the source commit so that result files
-cannot be mistaken for a run from another checkout. Re-running the command
-with the same directory reuses its manifest.
+`tools/eest-spike-full.sh` fetches the pinned EEST fixture tag, converts the
+whole corpus, builds the accelerated guest, and runs it under Spike:
 
 ```bash
-set -u -o pipefail
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT"
-RESULT_COMMIT="$(git rev-parse HEAD)"
-TAG="$(tr -d '[:space:]' < evm-asm/scripts/eest-fixture-tag.txt)"
-SPIKE_RUN="${SPIKE_RUN:-$REPO_ROOT/evm-asm/scripts/spike/spike_run}"
-JOBS="${EEST_JOBS:-32}"
-RUN_ROOT="$REPO_ROOT/work/eest-spike-$RESULT_COMMIT"
-
-test -x "$SPIKE_RUN"
-
-evm-asm/scripts/eest-fetch-fixtures.sh "$TAG"
-tools/make-inputs.sh --all "$RUN_ROOT/inputs"
-ACCEL=1 guest/build.sh guest/src/main.pnk \
-  "$RUN_ROOT/guest-accel.elf"
-
-set +e
-SPIKE_RUN="$SPIKE_RUN" python3 tools/eest-run.py \
-  "$RUN_ROOT/guest-accel.elf" "$RUN_ROOT/inputs/manifest.tsv" \
-  --jobs "$JOBS" --quiet-passes \
-  --json "$RUN_ROOT/results.json" --out-dir "$RUN_ROOT/run-accel"
-RUN_RC=$?
-set -e
-
-python3 - "$RUN_ROOT/results.json" <<'PY'
-import collections
-import json
-import sys
-
-results = json.load(open(sys.argv[1], encoding="utf-8"))
-counts = collections.Counter(record["class"] for record in results)
-print(f"records: {len(results)}")
-for name in ("PASS(full)", "PASS(malformed)", "FAIL", "ERROR"):
-    if counts[name]:
-        print(f"{name}: {counts[name]}")
-PY
-printf 'eest-run exit: %s\n' "$RUN_RC"
-exit "$RUN_RC"
+tools/eest-spike-full.sh
 ```
 
-`eest-run` exits zero only when every record passes. A nonzero exit is useful:
-the JSON and per-fixture logs remain under the commit-named run directory for
+Its output directory is named with the source commit
+(`work/eest-spike-<commit>`) so result files can't be mistaken for a run
+from another checkout; re-running it with the same commit checked out
+reuses that directory's manifest. `SPIKE_RUN` and `EEST_JOBS` (default 32)
+are overridable env vars; see the script for details.
+
+`eest-run` exits zero only when every record passes, which is
+`tools/eest-spike-full.sh`'s own exit code. A nonzero exit is useful: the
+JSON and per-fixture logs remain under the commit-named run directory for
 inspection and reruns with `--from-json` or `--labels`.
 
 ## Recorded result
