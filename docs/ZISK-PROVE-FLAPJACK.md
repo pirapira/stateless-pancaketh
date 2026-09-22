@@ -9,10 +9,6 @@ starts with a tiny example (`hello.pnk`) to validate the pipeline cheaply,
 then does the same with an EEST test fixture (a synthetic single-block,
 single-transaction test case, not a chain block).
 
-flapjack's output was checked for correctness against the guest's original
-toolchain separately; see
-[docs/FLAPJACK-CORRECTNESS.md](FLAPJACK-CORRECTNESS.md).
-
 Follow [README.md's "Quick start"](../README.md#quick-start) first. This
 document assumes it has already been run: submodules initialized, `lake`
 and `spike_run` built, and `tools/make-inputs.sh 50` plus

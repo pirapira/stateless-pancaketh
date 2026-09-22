@@ -231,4 +231,6 @@ new main baseline, regenerate it with the same `bench.py` command using
 5. Combine these into an autoresearch-ready theorem.
 
 See `PLAN.md` for the detailed milestone log. Deliberate numeric-width and
-saturation boundaries are documented in [docs/ENVELOPE.md](docs/ENVELOPE.md).
+saturation boundaries are documented in [docs/ENVELOPE.md](docs/ENVELOPE.md),
+and flapjack's correctness against the guest's original toolchain is
+documented in [docs/FLAPJACK-CORRECTNESS.md](docs/FLAPJACK-CORRECTNESS.md).
