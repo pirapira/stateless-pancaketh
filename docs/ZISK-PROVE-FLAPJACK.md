@@ -114,6 +114,7 @@ Recorded result: **2,584,624 ZisK steps**, and `PASS(full)` per
 ```bash
 time nice cargo-zisk prove -e guest/build/guest-accel.elf -i "$INPUT" \
   -l -o work/proof-block00000-accel.json -y
+cargo-zisk verify -p work/proof-block00000-accel.json
 ```
 
 Recorded result: 15 AIR instances (one each of Main, Rom, Binary,
