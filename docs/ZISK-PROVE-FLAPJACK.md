@@ -9,10 +9,6 @@ starts with a tiny example (`hello.pnk`) to validate the pipeline cheaply,
 then does the same with an EEST test fixture (a synthetic single-block,
 single-transaction test case, not a chain block).
 
-flapjack's output was checked for correctness against the guest's original
-toolchain separately; see
-[docs/FLAPJACK-CORRECTNESS.md](FLAPJACK-CORRECTNESS.md).
-
 Follow [README.md's "Quick start"](../README.md#quick-start) first. This
 document assumes it has already been run: submodules initialized, `lake`
 and `spike_run` built, and `tools/make-inputs.sh 50` plus
@@ -101,43 +97,19 @@ aggregation 9.3s, **3m43s** wall including proving-key load, **376 KB
 
 EEST fixture 00000
 (`blockchain_tests/for_amsterdam/amsterdam/eip2780_reduce_intrinsic_tx_gas/authorization_charges/account_write_authority_is_recipient.json`).
+This uses the **accelerated** guest (`guest-accel.elf`, already built by
+Quick start's `tools/build_both.sh`) throughout — it's the guest anyone
+proving a real block cares about; see
+[docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md](ZISK-PROVE-REAL-BLOCK-FLAPJACK.md)
+for why the software guest isn't practical at real-block scale.
 
 ```bash
 INPUT=work/inputs/00000_test_account_write_authority_is_recipient_fork_Amsterdam-blockchain_test_from_state_test-non-zer.input
-time ~/.zisk/bin/ziskemu -e guest/build/guest.elf -i "$INPUT" -o /tmp/block00000.out -m
+time ~/.zisk/bin/ziskemu -e guest/build/guest-accel.elf -i "$INPUT" -o /tmp/block00000.out -m
 ```
 
-Recorded result: **18,864,486 ZisK steps**, 0.18s emulation time, and
-`PASS(full)` per `tools/eest-run.py`'s classification against the Python
-oracle. The accelerated guest (`guest-accel.elf`) runs the same fixture in
-**2,584,624 steps**.
-
-```bash
-time nice cargo-zisk prove -e guest/build/guest.elf -i "$INPUT" \
-  -l -o work/proof-block00000.json -y
-```
-
-Recorded result: 17 AIR instances (5× Main, plus Rom, 2× Binary, Arith,
-BinaryExtension, MemAlign, Mem, InputData, RomData, SpecifiedRanges,
-VirtualTable0/1) folded into one Vadcop Final proof, breakdown from the
-`cargo-zisk` log:
-
-| Stage | Time |
-| --- | --- |
-| Execute (witness/plan) | 0.73s |
-| Calculating contributions | 54.3s |
-| Generating inner proofs | 289.8s |
-| Generating Vadcop final proof | 8.3s |
-| Verifying Vadcop final proof (in-process) | 0.01s |
-| **Total proving** | **~353s (~5m53s)** |
-
-Wall clock for the whole `prove` invocation (including proving-key load):
-**6m7s**; **376 KB (375,809 bytes)** proof file (identical size to `hello.pnk`'s — the
-aggregated proof is fixed-size regardless of the underlying execution
-length). Standalone `cargo-zisk verify -p work/proof-block00000.json`
-confirms it in 68ms.
-
-The same fixture with the accelerated guest:
+Recorded result: **2,584,624 ZisK steps**, and `PASS(full)` per
+`tools/eest-run.py`'s classification against the Python oracle.
 
 ```bash
 time nice cargo-zisk prove -e guest/build/guest-accel.elf -i "$INPUT" \
@@ -146,9 +118,12 @@ time nice cargo-zisk prove -e guest/build/guest-accel.elf -i "$INPUT" \
 
 Recorded result: 15 AIR instances (one each of Main, Rom, Binary,
 BinaryExtension, Arith, ArithEq, Keccakf, Sha256f, MemAlign, Mem, InputData,
-RomData, SpecifiedRanges, VirtualTable0/1); contributions 43.6s, inner
-proofs 244.4s, final aggregation 6.8s, **5m7s** wall, again a 376 KB
-fixed-size proof, verified standalone in 75ms.
+RomData, SpecifiedRanges, VirtualTable0/1) folded into one Vadcop Final
+proof; contributions 43.6s, inner proofs 244.4s, final aggregation 6.8s,
+**5m7s** wall clock for the whole `prove` invocation (including
+proving-key load), **376 KB (375,809 bytes)** proof file (identical size
+to `hello.pnk`'s — the aggregated proof is fixed-size regardless of the
+underlying execution length), verified standalone in 75ms.
 
 ## Notes
 
@@ -159,10 +134,11 @@ fixed-size proof, verified standalone in 75ms.
   Vadcop Final proof, and `cargo-zisk verify -p <that file>` works correctly
   and quickly.
 * Proving cost is dominated by the fixed per-AIR setup (contributions/inner-
-  proof machinery), not step count: 1,032 steps (`hello.pnk`) and 18.86M
-  steps (the fixture) differ by four orders of magnitude in steps but well
-  under 2x in proving time, because both stay within a handful of AIR
-  instances of the fixed proving-key size.
+  proof machinery), not step count: 1,032 steps (`hello.pnk`) and 2.58M
+  steps (the fixture, accelerated guest) differ by three orders of
+  magnitude in steps but under 1.5x in proving time (3m43s vs. 5m7s wall),
+  because both stay within a handful of AIR instances of the fixed
+  proving-key size.
 
 For the same pipeline against a real chain block instead of a synthetic
 EEST fixture, see
