@@ -33,8 +33,9 @@ builds but matches `cake` instruction-for-instruction on this guest.
 * `flapjack` is a `lake` dependency of this repo (`lakefile.toml`'s
   `[[require]] name = "flapjack"`), pinned by commit; no separate checkout or
   bootstrap step is needed beyond `lake build` (which `lake exe
-  flapjack-compile` triggers on first use). `guest/build.sh` picks it via
-  `COMPILER=flapjack`; `COMPILER=cake` (the default) is unchanged.
+  flapjack-compile` triggers on first use). `guest/build.sh` uses it by
+  default (`COMPILER=flapjack`); pass `COMPILER=cake` instead to use a
+  bootstrapped/prebuilt CakeML `cake` binary.
 * Optional, for the "Correctness first" comparison above only: a CakeML
   `cake` executable with Pancake support. Either bootstrap it from the
   pinned `cakeml` submodule (see `README.md`'s Toolchain section) or use
