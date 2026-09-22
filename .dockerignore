@@ -1,0 +1,26 @@
+# Lean build cache (rebuilt fresh inside Docker via lake)
+.lake/
+
+# Guest build artifacts and local test/work output (rebuilt inside Docker)
+guest/build/
+work/
+
+# Submodules not needed for the ziskemu EEST image: flapjack is fetched by
+# lake itself, and riscv-isa-sim/cakeml are only needed for Spike/cake, not
+# ziskemu. evm-asm/ IS needed (its scripts/), but its own heavy nested
+# content is excluded below.
+cakeml/
+flapjack/
+riscv-isa-sim/
+evm-asm/.lake/
+evm-asm/gen-out/
+evm-asm/execution-specs/
+evm-asm/execution-spec-tests/
+evm-asm/ethrex/
+evm-asm/rust-u256-asm/
+
+# VCS and dev tooling
+.git/
+.claude/
+__pycache__/
+*.pyc
