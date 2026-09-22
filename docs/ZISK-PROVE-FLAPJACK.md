@@ -44,8 +44,8 @@ Versions used for the run recorded below:
 | EEST fixtures | `tests-zkevm@v0.6.2` |
 | Host | Ubuntu 24.04.5, 32 cores |
 
-**Proving is CPU-heavy** (the fixture run below used all cores at ~100+
-CPU-minutes of user time over 5-6 minutes wall-clock). Run `cargo-zisk
+**Proving is CPU-heavy** (the fixture run below used all cores at ~86
+CPU-minutes of user time over ~4 minutes wall-clock). Run `cargo-zisk
 prove`/`execute` under `nice` so it does not starve other work on a shared
 machine, as done in every command below.
 
@@ -120,11 +120,12 @@ cargo-zisk verify -p work/proof-block00000-accel.json
 Recorded result: 15 AIR instances (one each of Main, Rom, Binary,
 BinaryExtension, Arith, ArithEq, Keccakf, Sha256f, MemAlign, Mem, InputData,
 RomData, SpecifiedRanges, VirtualTable0/1) folded into one Vadcop Final
-proof; contributions 43.6s, inner proofs 244.4s, final aggregation 6.8s,
-**5m7s** wall clock for the whole `prove` invocation (including
-proving-key load), **376 KB (375,809 bytes)** proof file (identical size
-to `hello.pnk`'s — the aggregated proof is fixed-size regardless of the
-underlying execution length), verified standalone in 75ms.
+proof; `cargo-zisk`'s own log reports proving completed in 243.5s
+(`Proofman 243.1s + Execution 0.08s + Count&Plan 0.004s`), **4m9s** wall
+clock for the whole `prove` invocation (85m46s user / 24m10s system CPU
+time across cores, including proving-key load), **376 KB (375,809 bytes)**
+proof file (identical size to `hello.pnk`'s — the aggregated proof is
+fixed-size regardless of the underlying execution length).
 
 ## Notes
 
@@ -137,7 +138,7 @@ underlying execution length), verified standalone in 75ms.
 * Proving cost is dominated by the fixed per-AIR setup (contributions/inner-
   proof machinery), not step count: 1,032 steps (`hello.pnk`) and 2.58M
   steps (the fixture, accelerated guest) differ by three orders of
-  magnitude in steps but under 1.5x in proving time (3m43s vs. 5m7s wall),
+  magnitude in steps, yet proving time is close (3m43s vs. 4m9s wall),
   because both stay within a handful of AIR instances of the fixed
   proving-key size.
 
