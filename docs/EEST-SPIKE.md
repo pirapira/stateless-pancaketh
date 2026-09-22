@@ -47,7 +47,7 @@ Run on stateless-pancaketh commit
 accelerated guest, built with `cake` (the only compiler `guest/build.sh`
 supported at that commit; today's default is `flapjack`, which builds an
 instruction-for-instruction identical guest — see the "Status" section of
-`README.md` and [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) for
+`README.md` and [docs/FLAPJACK-CORRECTNESS.md](FLAPJACK-CORRECTNESS.md) for
 the correctness comparison):
 
 ```text
