@@ -60,7 +60,12 @@ unchanged, as an alternative to evm-asm's hand-written/codegen RV64 guest.
   against the original HOL-verified compiler, and
   [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md) for a full
   ziskemu/`cargo-zisk prove` run.
-* `riscv64-unknown-elf-{as,ld}` (Ubuntu `binutils-riscv64-unknown-elf`).
+* `riscv64-unknown-elf-{as,ld}`, needed to build both `spike_run` and the
+  guest itself:
+
+  ```bash
+  sudo apt-get install -y binutils-riscv64-unknown-elf
+  ```
 * `spike_run`, a custom driver built on top of Spike (`riscv-isa-sim`,
   checked out as this repo's `riscv-isa-sim` submodule — see "Quick start"
   below to initialize it). Build it once (needs `libboost-all-dev` and
@@ -89,8 +94,9 @@ git submodule update --init evm-asm riscv-isa-sim
 ```
 
 `tools/eest-run.py` uses Spike by default and needs
-`evm-asm/scripts/spike/spike_run` built first (see "Toolchain" above for
-the `riscv-isa-sim` build prerequisites):
+`evm-asm/scripts/spike/spike_run` built first, which itself needs
+`riscv64-unknown-elf-{as,ld}` (see "Toolchain" above for the
+`riscv-isa-sim` build prerequisites):
 
 ```bash
 mkdir -p riscv-isa-sim/build
