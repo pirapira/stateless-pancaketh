@@ -153,14 +153,11 @@ For a pinned, self-contained full-corpus run through Spike, including the
 recorded commit and result, see [docs/EEST-SPIKE.md](docs/EEST-SPIKE.md).
 
 For running the guest under `ziskemu` and generating an actual ZisK STARK
-proof of an execution (small example plus an EEST test fixture, with recorded
-timings), see [docs/ZISK-PROVE.md](docs/ZISK-PROVE.md). For the same
-pipeline against a real chain block (the devnet-7 block from issue #54),
-see [docs/ZISK-PROVE-REAL-BLOCK.md](docs/ZISK-PROVE-REAL-BLOCK.md). For the
-same pipeline with the guest compiled by `flapjack` instead of `cake`
-(including the correctness comparison between the two compilers' output),
-see [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md), and for the
-real-block pipeline with the flapjack-compiled guest, see
+proof of an execution (small example plus an EEST test fixture, with
+recorded timings; the guest is compiled by `flapjack`, including the
+correctness comparison against `cake`), see
+[docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md). For the same
+pipeline against a real chain block (the devnet-7 block from issue #54), see
 [docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md](docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md).
 
 ## Testing

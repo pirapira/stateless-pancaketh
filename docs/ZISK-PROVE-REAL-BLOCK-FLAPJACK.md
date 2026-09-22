@@ -1,18 +1,27 @@
 # Prove a real chain block on ZisK, guest compiled by flapjack
 
-This is [docs/ZISK-PROVE-REAL-BLOCK.md](ZISK-PROVE-REAL-BLOCK.md)'s pipeline
-against the same real chain block, with the guest compiled by `flapjack`
-(the Lean 4 port of the Pancake compiler, `lake exe flapjack-compile`)
-instead of `cake`. See [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md)
-for the compiler-swap mechanics (`COMPILER=flapjack guest/build.sh ...`) and
-the correctness comparison against `cake` on the 30-fixture baseline; this
-document only adds the real-block-specific steps, exactly mirroring
-`docs/ZISK-PROVE-REAL-BLOCK.md`'s structure.
+This does the same `ziskemu`-run-plus-proof pipeline as
+[docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) against an actual
+chain block instead of a synthetic EEST fixture: `glamsterdam-devnet-7`
+block `115260`, the same block used for the gist comparison in
+[issue #54](https://github.com/pirapira/stateless-pancaketh/issues/54)
+(`M5: reproduce the gist comparison on devnet-7 block 115260`), with the
+guest compiled by `flapjack` (the Lean 4 port of the Pancake compiler,
+`lake exe flapjack-compile`) instead of `cake`. See
+[docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) for the compiler-swap
+mechanics (`COMPILER=flapjack guest/build.sh ...`), the guest-build
+prerequisites, and the correctness comparison against `cake` on the
+30-fixture baseline; this document only adds the real-block-specific steps.
 
-Like that document, this uses the **accelerated** guest
-(`guest-accel.elf`, `ACCEL=1` build) only — the software guest's step count
-on this block is over 20x larger and would take on the order of hours to
-prove.
+Because of the size of a full block (568,669-byte stateless input, vs. a few
+KB for an EEST fixture), this uses the **accelerated** guest
+(`guest-accel.elf`, `ACCEL=1` build) rather than the software guest: issue
+#54 already measured the software guest at `6,152,130,715` ZisK steps versus
+`256,756,696` for the accelerated guest on this same block (a 23.96x
+difference), and proving cost scales with step count, so proving the
+software guest here would take on the order of a day rather than half an
+hour. `nice` is used throughout, per the same CPU-load note as
+[docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md).
 
 **Correctness first.** Before proving, the flapjack-compiled
 `guest-accel.elf` was checked against a fresh `cake`-compiled
@@ -21,13 +30,14 @@ prove.
 * Identical `ziskemu -X` step count (263,739,098) and byte-identical output
   on both compilers.
 * The output's first 69 bytes match `issue #54`'s recorded expected result
-  exactly (same hex as `docs/ZISK-PROVE-REAL-BLOCK.md` records), and the
-  `eest-stateless-to-input.py --verify-input-parity` conversion step (below)
-  independently reproduces that same expected-output hex from the archive.
+  exactly (the same hex recorded below in "Emulate and confirm the
+  result"), and the `eest-stateless-to-input.py --verify-input-parity`
+  conversion step (below) independently reproduces that same
+  expected-output hex from the archive.
 
 ## Fixture
 
-Same block as `docs/ZISK-PROVE-REAL-BLOCK.md` and issue #54:
+Same block as issue #54:
 
 | Field | Value |
 | --- | --- |
@@ -53,12 +63,11 @@ Versions used for the run recorded below:
 | guest source | `stateless-pancaketh` `43222a3` |
 | Host | Ubuntu 24.04.5, 32 cores |
 
-`docs/ZISK-PROVE-REAL-BLOCK.md`'s own recorded run used ZisK 0.16.0 and the
-`cake`-built guest; its 263,738,968-step count differs from the
-263,739,098 recorded here only because `guest/src` has changed slightly
-since that recording (more precompiles, bug fixes) — both compilers give
-the exact same count against the *current* source (see "Correctness
-first").
+An earlier `cake`-built run on this same block recorded 263,738,968 steps;
+the small difference from the 263,739,098 recorded here is only because
+`guest/src` has changed slightly since that recording (more precompiles, bug
+fixes) — both compilers give the exact same count against the *current*
+source (see "Correctness first").
 
 ## Fetch, extract, build, convert
 
@@ -80,7 +89,7 @@ python3 evm-asm/scripts/eest-stateless-to-input.py \
   --filter '115260-' --limit 1 --verify-input-parity
 ```
 
-Same output as `docs/ZISK-PROVE-REAL-BLOCK.md`: `work/gist/inputs/00000_block_115260_..._b0.input`
+This writes `work/gist/inputs/00000_block_115260_..._b0.input`
 (568,680 bytes) and a manifest whose expected-output column reproduces issue
 #54's recorded hex exactly — unaffected by which Pancake compiler built the
 guest, since this step doesn't touch the guest at all.
@@ -105,10 +114,8 @@ block (root/succ/tail all match, including the success byte `01` at offset
 
 ## Generate and verify the proof
 
-ZisK 0.18.0's `prove` aggregates into one file rather than 0.16.0's
-per-AIR `-b`/`DIR/proofs` layout (see
-[docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md)'s "ZisK version"
-section):
+`-o` takes a single output file; `prove` always aggregates into one Vadcop
+Final proof:
 
 ```bash
 time nice -n 15 cargo-zisk prove -e guest/build/guest-accel.elf -i "$INPUT" \
@@ -119,10 +126,8 @@ Recorded result: **127 AIR instances** (63× Main, 16× Mem, 10× BinaryAdd,
 9× Binary, 5× ArithEq384, 4× Sha256f, 3× ArithEq, 3× BinaryExtension, 3×
 Keccakf, 2× MemAlignReadByte, plus one each of Arith, InputData, MemAlign,
 MemAlignWriteByte, Rom, RomData, SpecifiedRanges, VirtualTable0,
-VirtualTable1) — the exact same composition `docs/ZISK-PROVE-REAL-BLOCK.md`
-recorded for the `cake`/0.16.0 build, folded here into one Vadcop Final
-proof instead of per-AIR JSON files. Verified both in-process (`-y`) and
-standalone (`cargo-zisk verify`, 50ms).
+VirtualTable1), folded into one Vadcop Final proof. Verified both
+in-process (`-y`) and standalone (`cargo-zisk verify`, 50ms).
 
 | Stage | Time |
 | --- | --- |
@@ -134,16 +139,13 @@ standalone (`cargo-zisk verify`, 50ms).
 | **Total proving** | **~2843s (47.4 min)** |
 
 Wall clock for the whole `prove` invocation (including proving-key load):
-**47m29s** (vs. `docs/ZISK-PROVE-REAL-BLOCK.md`'s 27m59s on 0.16.0 — a ~1.7x
-slowdown; 0.18.0's recursive aggregation is real extra work, in the same
-~1.5-1.9x range seen on the small `hello.pnk`/EEST-fixture runs in
-`docs/ZISK-PROVE-FLAPJACK.md`); **955m** of user
-CPU time and **234m** of system time consumed across all cores over that
-wall time (`nice -n 15` is what keeps this from starving other work on a
-shared machine). The proof file is **376 KB (375,809 bytes)** — identical in
-size to the small `hello.pnk`/EEST-fixture proofs in
-`docs/ZISK-PROVE-FLAPJACK.md` (the aggregated proof is fixed-size regardless
-of the underlying execution length), versus 0.16.0's 1.2 GB of per-AIR JSON.
+**47m29s**; **955m** of user CPU time and **234m** of system time consumed
+across all cores over that wall time (`nice -n 15` is what keeps this from
+starving other work on a shared machine). The proof file is **376 KB
+(375,809 bytes)** — identical in size to the small `hello.pnk`/EEST-fixture
+proofs in [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) (the
+aggregated proof is fixed-size regardless of the underlying execution
+length).
 
 This machine is shared with other tenants; the first two attempts at this
 proof were OOM-killed partway through (once during contribution
@@ -155,13 +157,15 @@ worth knowing if reproducing this on a busy shared machine.
 
 ## Notes
 
-* This is the same genuine chain block as `docs/ZISK-PROVE-REAL-BLOCK.md`
-  (`glamsterdam-devnet-7` #115260), just with the guest compiled by
-  `flapjack` instead of `cake`.
-* As in that document, the *software* guest was not proved here — the same
-  ~24x step-count multiplier applies regardless of which compiler produced
-  the guest, since flapjack and cake produce instruction-identical code (see
-  "Correctness first").
+* This is a genuine chain block (`glamsterdam-devnet-7` #115260), not a
+  synthetic EEST test case — see
+  [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) for the
+  smaller/faster fixture-based walkthrough.
+* The *software* guest was not proved here — based on issue #54's ~24x
+  larger step count for the software guest on this block, and the same
+  multiplier applying regardless of which compiler produced the guest since
+  flapjack and cake produce instruction-identical code (see "Correctness
+  first"), it would plausibly take on the order of hours.
 * `work/gist/archive`, `work/gist/inputs`, and the proof file are left out
   of version control (large, regenerable); this doc is the reproducible
   record.
