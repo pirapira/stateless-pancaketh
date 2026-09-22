@@ -7,12 +7,10 @@ block `115260`, the same block used for the gist comparison in
 [issue #54](https://github.com/pirapira/stateless-pancaketh/issues/54)
 (`M5: reproduce the gist comparison on devnet-7 block 115260`), with the
 guest compiled by `flapjack` (the Lean 4 port of the Pancake compiler,
-`lake exe flapjack-compile`) instead of `cake`. Follow
+`lake exe flapjack-compile`). Follow
 [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) first: it covers the
-guest-build prerequisites, the compiler-swap mechanics
-(`COMPILER=flapjack guest/build.sh ...`), and the correctness comparison
-against `cake` on the 30-fixture baseline. This document only adds the
-real-block-specific steps below.
+guest-build prerequisites. This document only adds the real-block-specific
+steps below.
 
 Because of the size of a full block (568,669-byte stateless input, vs. a few
 KB for an EEST fixture), this uses the **accelerated** guest
@@ -24,17 +22,9 @@ software guest here would take on the order of a day rather than half an
 hour. `nice` is used throughout, per the same CPU-load note as
 [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md).
 
-**Correctness first.** Before proving, the flapjack-compiled
-`guest-accel.elf` was checked against a fresh `cake`-compiled
-`guest-accel.elf` (same `guest/src`) on this exact block:
-
-* Identical `ziskemu -X` step count (263,739,098) and byte-identical output
-  on both compilers.
-* The output's first 69 bytes match `issue #54`'s recorded expected result
-  exactly (the same hex recorded below in "Emulate and confirm the
-  result"), and the `eest-stateless-to-input.py --verify-input-parity`
-  conversion step (below) independently reproduces that same
-  expected-output hex from the archive.
+The flapjack-compiled `guest-accel.elf` was checked for correctness on this
+exact block before proving; see
+[docs/FLAPJACK-CORRECTNESS.md](FLAPJACK-CORRECTNESS.md).
 
 ## Prerequisites
 
@@ -69,17 +59,9 @@ Versions used for the run recorded below:
 | `ziskemu` | 0.18.0 (790f9e2, 2026-05-15) |
 | `cargo-zisk` | 0.18.0 (790f9e2, 2026-05-15) |
 | `flapjack` (lake dependency) | `2732831e21be0a32e3135417f39563cc1124a8d4` |
-| `cake` (comparison reference only) | bootstrapped, CakeML `e8eca63` |
-| `cakeml` submodule | `857f0d98da8f8a3580f34423338e697809308ede` |
 | `evm-asm` submodule | `7e65e4d024718f704226cd795f3d03d4e9aafe13` |
 | guest source | `stateless-pancaketh` `43222a3` |
 | Host | Ubuntu 24.04.5, 32 cores |
-
-An earlier `cake`-built run on this same block recorded 263,738,968 steps;
-the small difference from the 263,739,098 recorded here is only because
-`guest/src` has changed slightly since that recording (more precompiles, bug
-fixes) — both compilers give the exact same count against the *current*
-source (see "Correctness first").
 
 ## Fetch, extract, build, convert
 
@@ -115,10 +97,9 @@ time ~/.zisk/bin/ziskemu -e guest/build/guest-accel.elf -i "$INPUT" \
 ```
 
 Recorded result: **263,739,098 ZisK steps**, ~16.6s wall (`ziskemu -X`,
-including the cost/opcode breakdown report), output bytes identical to issue
-#54's recorded 69-byte result and to a fresh `cake` build's output on this
-block (root/succ/tail all match, including the success byte `01` at offset
-32):
+including the cost/opcode breakdown report), output bytes identical to
+issue #54's recorded 69-byte result (root/succ/tail all match, including
+the success byte `01` at offset 32):
 
 ```text
 7734570c97a937506b9b771b328a2e5bdb8b74af65c54c747603e4b3d1e8d7ce0125000000b68c2ca6010000000c0000000400000008000000080000000000000000000000
@@ -164,8 +145,8 @@ proof were OOM-killed partway through (once during contribution
 calculation, once at the very start) when system load spiked from unrelated
 processes (load average briefly over 40 on this host). The run recorded
 above succeeded once load dropped back to single digits. This is a
-host-contention issue, not a `flapjack`/`cake` or ZisK-version difference —
-worth knowing if reproducing this on a busy shared machine.
+host-contention issue, not a compiler or ZisK-version difference — worth
+knowing if reproducing this on a busy shared machine.
 
 ## Notes
 
@@ -174,10 +155,8 @@ worth knowing if reproducing this on a busy shared machine.
   [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) for the
   smaller/faster fixture-based walkthrough.
 * The *software* guest was not proved here — based on issue #54's ~24x
-  larger step count for the software guest on this block, and the same
-  multiplier applying regardless of which compiler produced the guest since
-  flapjack and cake produce instruction-identical code (see "Correctness
-  first"), it would plausibly take on the order of hours.
+  larger step count for the software guest on this block, it would
+  plausibly take on the order of hours.
 * `work/gist/archive`, `work/gist/inputs`, and the proof file are left out
   of version control (large, regenerable); this doc is the reproducible
   record.

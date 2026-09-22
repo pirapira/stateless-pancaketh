@@ -3,30 +3,14 @@
 This walks through emulating the guest with `ziskemu` (for step counts) and
 generating an actual STARK proof of a real execution with `cargo-zisk
 prove`, with the guest compiled by `flapjack` (the Lean 4 port of the
-Pancake compiler, `lake exe flapjack-compile`) instead of the
-bootstrapped/prebuilt `cake` binary. It starts with a tiny example
-(`hello.pnk`) to validate the pipeline cheaply, then does the same with an
-EEST test fixture (a synthetic single-block, single-transaction test case,
-not a chain block).
+Pancake compiler, `lake exe flapjack-compile`). It starts with a tiny
+example (`hello.pnk`) to validate the pipeline cheaply, then does the same
+with an EEST test fixture (a synthetic single-block, single-transaction
+test case, not a chain block).
 
-**Correctness first.** Before recording any of the ziskemu/proving numbers
-below, the flapjack-compiled guest was checked against the `cake`-compiled
-guest (built fresh from the same `guest/src`, non-`DEBUG`) on the 30-fixture
-baseline (`work/inputs/manifest.tsv`):
-
-* `guest.elf` (software) and `guest-accel.elf` (`ACCEL=1`): byte-identical
-  Spike/ziskemu output and identical step counts on all 30/30 fixtures; the
-  disassembled `.text` is byte-identical to `cake`'s output (only the ELF's
-  non-code bytes, e.g. symbol-table ordering, differ); the two compilers emit
-  the exact same 40 static-analysis warnings across the same 12 functions.
-* `tools/eest-run.py guest/build/guest.elf work/inputs/manifest.tsv` and the
-  `guest-accel.elf` equivalent both report `30/30 PASS(full)` against the
-  Python oracle for the flapjack build.
-
-This is a new milestone: `flapjack-compile` could not build the full guest as
-recently as the pin bumped in #97 (see the "Toolchain" section of
-`README.md` for the issues that blocked it); at the pin used here it not only
-builds but matches `cake` instruction-for-instruction on this guest.
+flapjack's output was checked for correctness against the guest's original
+toolchain separately; see
+[docs/FLAPJACK-CORRECTNESS.md](FLAPJACK-CORRECTNESS.md).
 
 ## Prerequisites
 
@@ -34,18 +18,7 @@ builds but matches `cake` instruction-for-instruction on this guest.
   `[[require]] name = "flapjack"`), pinned by commit; no separate checkout or
   bootstrap step is needed beyond `lake build` (which `lake exe
   flapjack-compile` triggers on first use). `guest/build.sh` uses it by
-  default (`COMPILER=flapjack`); pass `COMPILER=cake` instead to use a
-  bootstrapped/prebuilt CakeML `cake` binary.
-* Optional, for the "Correctness first" comparison above only: a CakeML
-  `cake` executable with Pancake support. Either bootstrap it from the
-  pinned `cakeml` submodule (see `README.md`'s Toolchain section) or use
-  CakeML's prebuilt release, which only needs a C compiler:
-
-  ```bash
-  gh release download v3479 -R CakeML/cakeml -p cake-x64-64.tar.gz
-  tar xzf cake-x64-64.tar.gz && (cd cake-x64-64 && make)   # ~2s: cake.S + basis_ffi.c
-  export CAKE="$PWD/cake-x64-64/cake"
-  ```
+  default.
 * `riscv64-unknown-elf-{as,ld}` and `cpp` (Ubuntu `binutils-riscv64-unknown-elf`).
 * A ZisK toolchain installed via `ziskup` (https://ziskup.zisk.tech):
   `ziskup -v 0.18.0 --provingkey`, then `cargo-zisk check-setup` (it
@@ -69,8 +42,6 @@ Versions used for the run recorded below:
 | `ziskemu` | 0.18.0 (790f9e2, 2026-05-15) |
 | `cargo-zisk` | 0.18.0 (790f9e2, 2026-05-15) |
 | `flapjack` (lake dependency) | `2732831e21be0a32e3135417f39563cc1124a8d4` |
-| `cake` (comparison reference only) | bootstrapped, CakeML `e8eca63` |
-| `cakeml` submodule | `857f0d98da8f8a3580f34423338e697809308ede` |
 | `evm-asm` submodule | `7e65e4d024718f704226cd795f3d03d4e9aafe13` |
 | EEST fixtures | `tests-zkevm@v0.6.2` |
 | Host | Ubuntu 24.04.5, 32 cores |
@@ -96,9 +67,8 @@ ACCEL=1 COMPILER=flapjack guest/build.sh guest/src/main.pnk guest/build/guest-ac
 (`flapjack-compile` + `as` + `ld`) the first time in a session (it includes
 compiling flapjack itself via `lake`; a warm `lake` build cache brings the
 compile step itself down to under a second); `hello.pnk` builds in well under
-a second. `flapjack-compile` emits the same 40 static-analysis warnings on
-`main.pnk` that `cake` does (non-fatal; see the "Correctness first" note
-above), which is expected and not a build failure.
+a second. `flapjack-compile` emits 40 static-analysis warnings on
+`main.pnk` (non-fatal), which is expected and not a build failure.
 
 ## Small example: `hello.pnk`
 
@@ -109,11 +79,7 @@ printf 'hello\0\0\0' > /tmp/hello.input
 ~/.zisk/bin/ziskemu -e guest/build/hello.elf -i /tmp/hello.input -o /tmp/hello.out -m
 ```
 
-Recorded result: **1,032 steps** (matching a bootstrapped-`cake` build's step
-count; a prebuilt-release `cake` build instead gives 906 — the two `cake`
-builds emit slightly different code, and flapjack matches whichever `cake`
-build it is compared against instruction-for-instruction). The output bytes
-match a fresh `cake` build exactly.
+Recorded result: **1,032 steps**.
 
 Generate and verify a proof (`-o` is a single output file; `prove` always
 produces one aggregated, fixed-size proof):
@@ -141,12 +107,10 @@ INPUT=work/inputs/00000_test_account_write_authority_is_recipient_fork_Amsterdam
 time ~/.zisk/bin/ziskemu -e guest/build/guest.elf -i "$INPUT" -o /tmp/block00000.out -m
 ```
 
-Recorded result: **18,864,486 ZisK steps**, 0.18s emulation time — identical
-to the fresh `cake` build's step count and output bytes on this fixture (see
-"Correctness first"), and `PASS(full)` per `tools/eest-run.py`'s
-classification against the Python oracle. The accelerated guest
-(`guest-accel.elf`) runs the same fixture in **2,584,624 steps**, also with
-identical output to `cake`'s accelerated build.
+Recorded result: **18,864,486 ZisK steps**, 0.18s emulation time, and
+`PASS(full)` per `tools/eest-run.py`'s classification against the Python
+oracle. The accelerated guest (`guest-accel.elf`) runs the same fixture in
+**2,584,624 steps**.
 
 ```bash
 time nice cargo-zisk prove -e guest/build/guest.elf -i "$INPUT" \

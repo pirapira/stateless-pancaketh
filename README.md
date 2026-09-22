@@ -21,7 +21,7 @@ unchanged, as an alternative to evm-asm's hand-written/codegen RV64 guest.
   HOL-verified `cake --pancake --target=riscv` compiler's output: same
   bytes, same Spike/ziskemu step counts, same static-analysis warnings, and
   `30/30 PASS(full)` for each, on the 30-fixture correctness baseline. See
-  [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md).
+  [docs/FLAPJACK-CORRECTNESS.md](docs/FLAPJACK-CORRECTNESS.md).
 * **EEST fixtures.** The guest passes the entire `tests-zkevm` corpus: a
   pinned, reproducible run ([docs/EEST-SPIKE.md](docs/EEST-SPIKE.md)) with
   the accelerated guest reports 26,104/26,104 records (26,096 `PASS(full)`,
@@ -56,10 +56,10 @@ unchanged, as an alternative to evm-asm's hand-written/codegen RV64 guest.
   `lake-manifest.json` for the exact commit; the `flapjack` git submodule is a
   separate, uninitialized checkout used only by other tooling, not by
   `lake`). `guest/build.sh` uses it by default (triggering `lake build` on
-  first use); see the "Status" section above for the correctness comparison
-  against the original HOL-verified compiler, and
-  [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md) for a full
-  ziskemu/`cargo-zisk prove` run.
+  first use); see [docs/FLAPJACK-CORRECTNESS.md](docs/FLAPJACK-CORRECTNESS.md)
+  for the correctness comparison against the original HOL-verified
+  compiler, and [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md)
+  for a full ziskemu/`cargo-zisk prove` run.
 * `riscv64-unknown-elf-{as,ld}`, needed to build both `spike_run` and the
   guest itself:
 
@@ -121,11 +121,12 @@ recorded commit and result, see [docs/EEST-SPIKE.md](docs/EEST-SPIKE.md).
 
 For running the guest under `ziskemu` and generating an actual ZisK STARK
 proof of an execution (small example plus an EEST test fixture, with
-recorded timings; the guest is compiled by `flapjack`, including the
-correctness comparison against `cake`), see
+recorded timings, using the flapjack-compiled guest), see
 [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md). For the same
 pipeline against a real chain block (the devnet-7 block from issue #54), see
 [docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md](docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md).
+For the correctness comparison against the guest's original toolchain, see
+[docs/FLAPJACK-CORRECTNESS.md](docs/FLAPJACK-CORRECTNESS.md).
 
 ## Tools
 
