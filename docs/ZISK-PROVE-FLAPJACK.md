@@ -100,8 +100,8 @@ EEST fixture 00000
 This uses the **accelerated** guest (`guest-accel.elf`, already built by
 Quick start's `tools/build_both.sh`) throughout — it's the guest anyone
 proving a real block cares about; see
-[docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md](ZISK-PROVE-REAL-BLOCK-FLAPJACK.md)
-for why the software guest isn't practical at real-block scale.
+[docs/ZISK-PROVE-BLOCK-FLAPJACK.md](ZISK-PROVE-BLOCK-FLAPJACK.md) for the
+real-block pipeline.
 
 ```bash
 INPUT=work/inputs/00000_test_account_write_authority_is_recipient_fork_Amsterdam-blockchain_test_from_state_test-non-zer.input
@@ -143,4 +143,4 @@ underlying execution length), verified standalone in 75ms.
 
 For the same pipeline against a real chain block instead of a synthetic
 EEST fixture, see
-[docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md](ZISK-PROVE-REAL-BLOCK-FLAPJACK.md).
+[docs/ZISK-PROVE-BLOCK-FLAPJACK.md](ZISK-PROVE-BLOCK-FLAPJACK.md).
