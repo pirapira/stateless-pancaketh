@@ -59,7 +59,8 @@ unchanged, as an alternative to evm-asm's hand-written/codegen RV64 guest.
 
   ```bash
   mkdir -p riscv-isa-sim/build
-  (cd riscv-isa-sim/build && ../configure && make -j"$(nproc)")
+  (cd riscv-isa-sim/build && ../configure)   # parentheses = subshell, so this `cd` doesn't persist
+  make -C riscv-isa-sim/build -j"$(nproc)"
   evm-asm/scripts/spike/build.sh
   ```
 * ZisK toolchain via `ziskup` (https://ziskup.zisk.tech): `ziskup -v 0.18.0
@@ -83,7 +84,8 @@ the `riscv-isa-sim` build prerequisites):
 
 ```bash
 mkdir -p riscv-isa-sim/build
-(cd riscv-isa-sim/build && ../configure && make -j"$(nproc)")
+(cd riscv-isa-sim/build && ../configure)   # parentheses = subshell, so this `cd` doesn't persist
+make -C riscv-isa-sim/build -j"$(nproc)"
 evm-asm/scripts/spike/build.sh
 ```
 
