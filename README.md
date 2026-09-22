@@ -57,6 +57,34 @@ unchanged, as an alternative to evm-asm's hand-written/codegen RV64 guest.
   `~/.zisk/bin/cargo-zisk` for STARK proofs.
 * Python oracle: `uv run --directory evm-asm/execution-specs python ...`.
 
+## Quick start
+
+`tools/make-inputs.sh` needs the `evm-asm` submodule (for the EEST fixture
+tag and converter); if it was not fetched with the initial clone (e.g.
+`git clone --recurse-submodules`), initialize it first:
+
+```bash
+git submodule update --init evm-asm
+```
+
+```bash
+tools/make-inputs.sh 50                       # work/inputs/manifest.tsv
+tools/build_both.sh                            # software + accelerated ELFs
+tools/eest-run.py guest/build/guest.elf work/inputs/manifest.tsv --quiet-passes
+tools/eest-run.py guest/build/guest-accel.elf work/inputs/manifest.tsv --quiet-passes
+```
+
+For a pinned, self-contained full-corpus run through Spike, including the
+recorded commit and result, see [docs/EEST-SPIKE.md](docs/EEST-SPIKE.md).
+
+For running the guest under `ziskemu` and generating an actual ZisK STARK
+proof of an execution (small example plus an EEST test fixture, with
+recorded timings; the guest is compiled by `flapjack`, including the
+correctness comparison against `cake`), see
+[docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md). For the same
+pipeline against a real chain block (the devnet-7 block from issue #54), see
+[docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md](docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md).
+
 ## Tools
 
 `guest/build.sh` accepts `DEBUG=1` to define `GUEST_DEBUG`; this preserves the
@@ -112,34 +140,6 @@ ziskemu and compare those output files with the accelerated Spike run.
 
 The checker also covers pairing and field-tower records; select those record
 types with `--only` when running the slower software reference cases.
-
-## Quick start
-
-`tools/make-inputs.sh` needs the `evm-asm` submodule (for the EEST fixture
-tag and converter); if it was not fetched with the initial clone (e.g.
-`git clone --recurse-submodules`), initialize it first:
-
-```bash
-git submodule update --init evm-asm
-```
-
-```bash
-tools/make-inputs.sh 50                       # work/inputs/manifest.tsv
-tools/build_both.sh                            # software + accelerated ELFs
-tools/eest-run.py guest/build/guest.elf work/inputs/manifest.tsv --quiet-passes
-tools/eest-run.py guest/build/guest-accel.elf work/inputs/manifest.tsv --quiet-passes
-```
-
-For a pinned, self-contained full-corpus run through Spike, including the
-recorded commit and result, see [docs/EEST-SPIKE.md](docs/EEST-SPIKE.md).
-
-For running the guest under `ziskemu` and generating an actual ZisK STARK
-proof of an execution (small example plus an EEST test fixture, with
-recorded timings; the guest is compiled by `flapjack`, including the
-correctness comparison against `cake`), see
-[docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md). For the same
-pipeline against a real chain block (the devnet-7 block from issue #54), see
-[docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md](docs/ZISK-PROVE-REAL-BLOCK-FLAPJACK.md).
 
 ## Testing
 
