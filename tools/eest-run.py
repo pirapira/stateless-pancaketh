@@ -21,6 +21,51 @@ SPIKE_RUN = os.environ.get("SPIKE_RUN", os.path.join(ROOT, "evm-asm/scripts/spik
 ZISKEMU = os.environ.get("ZISKEMU", os.path.expanduser("~/.zisk/bin/ziskemu"))
 STEPS_RE = re.compile(r"halted cleanly steps=(\d+)")
 
+# ziskemu's peak RSS is dominated by a fixed per-process cost (ROM/witness
+# tables), not by fixture size: measured 6.50 GB on a 5.8 KB fixture and
+# 6.71 GB (6551 MiB) on an 8.4 MB "bigmem" stress fixture (799.97M steps)
+# with this guest. 6551 MiB + a 30% safety buffer is 8517 MiB; rounded up to
+# 8704 MiB (8.5 GiB).
+ZISKEMU_JOB_MEM_MIB = int(os.environ.get("ZISKEMU_JOB_MEM_MIB", "8704"))
+
+def available_memory_mib():
+    """The tightest of any cgroup memory limit and host/VM available memory,
+    in MiB, or None if it can't be determined (e.g. non-Linux)."""
+    limits = []
+    try:
+        with open("/sys/fs/cgroup/memory.max") as f:  # cgroup v2
+            v = f.read().strip()
+            if v != "max":
+                limits.append(int(v) // (1024 * 1024))
+    except (OSError, ValueError):
+        pass
+    try:
+        with open("/sys/fs/cgroup/memory/memory.limit_in_bytes") as f:  # cgroup v1
+            v = int(f.read().strip())
+            if v < (1 << 62):  # cgroup v1's "no limit" is a huge sentinel value
+                limits.append(v // (1024 * 1024))
+    except (OSError, ValueError):
+        pass
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    limits.append(int(line.split()[1]) // 1024)
+                    break
+    except (OSError, ValueError, IndexError):
+        pass
+    return min(limits) if limits else None
+
+def default_jobs(use_zisk):
+    cpu_jobs = os.cpu_count() or 1
+    if not use_zisk:
+        return cpu_jobs
+    mem_mib = available_memory_mib()
+    if mem_mib is None:
+        return cpu_jobs
+    mem_jobs = max(1, mem_mib // ZISKEMU_JOB_MEM_MIB)
+    return max(1, min(cpu_jobs, mem_jobs))
+
 def resolve_input_path(path, manifest_dir):
     if os.path.isfile(path):
         return path
@@ -146,7 +191,10 @@ def print_failure_histogram(results):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("elf"); ap.add_argument("manifest")
-    ap.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
+    ap.add_argument("--jobs", type=int, default=None,
+                    help="default: cpu_count(), capped by available memory "
+                         "(cgroup limit or host free RAM) / "
+                         f"{ZISKEMU_JOB_MEM_MIB} MiB when --ziskemu is set")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--skip", type=int, default=0)
     ap.add_argument("--filter", default="")
@@ -165,6 +213,8 @@ def main():
     a = ap.parse_args()
     if a.fail_code is not None and not a.from_json:
         ap.error("--fail-code requires --from-json")
+    if a.jobs is None:
+        a.jobs = default_jobs(a.ziskemu)
     manifest_path = os.path.abspath(a.manifest)
     manifest_dir = os.path.dirname(manifest_path)
     try:
