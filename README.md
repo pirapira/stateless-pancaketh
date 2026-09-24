@@ -73,19 +73,6 @@ docker run --rm ghcr.io/pirapira/stateless-pancaketh:ziskemu-v0.18.0-c4a982b \
   --filter random_statetest --limit 50
 ```
 
-Pin to a specific tag (or its digest) rather than `:latest` — `latest` moves
-to whatever commit the image workflow last built, which may not be the
-tested build you expect. Look up what a tag currently resolves to with:
-
-```bash
-docker manifest inspect ghcr.io/pirapira/stateless-pancaketh:TAG
-```
-
-Images are built and pushed by
-[.github/workflows/docker.yml](.github/workflows/docker.yml) on manual
-dispatch or on push of a `docker/*` git tag, producing `:latest` and a
-commit-pinned `:ziskemu-v0.18.0-<sha>` tag.
-
 ## Toolchain
 
 * `lake` (Lean 4's build tool), via `elan` (the Lean version manager):
