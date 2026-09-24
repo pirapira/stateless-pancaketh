@@ -1,9 +1,9 @@
 # stateless-pancaketh
 
 > [!WARNING]
-> This is experimental research code. Nothing in this project has been
-> formally verified end to end, and the codebase has not been audited. Do
-> not use it for anything of value.
+> This is experimental research code. There is no meaningful proof of
+> correctness anywhere in this project yet, and the codebase has not been
+> audited. Do not use it for anything of value.
 
 Ethereum stateless guest in [Pancake](https://cakeml.org/pancake). Pancake is
 a programming language with a formally verified compiler (currently
