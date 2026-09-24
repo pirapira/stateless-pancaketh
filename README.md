@@ -1,5 +1,10 @@
 # stateless-pancaketh
 
+> [!WARNING]
+> This is experimental research code. There is no meaningful proof of
+> correctness anywhere in this project yet, and the codebase has not been
+> audited. Do not use it for anything of value.
+
 Ethereum stateless guest in [Pancake](https://cakeml.org/pancake). Pancake is
 a programming language with a formally verified compiler (currently
 [being ported](https://github.com/pirapira/flapjack) to Lean).
@@ -37,6 +42,36 @@ unchanged, as an alternative to evm-asm's hand-written/codegen RV64 guest.
   output byte-for-byte, on both the `cake`- and `flapjack`-compiled guests —
   see [docs/ZISK-PROVE-BLOCK-FLAPJACK.md](docs/ZISK-PROVE-BLOCK-FLAPJACK.md)
   and [issue #54](https://github.com/pirapira/stateless-pancaketh/issues/54).
+
+## Docker
+
+A pre-built image bakes in `ziskemu`, the flapjack-compiled guest ELFs
+(software and ZisK-accelerated), and the full `tests-zkevm` EEST fixture
+corpus, so you can reproduce a conformance run with one `docker run` — no
+Lean, Rust, or RISC-V toolchain needed locally:
+
+```bash
+docker run --rm ghcr.io/pirapira/stateless-pancaketh:ziskemu-v0.18.0-c4a982b
+```
+
+This defaults to the accelerated guest against the full fixture corpus under
+`ziskemu`. Override the entrypoint's arguments to run something narrower:
+
+```bash
+# Fewer parallel ziskemu jobs (each uses ~6.5-6.7 GB RSS; the entrypoint
+# auto-caps --jobs to available memory already, but you can go lower)
+docker run --rm ghcr.io/pirapira/stateless-pancaketh:ziskemu-v0.18.0-c4a982b \
+  guest/build/guest-accel.elf work/inputs/manifest.tsv --ziskemu --quiet-passes --jobs 2
+
+# Unaccelerated software guest instead of the ZisK-accelerated one
+docker run --rm ghcr.io/pirapira/stateless-pancaketh:ziskemu-v0.18.0-c4a982b \
+  guest/build/guest.elf work/inputs/manifest.tsv --ziskemu --quiet-passes
+
+# Narrow subset for a quick smoke check
+docker run --rm ghcr.io/pirapira/stateless-pancaketh:ziskemu-v0.18.0-c4a982b \
+  guest/build/guest-accel.elf work/inputs/manifest.tsv --ziskemu --quiet-passes \
+  --filter random_statetest --limit 50
+```
 
 ## Toolchain
 
