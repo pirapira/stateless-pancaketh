@@ -46,14 +46,10 @@ run it:
   tar xzf zisk-provingkey-1.3.0-alpha.tar.gz -C ~/.zisk
   ```
 
-  A separate `zisk-provingkey-pre-1.3.0-alpha-blake3.tar.gz` also exists in
-  the same bucket. That one matches the BLAKE3-based recursive-proving
-  configuration this release's changelog calls out as "available for
-  testing", not the default: it installs and lets `ziskemu` run guests
-  fine, but `cargo-zisk prove` fails witness generation in the recursive1
-  stage (`Failed assert in template/function VerifyEvaluations0`). The key
-  fetched above uses Poseidon1, the actual default (`cargo-zisk prove`
-  logs `Using hash function: Poseidon1` when it is active).
+  Use this exact key, not the `zisk-provingkey-pre-1.3.0-alpha-blake3.tar.gz`
+  also in that bucket — that one is a non-default, still-experimental
+  configuration whose proofs fail. `cargo-zisk prove` logs `Using hash
+  function: Poseidon1` when the right key is active.
 * The installer's "Configuring CPU binaries" step is unreliable when
   switching versions in an existing `~/.zisk`: it can leave `ziskemu`
   updated but `cargo-zisk` on the old version (`cargo-zisk --version` will
@@ -76,55 +72,13 @@ Versions used for the run recorded below:
 run). Run `cargo-zisk prove`/`execute` under `nice` so it does not starve
 other work on a shared machine, as done in every command below.
 
-## Two upstream issues in ZisK 1.x, and how this guide works around them
-
-Compared to 0.18.0, ZisK 1.x (starting at v1.1.0-alpha) introduces two
-behavior changes that break this project's guest as built by Quick Start /
-`tools/build_both.sh`:
-
-1. **Stricter ELF segment handling.** `guest/build.sh`'s default link
-   (`-Ttext=0x80000000`) produces an R+E (readable+executable) `.text`
-   `PT_LOAD` segment, with the ELF/program headers in their own segment
-   just below it at `0x7ffff000`. ZisK 0.18.0 tolerates both. ZisK 1.x
-   rejects the headers segment outright (outside its declared ROM window,
-   `Error during emulation: Unknown("PT_LOAD segment ... is outside ZisK
-   addressable space")`), and once that is worked around, its RISC-V→ZisK
-   ROM converter panics (`Riscv2ZiskContext::convert() found invalid
-   riscv_instruction.inst_name=c.fsdsp`) on an R+E `.text` segment whenever
-   a second `PT_LOAD` segment (`.data`) is also present — true of every
-   real guest here, since input/output/heap all live in a separate RAM
-   segment from ROM. This reproduces on a minimal ELF (a single `nop` plus
-   one byte of `.data`, no compressed instructions involved) and has been
-   reported upstream.
-2. **`OUTPUT_ADDR` moved.** ZisK 0.18.0 (and v1.0.0-alpha) define a guest's
-   output region at `SYS_ADDR + SYS_SIZE` where `SYS_ADDR = RAM_ADDR`
-   (`0xa0010000`) — the address this project's guest contract
-   (`guest/src/config.h`, `guest/runtime/start.S`, evm-asm's
-   `spike_run.cc`) has always used. ZisK v1.1.0-alpha added a dedicated,
-   guarded 4MB stack region at the base of RAM (`STACK_SIZE = 0x400000`,
-   matching that release's changelog entry "Added stack overflow protection
-   using an unmapped guard region"), which pushes `SYS_ADDR` to
-   `RAM_ADDR + STACK_SIZE` and `OUTPUT_ADDR` to `0xa0410000`. A guest still
-   writing to the old address executes to completion with plausible step
-   counts but reports all-zero output, because ZisK now reads the new
-   address instead.
-
-`guest/build.sh` has a `ZISK_V1=1` flag that works around both: it links
-with `guest/runtime/zisk-strict.ld` (execute-only `.text`, ELF headers left
-unmapped — avoids both the header-segment rejection and the R+E-segment
-panic) and defines `-DZISK_V1` so `guest/src/config.h` uses
-`OUTPUT_ADDR = 0xa0410000` (`guest/runtime/start.S`'s one non-`config.h`
-use of this address, in the trap handler, picks it up via a `--defsym` at
-link time).
-
-`ZISK_V1=1` builds are for this guide only. They write output to a
-different address than Spike expects, so they will not produce correct
-results under `tools/eest-run.py` or the `CHECK_ALL_ZISKE_PARITY=1` gate in
-`tools/check_all.sh`, both of which target the default (Spike / ZisK
-0.18.0) `OUTPUT_ADDR`. Keep `ZISK_V1=1` builds in separate output paths
-from Quick Start's, as done below.
-
 ## Build the ZisK 1.x guest ELFs
+
+Quick Start's plain guest builds cannot run under ZisK 1.x; this guide needs
+its own `ZISK_V1=1` builds instead. Keep them in separate output paths from
+Quick Start's, as done below — they write output to a different address, so
+don't run them through `tools/eest-run.py` or `tools/check_all.sh`'s
+`CHECK_ALL_ZISKE_PARITY=1` gate.
 
 ```bash
 ZISK_V1=1 guest/build.sh guest/src/hello.pnk guest/build/hello-v1.elf
