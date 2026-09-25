@@ -116,7 +116,12 @@ docker run --rm ghcr.io/pirapira/stateless-pancaketh:v0.1.0 \
   ```
 * ZisK toolchain via `ziskup` (https://ziskup.zisk.tech): `ziskup -v 0.18.0
   --provingkey`, giving `~/.zisk/bin/ziskemu` for step counts and
-  `~/.zisk/bin/cargo-zisk` for STARK proofs.
+  `~/.zisk/bin/cargo-zisk` for STARK proofs. This is the version the
+  default guest build (below) targets, including `tools/check_all.sh`'s
+  optional `CHECK_ALL_ZISKE_PARITY=1` gate.
+  [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md)'s walkthrough
+  instead targets ZisK 1.3.0-alpha, which needs a different guest build
+  (`ZISK_V1=1`, see that document) and its own proving-key install steps.
 * Python oracle: `uv run --directory evm-asm/execution-specs python ...`.
 
 ## Quick start
