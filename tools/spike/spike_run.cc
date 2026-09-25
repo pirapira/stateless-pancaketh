@@ -1,4 +1,15 @@
 // spike_run.cc — minimal SPIKE driver for the codegen stateless guest.
+//
+// Vendored from evm-asm/scripts/spike/spike_run.cc (same MIT license, same
+// copyright holder) and modified in one place: OUTPUT_ADDR below matches
+// this repo's single guest build (guest/src/config.h), which targets ZisK
+// >=1.1.0-alpha's relocated output address (0xa0410000) rather than
+// evm-asm's own hand-written guest, which still targets the older
+// 0xa0010000. See docs/ZISK-PROVE-FLAPJACK.md and
+// https://github.com/pirapira/stateless-pancaketh/issues/128 for
+// background; evm-asm/scripts/spike/README.md documents the debug env vars
+// below in more depth (unchanged here).
+//
 // Usage: spike_run <guest.elf> <input-file> <output-file>
 //   Mirrors `ziskemu -e <elf> -i <input> -o <output>`:
 //   - loads guest.elf; preloads <input-file> at 0x40000000 (an 8-byte zero meta
@@ -7,14 +18,14 @@
 //     (services read_input t0=0xF2 and halt a7=93 — the guest's only 2 ecalls);
 //   - registers the zisk_accel crypto-CSR extension;
 //   - runs to HTIF exit, then writes SPIKE_OUTPUT_LEN bytes (default 256) from
-//     0xa0010000 to <output-file>.
+//     0xa0410000 to <output-file>.
 // A clean halt also emits `spike_run: halted cleanly steps=N` on stderr so
 // callers can persist the consumed instruction count without guessing from a
 // step budget or a missing output file.
 //
 // Debug env (optional; unset = previous byte-identical behavior):
 //   SPIKE_COMMITLOG=<file>   per-instruction commit log (existing)
-//   SPIKE_DEBUG_CMD=<file>   headless debug script (see scripts/spike/README.md)
+//   SPIKE_DEBUG_CMD=<file>   headless debug script (see evm-asm/scripts/spike/README.md)
 //   SPIKE_WATCH=<hex>        true 8-byte write watch: print PC+old+new on any change
 //   SPIKE_WATCH_STOP=1       stop the run after the first watch hit (default: log+continue)
 //   SPIKE_BREAK_PC=<hex>     stop after executing the insn at this PC (logs once)
@@ -44,13 +55,11 @@
 #include <iterator>
 #include <cstdlib>
 #include <cctype>
-#include <unordered_map>
-#include <map>
 
 extern extension_t* make_zisk_accel_extension();
 
 static const reg_t INPUT_ADDR    = 0x40000000ULL;
-static const reg_t OUTPUT_ADDR   = 0xa0410000ULL;  // matches guest/src/config.h
+static const reg_t OUTPUT_ADDR   = 0xa0410000ULL;
 static const size_t DEFAULT_OUTPUT_LEN = 256;
 static const reg_t HANDLER_ADDR  = 0x60000000ULL;
 static const reg_t HALT_FLAG     = 0x60008000ULL;  // handler writes nonzero here on halt
@@ -590,10 +599,8 @@ int main(int argc, char** argv) {
   // step until the handler signals halt (HALT_FLAG nonzero) or the cap is hit.
   // flag==1 clean halt; flag==2 guest fault (info at HALT_FLAG+0x10/0x18/0x20).
   uint64_t flagv = rd_u64(&sim, HALT_FLAG);
-  const char* hist_path = getenv("SPIKE_PC_HIST");
-  std::unordered_map<uint64_t, uint64_t> pc_hist;
   if (!flagv) {
-    const bool fine = have_watch || have_break_pc || hist_path;
+    const bool fine = have_watch || have_break_pc;
     const size_t batch = fine ? 1 : STEP_BATCH;
     while (steps_left > 0) {
       size_t n = batch;
@@ -604,7 +611,6 @@ int main(int argc, char** argv) {
         print_regs(p);
         // fall through: execute the insn at break_pc, then continue
       }
-      if (hist_path) pc_hist[p->get_state()->pc]++;
       p->step(n);
       steps_left -= n;
       if (have_watch) {
@@ -638,14 +644,6 @@ int main(int argc, char** argv) {
     fprintf(stderr, "spike_run: step cap reached without halt (or watch-stop)\n");
   } else if (flagv == 1) {
     const uint64_t steps_used = p->get_state()->minstret->read() - minstret_start;
-    if (hist_path) {
-      FILE* hf = fopen(hist_path, "w");
-      if (hf) {
-        std::map<uint64_t, uint64_t> sorted(pc_hist.begin(), pc_hist.end());
-        for (auto& kv : sorted) fprintf(hf, "%llx %llu\n", (unsigned long long)kv.first, (unsigned long long)kv.second);
-        fclose(hf);
-      }
-    }
     fprintf(stderr, "spike_run: halted cleanly steps=%llu\n",
             (unsigned long long)steps_used);
   }

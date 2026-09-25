@@ -12,7 +12,7 @@ uv run --directory "$ROOT/evm-asm/execution-specs" python "$ROOT/tools/gen_mpt_v
 if [ ! -f "$W/t_mpt.elf" ] || [ "$ROOT/guest/src/mpt.pnk" -nt "$W/t_mpt.elf" ] || [ "$ROOT/guest/test/t_mpt.pnk" -nt "$W/t_mpt.elf" ]; then
   "$ROOT/guest/build.sh" "$ROOT/guest/test/t_mpt.pnk" "$W/t_mpt.elf" >/dev/null
 fi
-SPIKE_RUN="${SPIKE_RUN:-$ROOT/evm-asm/scripts/spike/spike_run}"
+SPIKE_RUN="${SPIKE_RUN:-$ROOT/tools/spike/spike_run}"
 SPIKE_OUTPUT_LEN=65536 "$SPIKE_RUN" "$W/t_mpt.elf" "$W/mpt.input" "$W/mpt.out" 2> "$W/spike.log" || true
 tail -n 1 "$W/spike.log"
 python3 - "$W" <<'EOF'

@@ -40,7 +40,7 @@ Milestones (each is measured with `tools/eest-run.py` on EEST fixtures):
 * No hex literals; no `#include` — the build runs `cpp` over the sources so constants
   and includes are preprocessor macros.
 * Input is read directly from `0x40000000` with shared-memory loads and copied into
-  the heap once; output is written with shared-memory stores to `0xa0010000`.
+  the heap once; output is written with shared-memory stores to `0xa0410000`.
 
 ## Correspondence with SpecRef
 
@@ -55,9 +55,10 @@ The deliberate numeric-width and saturation boundaries are catalogued in
 
 **Mechanism.** ZisK exposes its accelerators as custom CSRs: the guest executes `csrrs x0, <csr>, <reg>`
 where `<reg>` holds the address of an 8-byte-aligned parameter block; ziskemu transpiles the instruction
-into a precompiled op (one step, fixed cost), and evm-asm's `scripts/spike/spike_run` registers
-`scripts/spike/zisk_accel.cc`, a SPIKE extension implementing the same 17 CSRs, so the accelerated guest
-runs byte-identically under spike_run and ziskemu (evm-asm's `parity-check.sh` is the model for our gate).
+into a precompiled op (one step, fixed cost), and `tools/spike/spike_run` (originally evm-asm's driver,
+vendored and modified here for ZisK 1.x's output address) registers `tools/spike/zisk_accel.cc`, a SPIKE
+extension implementing the same 17 CSRs, so the accelerated guest runs byte-identically under spike_run
+and ziskemu (evm-asm's `parity-check.sh` is the model for our gate).
 Ids (`~/zisk/definitions/src/syscall.rs`), costs (`~/zisk/core/src/zisk_ops_costs.rs`; an ordinary
 instruction costs ~114 on our guest), and parameter layouts (`zisk_accel.cc`, all limbs LE u64):
 

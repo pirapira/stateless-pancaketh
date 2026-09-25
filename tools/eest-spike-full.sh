@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 RESULT_COMMIT="$(git rev-parse HEAD)"
 TAG="$(tr -d '[:space:]' < evm-asm/scripts/eest-fixture-tag.txt)"
-SPIKE_RUN="${SPIKE_RUN:-$ROOT/evm-asm/scripts/spike/spike_run}"
+SPIKE_RUN="${SPIKE_RUN:-$ROOT/tools/spike/spike_run}"
 JOBS="${EEST_JOBS:-32}"
 RUN_ROOT="$ROOT/work/eest-spike-$RESULT_COMMIT"
 

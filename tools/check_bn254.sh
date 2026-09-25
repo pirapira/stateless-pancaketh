@@ -38,7 +38,7 @@ ELF_SW="$W/t_bn254_${TAG}_sw.elf"
 ELF_ACCEL="$W/t_bn254_${TAG}_accel.elf"
 env -u ACCEL "$ROOT/guest/build.sh" "$ROOT/guest/test/t_bn254.pnk" "$ELF_SW" > /dev/null
 ACCEL=1 "$ROOT/guest/build.sh" "$ROOT/guest/test/t_bn254.pnk" "$ELF_ACCEL" > /dev/null
-SPIKE_RUN="${SPIKE_RUN:-$ROOT/evm-asm/scripts/spike/spike_run}"
+SPIKE_RUN="${SPIKE_RUN:-$ROOT/tools/spike/spike_run}"
 split_check() {
   local name="$1" elf="$2"
   local prefix="$W/t_bn254_${TAG}_${name}_record"

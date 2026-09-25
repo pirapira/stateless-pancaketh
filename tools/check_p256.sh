@@ -34,7 +34,7 @@ if [ -n "$DEFS" ]; then
   printf '#include "%s"\n' "$ROOT/guest/test/t_p256.pnk" >> "$SRC"
 fi
 "$ROOT/guest/build.sh" "$SRC" "$ELF" > /dev/null
-SPIKE_RUN="${SPIKE_RUN:-$ROOT/evm-asm/scripts/spike/spike_run}"
+SPIKE_RUN="${SPIKE_RUN:-$ROOT/tools/spike/spike_run}"
 OUT="$W/t_p256.out"
 SPIKE_OUTPUT_LEN=65536 "$SPIKE_RUN" "$ELF" "$INP" "$OUT" 2>&1 | tail -1
 LEN=$(stat -c %s "$EXP")

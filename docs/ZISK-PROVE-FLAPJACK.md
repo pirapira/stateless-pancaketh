@@ -13,9 +13,7 @@ Follow [README.md's "Quick start"](../README.md#quick-start) first. This
 document assumes it has already been run: submodules initialized, `lake`
 and `spike_run` built, and `tools/make-inputs.sh 50` plus
 `tools/build_both.sh` already producing `work/inputs/manifest.tsv`,
-`guest/build/guest.elf`, and `guest/build/guest-accel.elf`. This guide also
-needs its own guest builds, with `ZISK_V1=1` (see "Build the ZisK 1.x guest
-ELFs" below) — Quick Start's plain builds cannot run under ZisK 1.x at all.
+`guest/build/guest.elf`, and `guest/build/guest-accel.elf`.
 
 ## Prerequisites
 
@@ -73,21 +71,20 @@ Versions used for the run recorded below:
 run). Run `cargo-zisk prove`/`execute` under `nice` so it does not starve
 other work on a shared machine, as done in every command below.
 
-## Build the ZisK 1.x guest ELFs
+## Build `hello.elf`
 
-Quick Start's plain guest builds cannot run under ZisK 1.x; this guide needs
-its own `ZISK_V1=1` builds instead. Keep them in separate output paths from
-Quick Start's, as done below — they write output to a different address, so
-don't run them through `tools/eest-run.py` or `tools/check_all.sh`'s
-`CHECK_ALL_ZISKE_PARITY=1` gate.
+Quick Start already builds `guest/build/guest.elf` and
+`guest/build/guest-accel.elf`, and its `work/inputs/manifest.tsv` (50
+fixtures) already includes fixture 00000. The one artifact
+`tools/build_both.sh` doesn't build is this walkthrough's small example:
 
 ```bash
-ZISK_V1=1 guest/build.sh guest/src/hello.pnk guest/build/hello-v1.elf
-ACCEL=1 ZISK_V1=1 guest/build.sh guest/src/main.pnk guest/build/guest-accel-v1.elf
+guest/build.sh guest/src/hello.pnk guest/build/hello.elf
 ```
 
-(The 40 static-analysis warnings `flapjack-compile` prints while building
-`main.pnk` are non-fatal and expected, not specific to this walkthrough.)
+It builds in well under a second. (The 40 static-analysis warnings
+`flapjack-compile` prints while Quick start builds `main.pnk` are
+non-fatal and expected, not specific to this walkthrough.)
 
 ## Small example: `hello.pnk`
 
@@ -95,7 +92,7 @@ An 8-byte input (`ziskemu` requires input length to be a multiple of 8):
 
 ```bash
 printf 'hello\0\0\0' > /tmp/hello.input
-~/.zisk/bin/ziskemu -e guest/build/hello-v1.elf -i /tmp/hello.input -o /tmp/hello.out -m
+~/.zisk/bin/ziskemu -e guest/build/hello.elf -i /tmp/hello.input -o /tmp/hello.out -m
 ```
 
 Recorded result: **907 steps** (0.18.0's bootstrapped-`cake` build gave
@@ -111,7 +108,7 @@ separate `cargo-zisk check-setup` step — the first `prove` invocation
 against a given proving key regenerates the constant trees automatically):
 
 ```bash
-time nice cargo-zisk prove -e guest/build/hello-v1.elf -i /tmp/hello.input \
+time nice cargo-zisk prove -e guest/build/hello.elf -i /tmp/hello.input \
   -o work/proof-hello.json -y
 cargo-zisk verify -p work/proof-hello.json
 ```
@@ -129,14 +126,15 @@ constant-tree regeneration, **934,980 bytes** proof file.
 
 EEST fixture 00000
 (`blockchain_tests/for_amsterdam/amsterdam/eip2780_reduce_intrinsic_tx_gas/authorization_charges/account_write_authority_is_recipient.json`).
-This uses the **accelerated** guest (`guest-accel-v1.elf`, built above)
-throughout — it's the guest anyone proving a real block cares about; see
+This uses the **accelerated** guest (`guest-accel.elf`, already built by
+Quick Start's `tools/build_both.sh`) throughout — it's the guest anyone
+proving a real block cares about; see
 [docs/ZISK-PROVE-BLOCK-FLAPJACK.md](ZISK-PROVE-BLOCK-FLAPJACK.md) for the
 real-block pipeline.
 
 ```bash
 INPUT=work/inputs/00000_test_account_write_authority_is_recipient_fork_Amsterdam-blockchain_test_from_state_test-non-zer.input
-time ~/.zisk/bin/ziskemu -e guest/build/guest-accel-v1.elf -i "$INPUT" -o /tmp/block00000.out -m
+time ~/.zisk/bin/ziskemu -e guest/build/guest-accel.elf -i "$INPUT" -o /tmp/block00000.out -m
 ```
 
 Recorded result: **2,576,557 ZisK steps** (0.18.0: 2,584,624); the dumped
@@ -145,7 +143,7 @@ column exactly, with the rest of the fixed-size output buffer correctly
 zero-padded.
 
 ```bash
-time nice cargo-zisk prove -e guest/build/guest-accel-v1.elf -i "$INPUT" \
+time nice cargo-zisk prove -e guest/build/guest-accel.elf -i "$INPUT" \
   -o work/proof-block00000-accel.json -y
 cargo-zisk verify -p work/proof-block00000-accel.json
 ```
@@ -162,6 +160,11 @@ verify`, 160ms).
 
 ## Notes
 
+* `guest/build.sh` produces one guest ELF that runs under both Spike
+  (`tools/spike/spike_run`) and ZisK 1.x `ziskemu`/`cargo-zisk` — no
+  separate build flag needed. See
+  [issue #128](https://github.com/pirapira/stateless-pancaketh/issues/128)
+  for the history of why this once needed two builds.
 * `ziskemu`'s `-l`/`-s` flags no longer mean `--emulator`/`--asm` as they
   did in 0.18.0 (`-l` on 1.x means `--log-step`); there is no longer a
   choice to make on `ziskemu` itself — this guest, a raw RISC-V ELF, always

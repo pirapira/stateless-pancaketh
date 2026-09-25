@@ -13,10 +13,12 @@ a programming language with a formally verified compiler (currently
 
 Port `evm-asm/EvmAsm/Stateless/SpecRef` (the pure-Lean functional port of
 execution-specs' Amsterdam `run_stateless_guest`) to Pancake source in
-`guest/src/`, compiled to a RISC-V ELF that obeys the same guest contract as
-evm-asm's `stateless_guest` (input at `0x40000000`, output at `0xa0010000`,
-halt via `ecall a7=93`), so evm-asm's `spike_run` and `ziskemu` can run it
-unchanged, as an alternative to evm-asm's hand-written/codegen RV64 guest.
+`guest/src/`, compiled to a RISC-V ELF that obeys a guest contract close to
+evm-asm's `stateless_guest` (input at `0x40000000`, halt via `ecall a7=93`;
+output at `0xa0410000`, matching ZisK >=1.1.0-alpha's relocated output
+address rather than evm-asm's `0xa0010000`), so `tools/spike/spike_run` (a
+fork of evm-asm's driver, modified for that address) and ZisK's `ziskemu`
+can run it, as an alternative to evm-asm's hand-written/codegen RV64 guest.
 
 ## Status
 
@@ -103,25 +105,26 @@ docker run --rm ghcr.io/pirapira/stateless-pancaketh:v0.1.0 \
   ```
 * `spike_run`, a custom driver built on top of Spike (`riscv-isa-sim`,
   checked out as this repo's `riscv-isa-sim` submodule — see "Quick start"
-  below to initialize it). Build it once (needs `libboost-all-dev` and
+  below to initialize it), vendored into this repo at `tools/spike/` (a
+  fork of `evm-asm/scripts/spike/`'s driver, modified to match this repo's
+  guest's output address). Build it once (needs `libboost-all-dev` and
   `device-tree-compiler`), then build `spike_run` against it (needs
-  `libssl-dev`); `evm-asm/scripts/spike/build.sh` finds the submodule at its
-  default `SPIKE_SRC` path, no override needed:
+  `libssl-dev`); `tools/spike/build.sh` finds the submodule at its default
+  `SPIKE_SRC` path, no override needed:
 
   ```bash
   mkdir -p riscv-isa-sim/build
   (cd riscv-isa-sim/build && ../configure)   # parentheses = subshell, so this `cd` doesn't persist
   make -C riscv-isa-sim/build -j"$(nproc)"
-  evm-asm/scripts/spike/build.sh
+  tools/spike/build.sh
   ```
-* ZisK toolchain via `ziskup` (https://ziskup.zisk.tech): `ziskup -v 0.18.0
-  --provingkey`, giving `~/.zisk/bin/ziskemu` for step counts and
-  `~/.zisk/bin/cargo-zisk` for STARK proofs. This is the version the
-  default guest build (below) targets, including `tools/check_all.sh`'s
-  optional `CHECK_ALL_ZISKE_PARITY=1` gate.
-  [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md)'s walkthrough
-  instead targets ZisK 1.3.0-alpha, which needs a different guest build
-  (`ZISK_V1=1`, see that document) and its own proving-key install steps.
+* ZisK toolchain via `ziskup` (https://ziskup.zisk.tech): `ziskup -v
+  1.3.0-alpha --provingkey`, giving `~/.zisk/bin/ziskemu` for step counts
+  and `~/.zisk/bin/cargo-zisk` for STARK proofs. The guest build (below)
+  and `tools/spike/spike_run` both target this version's memory layout, so
+  older ZisK releases (0.18.0 and earlier 1.x) don't work here; see
+  [docs/ZISK-PROVE-FLAPJACK.md](docs/ZISK-PROVE-FLAPJACK.md) for a
+  proving-key install gotcha specific to this release.
 * Python oracle: `uv run --directory evm-asm/execution-specs python ...`.
 
 ## Quick start
@@ -134,7 +137,7 @@ git submodule update --init evm-asm riscv-isa-sim
 ```
 
 `tools/eest-run.py` uses Spike by default and needs
-`evm-asm/scripts/spike/spike_run` built first, which itself needs
+`tools/spike/spike_run` built first, which itself needs
 `riscv64-unknown-elf-{as,ld}` (see "Toolchain" above for the
 `riscv-isa-sim` build prerequisites):
 
@@ -142,7 +145,7 @@ git submodule update --init evm-asm riscv-isa-sim
 mkdir -p riscv-isa-sim/build
 (cd riscv-isa-sim/build && ../configure)   # parentheses = subshell, so this `cd` doesn't persist
 make -C riscv-isa-sim/build -j"$(nproc)"
-evm-asm/scripts/spike/build.sh
+tools/spike/build.sh
 ```
 
 `tools/build_both.sh` compiles the guest with `flapjack` by default, which

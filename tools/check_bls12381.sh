@@ -45,7 +45,7 @@ if [ -n "$ONLY" ]; then
 fi
 "${PY[@]}" "$ROOT/tools/gen_bls12381_vectors.py" "${GEN_ARGS[@]}" "$INP" "$EXP"
 
-SPIKE_RUN="${SPIKE_RUN:-$ROOT/evm-asm/scripts/spike/spike_run}"
+SPIKE_RUN="${SPIKE_RUN:-$ROOT/tools/spike/spike_run}"
 ELF_SW="$W/t_bls12381_${TAG}_sw.elf"
 ELF_ACCEL="$W/t_bls12381_${TAG}_accel.elf"
 "$ROOT/guest/build.sh" "$ROOT/guest/test/t_bls12381.pnk" "$ELF_SW" >/dev/null

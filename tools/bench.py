@@ -20,7 +20,7 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SPIKE_RUN = os.environ.get("SPIKE_RUN", os.path.join(ROOT, "evm-asm/scripts/spike/spike_run"))
+SPIKE_RUN = os.environ.get("SPIKE_RUN", os.path.join(ROOT, "tools/spike/spike_run"))
 SPIKE_PROF = os.environ.get("SPIKE_PROF", os.path.join(ROOT, "tools/spike_prof/spike_prof"))
 PROF_PY = os.path.join(ROOT, "tools/spike_prof/prof.py")
 ZISKEMU = os.environ.get("ZISKEMU", os.path.expanduser("~/.zisk/bin/ziskemu"))

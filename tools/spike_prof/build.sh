@@ -2,7 +2,7 @@
 # Build the PC-histogram SPIKE driver used by tools/bench.py --profile.
 #
 # The driver links the same SPIKE libraries and accelerator extension as
-# evm-asm/scripts/spike/build.sh, but uses spike_prof.cc so SPIKE_PC_HIST can
+# tools/spike/build.sh, but uses spike_prof.cc so SPIKE_PC_HIST can
 # collect one sample per executed instruction.
 set -euo pipefail
 
@@ -45,16 +45,16 @@ CXX_STD=(-std=c++2a -O2 -Wall -Wno-unused-parameter)
 # spike_prof.cc uses the same trap handler as spike_run.  Generate the header
 # locally so a clean checkout needs no checked-in build products.
 "$AS" -march=rv64imac_zicsr \
-  -o handler.o "$ROOT/evm-asm/scripts/spike/handler.s"
+  -o handler.o "$ROOT/tools/spike/handler.s"
 "$LD" -Ttext=0x60000000 -e _handler -nostdlib \
   -o handler.elf handler.o
 "$OBJCOPY" -O binary handler.elf handler.bin
 xxd -i handler.bin > handler_bin.h
 
 # Keep these flags and library order in sync with step 3 of
-# evm-asm/scripts/spike/build.sh.
+# tools/spike/build.sh.
 "$CXX" "${CXX_STD[@]}" "${INCS[@]}" \
-  spike_prof.cc "$ROOT/evm-asm/scripts/spike/zisk_accel.cc" \
+  spike_prof.cc "$ROOT/tools/spike/zisk_accel.cc" \
   "$SPIKE_BUILD"/libriscv.a "$SPIKE_BUILD"/libdisasm.a \
   "$SPIKE_BUILD"/libsoftfloat.a "$SPIKE_BUILD"/libfesvr.a \
   "$SPIKE_BUILD"/libfdt.a \

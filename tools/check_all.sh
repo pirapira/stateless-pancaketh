@@ -20,7 +20,7 @@ FAIL_COUNT=0
 # Keep one overridable runner for all checks.  This is useful when the evm-asm
 # submodule is mounted elsewhere and also makes the Spike-first local workflow
 # explicit.
-SPIKE_RUN="${SPIKE_RUN:-$ROOT/evm-asm/scripts/spike/spike_run}"
+SPIKE_RUN="${SPIKE_RUN:-$ROOT/tools/spike/spike_run}"
 export SPIKE_RUN
 
 run_check() {
