@@ -104,10 +104,13 @@ match, including the success byte `01` at offset 32):
 ## Generate and verify the proof
 
 `-o` takes a single output file; `prove` always aggregates into one Vadcop
-Final proof:
+Final proof. This block's largest proof instances take longer to settle
+than `cargo-zisk`'s default internal timeout allows, so raise it via
+`PROOFMAN_SETTLE_TIMEOUT_S`:
 
 ```bash
-time nice -n 15 cargo-zisk prove -e guest/build/guest-accel-v1.elf -i "$INPUT" \
+PROOFMAN_SETTLE_TIMEOUT_S=14400 time nice -n 15 cargo-zisk prove \
+  -e guest/build/guest-accel-v1.elf -i "$INPUT" \
   -o work/proof-block115260.json -y
 cargo-zisk verify -p work/proof-block115260.json
 ```
@@ -121,27 +124,25 @@ one Vadcop Final proof. This is far fewer instances than 0.18.0's 127 (Main
 alone dropped from 63 to 16), consistent with 1.x's trace-packing
 improvements rather than a smaller proof — file size is essentially
 unchanged (see below). Verified both in-process (`-y`) and standalone
-(`cargo-zisk verify`, 58ms).
+(`cargo-zisk verify`, 115ms).
 
 | Stage | Time |
 | --- | --- |
-| Execute (witness/plan) | 4.8s |
-| Calculating contributions | 578.7s (9.6 min) |
-| Generating inner proofs | 2459.8s (41.0 min) |
-| Generating Vadcop final proof | 4.2s |
-| **Total proving** | **~3047s (50.8 min)** |
+| Execute (witness/plan) | 3.8s |
+| Calculating contributions | 184.7s (3.1 min) |
+| Generating inner proofs | 1877.7s (31.3 min) |
+| Generating Vadcop final proof | 13.0s |
+| **Total proving** | **~2079s (34.7 min)** |
 
-Wall clock for the whole `prove` invocation: **51m9s**; **1010m22s** of
-user CPU time and **6m26s** of system time consumed across all cores over
-that wall time. Wall clock and user CPU are close to 0.18.0's figures
-(47m29s wall, 955m user), but system time dropped sharply (234m10s →
-6m26s, roughly a 97% reduction) — a real kernel/syscall-overhead
-improvement somewhere in the 1.x proving pipeline, not something specific
-to this guest. The proof file is **415,248 bytes** (close to `hello.pnk`'s
-and the EEST fixture's proofs in
-[docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md), about 10% bigger
-than 0.18.0's 375,809 bytes — the aggregated proof is fixed-size regardless
-of the underlying execution length).
+(Recorded on a run that reused some already-computed proof units from an
+earlier attempt against the same proving key; a fully cold run may take
+longer.)
+
+The proof file is **935,028 bytes** (close to `hello.pnk`'s and the EEST
+fixture's proofs in [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) —
+the aggregated proof is fixed-size regardless of the underlying execution
+length), noticeably bigger than 0.18.0's Poseidon-based 375,809 bytes,
+since BLAKE3 costs more to verify in-circuit than an algebraic hash.
 
 This machine was not under contention for this run (contrast with the
 0.18.0 run recorded previously, where the first two attempts were

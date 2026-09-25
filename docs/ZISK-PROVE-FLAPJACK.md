@@ -37,19 +37,20 @@ run it:
   Fetch and verify the correct key manually instead:
 
   ```bash
-  curl -fL -o zisk-provingkey-1.3.0-alpha.tar.gz \
-    https://storage.googleapis.com/zisk-setup/zisk-provingkey-1.3.0-alpha.tar.gz
-  curl -fL -o zisk-provingkey-1.3.0-alpha.tar.gz.md5 \
-    https://storage.googleapis.com/zisk-setup/zisk-provingkey-1.3.0-alpha.tar.gz.md5
-  md5sum -c zisk-provingkey-1.3.0-alpha.tar.gz.md5
+  curl -fL -o zisk-provingkey-1.3.0-alpha-blake3.tar.gz \
+    https://storage.googleapis.com/zisk-setup/zisk-provingkey-1.3.0-alpha-blake3.tar.gz
+  curl -fL -o zisk-provingkey-1.3.0-alpha-blake3.tar.gz.md5 \
+    https://storage.googleapis.com/zisk-setup/zisk-provingkey-1.3.0-alpha-blake3.tar.gz.md5
+  md5sum -c zisk-provingkey-1.3.0-alpha-blake3.tar.gz.md5
   rm -rf ~/.zisk/provingKey   # only needed if a different version's key is already there
-  tar xzf zisk-provingkey-1.3.0-alpha.tar.gz -C ~/.zisk
+  tar xzf zisk-provingkey-1.3.0-alpha-blake3.tar.gz -C ~/.zisk
   ```
 
-  Use this exact key, not the `zisk-provingkey-pre-1.3.0-alpha-blake3.tar.gz`
-  also in that bucket — that one is a non-default, still-experimental
-  configuration whose proofs fail. `cargo-zisk prove` logs `Using hash
-  function: Poseidon1` when the right key is active.
+  Use this exact key. A similarly-named
+  `zisk-provingkey-pre-1.3.0-alpha-blake3.tar.gz` also exists in the same
+  bucket; despite the name, it's a different (older) artifact whose proofs
+  fail witness generation — don't use it. `cargo-zisk prove` logs `Using
+  hash function: blake3` when the right key is active.
 * The installer's "Configuring CPU binaries" step is unreliable when
   switching versions in an existing `~/.zisk`: it can leave `ziskemu`
   updated but `cargo-zisk` on the old version (`cargo-zisk --version` will
@@ -116,14 +117,13 @@ cargo-zisk verify -p work/proof-hello.json
 ```
 
 Recorded result: the first-ever invocation against this proving key spent
-219.0s regenerating constant trees (one-time; the tool's own reported
-"Proof generated in 305.840s" excludes this). 9 AIR instances (Binary,
+134.6s regenerating constant trees (one-time; the tool's own reported
+"Proof generated in 416.257s" excludes this). 9 AIR instances (Binary,
 BinaryExtension, InputData, Main, Mem, MemAlign, Rom, VirtualTableZisk0/1)
-folded into one Vadcop Final proof: contributions 65.2s, inner proofs
-235.0s, final aggregation 5.5s, verified in-process (`-y`) and again
-standalone (`verify`, 69ms); **9m19s** wall including the one-time
-constant-tree regeneration (150m31s user / 4m14s system CPU time across
-cores), **415,200 bytes** proof file.
+folded into one Vadcop Final proof: contributions 19.5s, inner proofs
+383.4s, final aggregation 13.4s, verified in-process (`-y`) and again
+standalone (`verify`, 121ms); **9m31s** wall including the one-time
+constant-tree regeneration, **934,980 bytes** proof file.
 
 ## EEST test fixture 00000
 
@@ -153,12 +153,12 @@ cargo-zisk verify -p work/proof-block00000-accel.json
 Recorded result: 13 AIR instances (one each of Arith, ArithEq, Binary,
 BinaryExtension, InputData, Keccakf, Main, Mem, MemAlign, Rom, Sha256f,
 VirtualTableZisk0/1) folded into one Vadcop Final proof; `cargo-zisk`'s own
-log reports proving completed in 451.9s (contributions 83.1s, inner proofs
-365.4s, final aggregation 3.3s), **7m59s** wall clock for the whole `prove`
-invocation (140m user / 1m40s system CPU time across cores), **415,244
-bytes** proof file (close to `hello.pnk`'s — the aggregated proof is
-fixed-size regardless of the underlying execution length). Verified both
-in-process (`-y`) and standalone (`cargo-zisk verify`, 60ms).
+log reports proving completed in 511.4s (contributions 30.7s, inner proofs
+468.0s, final aggregation 12.7s), **8m52s** wall clock for the whole `prove`
+invocation, **935,024 bytes** proof file (close to `hello.pnk`'s — the
+aggregated proof is fixed-size regardless of the underlying execution
+length). Verified both in-process (`-y`) and standalone (`cargo-zisk
+verify`, 160ms).
 
 ## Notes
 
@@ -171,11 +171,12 @@ in-process (`-y`) and standalone (`cargo-zisk verify`, 60ms).
 * `-o` still takes a single output file path; `prove` still always
   aggregates into one Vadcop Final proof, and `cargo-zisk verify -p <that
   file>` still works correctly and quickly.
-* Proof size is still fixed-size regardless of step count: 415,200 /
-  415,244 / 415,248 bytes across hello / this fixture /
+* Proof size is still fixed-size regardless of step count: 934,980 /
+  935,024 / 935,028 bytes across hello / this fixture /
   [docs/ZISK-PROVE-BLOCK-FLAPJACK.md](ZISK-PROVE-BLOCK-FLAPJACK.md)'s real
-  block — all close to each other, about 10% bigger than 0.18.0's 375,809
-  bytes across the same three cases.
+  block — all close to each other. BLAKE3 proofs are noticeably bigger than
+  0.18.0's Poseidon-based 375,809 bytes across the same three cases, since
+  BLAKE3 isn't an algebraic hash and costs more to verify in-circuit.
 * The AIR-instance count per proof dropped from 0.18.0 (11→9 for hello,
   15→13 for this fixture, 127→45 for the real block in
   [docs/ZISK-PROVE-BLOCK-FLAPJACK.md](ZISK-PROVE-BLOCK-FLAPJACK.md)), which
