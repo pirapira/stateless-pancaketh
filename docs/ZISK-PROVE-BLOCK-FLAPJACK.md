@@ -9,18 +9,17 @@ block `115260`, the same block used for the gist comparison in
 guest compiled by `flapjack` (the Lean 4 port of the Pancake compiler,
 `lake exe flapjack-compile`). Follow
 [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) first: it covers the
-guest-build prerequisites, including the `ZISK_V1=1` build flag this ZisK
-1.x run needs. This document only adds the real-block-specific steps below.
+guest-build and toolchain prerequisites. This document only adds the
+real-block-specific steps below.
 
-This uses the **accelerated** guest (`guest-accel-v1.elf`, `ACCEL=1
-ZISK_V1=1` build). `nice` is used throughout, per the same CPU-load note as
+This uses the **accelerated** guest (`guest-accel.elf`, `ACCEL=1` build,
+already built by Quick Start's `tools/build_both.sh`). `nice` is used
+throughout, per the same CPU-load note as
 [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md).
 
 The flapjack-compiled `guest-accel.elf` was checked for correctness on this
 exact block before proving; see
-[docs/FLAPJACK-CORRECTNESS.md](FLAPJACK-CORRECTNESS.md). That check predates
-the `ZISK_V1=1` build flag, which only changes ELF segment layout and the
-output address — not the guest's logic — so it still applies.
+[docs/FLAPJACK-CORRECTNESS.md](FLAPJACK-CORRECTNESS.md).
 
 ## Prerequisites
 
@@ -56,7 +55,7 @@ Versions used for the run recorded below:
 | `cargo-zisk` | 1.3.0-alpha (2026-09-21) |
 | `flapjack` (lake dependency) | `2732831e21be0a32e3135417f39563cc1124a8d4` |
 | `evm-asm` submodule | `7e65e4d024718f704226cd795f3d03d4e9aafe13` |
-| guest source | `stateless-pancaketh` `29c5b34` plus the uncommitted `ZISK_V1` changes to `guest/build.sh`, `guest/src/config.h`, `guest/runtime/start.S`, `guest/runtime/zisk-strict.ld` described in [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) |
+| guest source | `stateless-pancaketh` `ceb8235` plus the guest-ELF-unification changes to `guest/build.sh`, `guest/src/config.h`, `guest/runtime/{start.S,guest.ld}`, and the new vendored `tools/spike/` driver (see [issue #128](https://github.com/pirapira/stateless-pancaketh/issues/128)) |
 | Host | Ubuntu 24.04.5, 32 cores |
 
 ## Fetch, extract, build, convert
@@ -71,7 +70,7 @@ printf '%s  %s\n' \
   work/gist/115260-115269.tar.zst | sha256sum -c -
 tar --zstd -xf work/gist/115260-115269.tar.zst -C work/gist/archive
 
-ACCEL=1 ZISK_V1=1 COMPILER=flapjack guest/build.sh guest/src/main.pnk guest/build/guest-accel-v1.elf
+ACCEL=1 COMPILER=flapjack guest/build.sh guest/src/main.pnk guest/build/guest-accel.elf
 
 python3 evm-asm/scripts/eest-stateless-to-input.py \
   --fixtures-dir work/gist/archive/blockchain_tests \
@@ -82,13 +81,13 @@ python3 evm-asm/scripts/eest-stateless-to-input.py \
 This writes `work/gist/inputs/00000_block_115260_..._b0.input`
 (568,680 bytes) and a manifest whose expected-output column reproduces issue
 #54's recorded hex exactly — unaffected by which Pancake compiler built the
-guest, or by `ZISK_V1`, since this step doesn't touch the guest at all.
+guest, since this step doesn't touch the guest at all.
 
 ## Emulate and confirm the result
 
 ```bash
 INPUT=work/gist/inputs/00000_block_115260_3c8d1842a0538d9f67a091fc4b7ab007be665735c2b0ddebeb5a313c382f0764_b0.input
-time ~/.zisk/bin/ziskemu -e guest/build/guest-accel-v1.elf -i "$INPUT" \
+time ~/.zisk/bin/ziskemu -e guest/build/guest-accel.elf -i "$INPUT" \
   -o work/gist/accelerated-zisk.out -X
 ```
 
@@ -110,7 +109,7 @@ than `cargo-zisk`'s default internal timeout allows, so raise it via
 
 ```bash
 PROOFMAN_SETTLE_TIMEOUT_S=14400 time nice -n 15 cargo-zisk prove \
-  -e guest/build/guest-accel-v1.elf -i "$INPUT" \
+  -e guest/build/guest-accel.elf -i "$INPUT" \
   -o work/proof-block115260.json -y
 cargo-zisk verify -p work/proof-block115260.json
 ```
@@ -150,6 +149,10 @@ OOM-killed by unrelated load spikes on this shared host).
 
 ## Notes
 
+* `guest/build.sh` produces one guest ELF that runs under both Spike
+  (`tools/spike/spike_run`) and ZisK 1.x — see
+  [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md)'s Notes and
+  [issue #128](https://github.com/pirapira/stateless-pancaketh/issues/128).
 * This is a genuine chain block (`glamsterdam-devnet-7` #115260), not a
   synthetic EEST test case — see
   [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) for the

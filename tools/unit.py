@@ -9,7 +9,7 @@ import argparse, hashlib, os, struct, subprocess, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pyref
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SPIKE_RUN = os.environ.get("SPIKE_RUN", os.path.join(ROOT, "evm-asm/scripts/spike/spike_run"))
+SPIKE_RUN = os.environ.get("SPIKE_RUN", os.path.join(ROOT, "tools/spike/spike_run"))
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--accel", action="store_true", help="build the test with ZisK accelerator CSRs")
 parser.add_argument("test")

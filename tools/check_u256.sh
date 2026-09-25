@@ -5,6 +5,7 @@
 # cpp OPS_MASK (for instruction-cost measurement; comparison is skipped).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SPIKE_RUN="${SPIKE_RUN:-$ROOT/tools/spike/spike_run}"
 COUNT=60; SEED=1; OPS=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -24,7 +25,7 @@ if [ -n "$OPS" ]; then
 fi
 "$ROOT/guest/build.sh" "$SRC" "$ELF" > /dev/null
 OUT="$W/t_u256.out"
-SPIKE_OUTPUT_LEN=65536 "$ROOT/evm-asm/scripts/spike/spike_run" "$ELF" "$INP" "$OUT" 2>&1 | tail -1
+SPIKE_OUTPUT_LEN=65536 "$SPIKE_RUN" "$ELF" "$INP" "$OUT" 2>&1 | tail -1
 if [ -n "$OPS" ]; then exit 0; fi
 LEN=$(stat -c %s "$EXP")
 head -c "$LEN" "$OUT" > "$W/t_u256.actual"

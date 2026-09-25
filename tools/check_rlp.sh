@@ -12,7 +12,7 @@ else
   python3 "$ROOT/tools/gen_rlp_vectors.py" "$W"
 fi
 "$ROOT/guest/build.sh" "$ROOT/guest/test/t_rlp.pnk" "$W/t_rlp.elf" >/dev/null
-SPIKE_RUN="${SPIKE_RUN:-$ROOT/evm-asm/scripts/spike/spike_run}"
+SPIKE_RUN="${SPIKE_RUN:-$ROOT/tools/spike/spike_run}"
 SPIKE_OUTPUT_LEN=65536 "$SPIKE_RUN" "$W/t_rlp.elf" "$W/rlp.input" "$W/rlp.out" 2> "$W/spike.log" || true
 tail -n 1 "$W/spike.log"
 n=$(stat -c %s "$W/rlp.expected")

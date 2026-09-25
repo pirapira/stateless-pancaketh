@@ -1,9 +1,9 @@
 # start.S -- bare-metal runtime shim for a Pancake program running as a
-# ZisK-style stateless guest under evm-asm's spike_run (or ziskemu).
+# ZisK-style stateless guest under tools/spike/spike_run (or ziskemu).
 #
-# Contract (see evm-asm/scripts/spike/spike_run.cc):
+# Contract (see tools/spike/spike_run.cc):
 #   input  at 0x40000000: [8B zero meta][8B LE len][blob]
-#   output at 0xa0010000: SSZ StatelessValidationResult bytes
+#   output at 0xa0410000: SSZ StatelessValidationResult bytes
 #   halt   : ecall with a7 = 93
 #
 # The Pancake program itself reads/writes those regions with shared-memory
@@ -40,11 +40,10 @@ ffihalt:
 # FFI: @trap(@base, code, @base, 0) -- signal an unrecoverable guest error;
 # write the marker and code bytes and halt so the harness sees a deterministic
 # (wrong) output.  Pancake's trap_with helper writes the additional metadata.
-# __output_addr is an absolute symbol set at link time (see guest/build.sh /
-# ZISK_V1), matching guest/src/config.h's OUTPUT_ADDR.
+# 0xa0410000 matches guest/src/config.h's OUTPUT_ADDR.
 .globl ffitrap
 ffitrap:
-    la   t0, __output_addr
+    li   t0, 0xa0410000
     li   t1, 0xEE
     sb   t1, 32(t0)
     sb   a1, 33(t0)
@@ -53,7 +52,7 @@ ffitrap:
 # ---- ZisK accelerator FFI stubs (ZISK_ACCEL builds) --------------------------
 # Pancake `@keccakf(p, 200, p, 200)` arrives with a0 = p (absolute address of the
 # 25*u64 state).  `csrrs x0, 0x800, a0` is ZisK's Keccak-f[1600] precompile;
-# evm-asm's spike_run implements the same CSR (scripts/spike/zisk_accel.cc).
+# tools/spike/spike_run implements the same CSR (tools/spike/zisk_accel.cc).
 .globl ffikeccakf
 ffikeccakf:
     csrrs x0, 0x800, a0
@@ -115,7 +114,7 @@ ffibn_fp2_mul:
     ret
 
 # FFI: BLS12-381 accelerator calls.  The first argument is the parameter
-# block described by evm-asm/scripts/spike/zisk_accel.cc; each CSR mutates its
+# block described by tools/spike/zisk_accel.cc; each CSR mutates its
 # output operand in place.  Keep these as tiny assembly bridges so the same
 # Pancake source reaches both Spike's extension and ziskemu's implementation.
 .globl ffibls_arith384

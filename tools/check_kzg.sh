@@ -20,7 +20,7 @@ fi
 
 "${PY[@]}" "$ROOT/tools/gen_kzg_vectors.py" "$W/kzg.in" "$W/kzg.expected"
 
-SPIKE_RUN="${SPIKE_RUN:-$ROOT/evm-asm/scripts/spike/spike_run}"
+SPIKE_RUN="${SPIKE_RUN:-$ROOT/tools/spike/spike_run}"
 ELF_SW="$W/t_kzg_sw.elf"
 ELF_ACCEL="$W/t_kzg_accel.elf"
 "$ROOT/guest/build.sh" "$ROOT/guest/test/t_kzg.pnk" "$ELF_SW" >/dev/null
