@@ -60,9 +60,18 @@ ARG GIT_COMMIT=unknown
 ARG GIT_REF=unknown
 ARG BUILD_DATE=unknown
 
+# libomp-dev/libgmp-dev/libopenmpi-dev/libsodium-dev (not just their -bin/
+# runtime-only counterparts, to guarantee the exact same package version as
+# the ziskemu-builder stage, since both are FROM the same base image) supply
+# ziskemu's own dynamic-link dependencies (confirmed via `ldd`: libomp.so.5,
+# libgmp.so.10, libmpi.so.40/libopen-rte.so.40/libopen-pal.so.40, and their
+# own transitive libhwloc/libevent/libudev/libcap, plus libsodium.so.23).
+# Without these, ziskemu fails to launch at all (a dynamic-linker error),
+# which surfaces as every single EEST case erroring.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates python3 build-essential \
     binutils-riscv64-unknown-elf \
+    libomp-dev libgmp-dev libopenmpi-dev libsodium-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ziskemu-builder /zisk/target/release/ziskemu /usr/local/bin/ziskemu
