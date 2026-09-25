@@ -40,9 +40,11 @@ ffihalt:
 # FFI: @trap(@base, code, @base, 0) -- signal an unrecoverable guest error;
 # write the marker and code bytes and halt so the harness sees a deterministic
 # (wrong) output.  Pancake's trap_with helper writes the additional metadata.
+# __output_addr is an absolute symbol set at link time (see guest/build.sh /
+# ZISK_V1), matching guest/src/config.h's OUTPUT_ADDR.
 .globl ffitrap
 ffitrap:
-    li   t0, 0xa0010000
+    la   t0, __output_addr
     li   t1, 0xEE
     sb   t1, 32(t0)
     sb   a1, 33(t0)

@@ -19,6 +19,9 @@ fi
 if [[ "${ACCEL:-0}" == "1" ]]; then
   cpp_debug_args+=(-DZISK_ACCEL)   # ZisK accelerator CSRs via FFI stubs in runtime/start.S
 fi
+if [[ "${ZISK_V1:-0}" == "1" ]]; then
+  cpp_debug_args+=(-DZISK_V1)      # OUTPUT_ADDR moves for ZisK >=1.1.0-alpha; see config.h
+fi
 "$CPP" "${cpp_debug_args[@]}" -P -w -nostdinc -I "$HERE/src" -x c "$src" | grep -v '^#' > "$b.pp.pnk"
 # COMPILER=flapjack (default) uses the Lean 4 port (lake exe flapjack-compile, pinned by
 # the flapjack lake dependency); COMPILER=cake uses the bootstrapped/prebuilt cake binary
@@ -40,6 +43,21 @@ esac
 "$CPP" -P -x assembler-with-cpp "$b.cake.S" > "$b.cake.s"
 "$AS" -march=rv64imac -mno-relax -o "$b.cake.o" "$b.cake.s"
 "$AS" -march=rv64imac_zicsr -mno-relax -o "$b.start.o" "$HERE/runtime/start.S"
-"$LD" -Ttext=0x80000000 -Tdata=0xa0020000 -nostdlib --no-relax -e _start \
-  -o "$out" "$b.start.o" "$b.cake.o"
+# -Ttext=0x80000000 (default) puts the ELF/program headers in their own PT_LOAD
+# segment just below .text, at 0x7ffff000, and produces an R+E .text segment.
+# Both are fine for Spike (generic ELF loader) and ZisK 0.18.0, but ZisK
+# >=1.x's stricter loader rejects the headers segment (outside its declared
+# ROM range) and its riscv2zisk converter panics on an R+E .text segment
+# once a second PT_LOAD segment (.data) is present (reported upstream).
+# ZISK_V1=1 links with guest/runtime/zisk-strict.ld instead, which leaves the
+# headers unmapped and makes .text execute-only (PF_X, no PF_R); it also
+# passes __output_addr, matching config.h's ZISK_V1 OUTPUT_ADDR, for
+# start.S's ffitrap (the only place outside config.h with this address).
+if [[ "${ZISK_V1:-0}" == "1" ]]; then
+  "$LD" -T "$HERE/runtime/zisk-strict.ld" --defsym=__output_addr=0xa0410000 \
+    -nostdlib --no-relax -e _start -o "$out" "$b.start.o" "$b.cake.o"
+else
+  "$LD" -Ttext=0x80000000 -Tdata=0xa0020000 --defsym=__output_addr=0xa0010000 \
+    -nostdlib --no-relax -e _start -o "$out" "$b.start.o" "$b.cake.o"
+fi
 echo "built $out"
