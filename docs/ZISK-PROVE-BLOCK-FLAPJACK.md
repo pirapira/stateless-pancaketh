@@ -9,22 +9,25 @@ block `115260`, the same block used for the gist comparison in
 guest compiled by `flapjack` (the Lean 4 port of the Pancake compiler,
 `lake exe flapjack-compile`). Follow
 [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) first: it covers the
-guest-build prerequisites. This document only adds the real-block-specific
-steps below.
+guest-build prerequisites, including the `ZISK_V1=1` build flag this ZisK
+1.x run needs. This document only adds the real-block-specific steps below.
 
-This uses the **accelerated** guest (`guest-accel.elf`, `ACCEL=1` build).
-`nice` is used throughout, per the same CPU-load note as
+This uses the **accelerated** guest (`guest-accel-v1.elf`, `ACCEL=1
+ZISK_V1=1` build). `nice` is used throughout, per the same CPU-load note as
 [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md).
 
 The flapjack-compiled `guest-accel.elf` was checked for correctness on this
 exact block before proving; see
-[docs/FLAPJACK-CORRECTNESS.md](FLAPJACK-CORRECTNESS.md).
+[docs/FLAPJACK-CORRECTNESS.md](FLAPJACK-CORRECTNESS.md). That check predates
+the `ZISK_V1=1` build flag, which only changes ELF segment layout and the
+output address — not the guest's logic — so it still applies.
 
 ## Prerequisites
 
 Everything in [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md)'s
-"Prerequisites" section (the ZisK 0.18.0 toolchain via `ziskup`; that
-document also assumes README's "Quick start" has already been run), plus:
+"Prerequisites" section (the ZisK 1.3.0-alpha toolchain via `ziskup`,
+including its proving-key workaround; that document also assumes README's
+"Quick start" has already been run), plus:
 
 * `curl` and a `tar` with zstd support (Ubuntu: `zstd`) to fetch and extract
   the block archive.
@@ -49,11 +52,11 @@ Versions used for the run recorded below:
 
 | Component | Version / commit |
 | --- | --- |
-| `ziskemu` | 0.18.0 (790f9e2, 2026-05-15) |
-| `cargo-zisk` | 0.18.0 (790f9e2, 2026-05-15) |
+| `ziskemu` | 1.3.0-alpha (2026-09-21) |
+| `cargo-zisk` | 1.3.0-alpha (2026-09-21) |
 | `flapjack` (lake dependency) | `2732831e21be0a32e3135417f39563cc1124a8d4` |
 | `evm-asm` submodule | `7e65e4d024718f704226cd795f3d03d4e9aafe13` |
-| guest source | `stateless-pancaketh` `43222a3` |
+| guest source | `stateless-pancaketh` `29c5b34` plus the uncommitted `ZISK_V1` changes to `guest/build.sh`, `guest/src/config.h`, `guest/runtime/start.S`, `guest/runtime/zisk-strict.ld` described in [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) |
 | Host | Ubuntu 24.04.5, 32 cores |
 
 ## Fetch, extract, build, convert
@@ -68,7 +71,7 @@ printf '%s  %s\n' \
   work/gist/115260-115269.tar.zst | sha256sum -c -
 tar --zstd -xf work/gist/115260-115269.tar.zst -C work/gist/archive
 
-ACCEL=1 COMPILER=flapjack guest/build.sh guest/src/main.pnk guest/build/guest-accel.elf
+ACCEL=1 ZISK_V1=1 COMPILER=flapjack guest/build.sh guest/src/main.pnk guest/build/guest-accel-v1.elf
 
 python3 evm-asm/scripts/eest-stateless-to-input.py \
   --fixtures-dir work/gist/archive/blockchain_tests \
@@ -79,20 +82,20 @@ python3 evm-asm/scripts/eest-stateless-to-input.py \
 This writes `work/gist/inputs/00000_block_115260_..._b0.input`
 (568,680 bytes) and a manifest whose expected-output column reproduces issue
 #54's recorded hex exactly — unaffected by which Pancake compiler built the
-guest, since this step doesn't touch the guest at all.
+guest, or by `ZISK_V1`, since this step doesn't touch the guest at all.
 
 ## Emulate and confirm the result
 
 ```bash
 INPUT=work/gist/inputs/00000_block_115260_3c8d1842a0538d9f67a091fc4b7ab007be665735c2b0ddebeb5a313c382f0764_b0.input
-time ~/.zisk/bin/ziskemu -e guest/build/guest-accel.elf -i "$INPUT" \
+time ~/.zisk/bin/ziskemu -e guest/build/guest-accel-v1.elf -i "$INPUT" \
   -o work/gist/accelerated-zisk.out -X
 ```
 
-Recorded result: **263,739,098 ZisK steps**, ~16.6s wall (`ziskemu -X`,
-including the cost/opcode breakdown report), output bytes identical to
-issue #54's recorded 69-byte result (root/succ/tail all match, including
-the success byte `01` at offset 32):
+Recorded result: **263,371,236 ZisK steps** (0.18.0: 263,739,098), ~16.4s
+wall (`ziskemu -X`, including the cost/opcode breakdown report), output
+bytes identical to issue #54's recorded 69-byte result (root/succ/tail all
+match, including the success byte `01` at offset 32):
 
 ```text
 7734570c97a937506b9b771b328a2e5bdb8b74af65c54c747603e4b3d1e8d7ce0125000000b68c2ca6010000000c0000000400000008000000080000000000000000000000
@@ -101,46 +104,49 @@ the success byte `01` at offset 32):
 ## Generate and verify the proof
 
 `-o` takes a single output file; `prove` always aggregates into one Vadcop
-Final proof:
+Final proof. This block's largest proof instances take longer to settle
+than `cargo-zisk`'s default internal timeout allows, so raise it via
+`PROOFMAN_SETTLE_TIMEOUT_S`:
 
 ```bash
-time nice -n 15 cargo-zisk prove -e guest/build/guest-accel.elf -i "$INPUT" \
-  -l -o work/proof-block115260.json -y
+PROOFMAN_SETTLE_TIMEOUT_S=14400 time nice -n 15 cargo-zisk prove \
+  -e guest/build/guest-accel-v1.elf -i "$INPUT" \
+  -o work/proof-block115260.json -y
 cargo-zisk verify -p work/proof-block115260.json
 ```
 
-Recorded result: **127 AIR instances** (63× Main, 16× Mem, 10× BinaryAdd,
-9× Binary, 5× ArithEq384, 4× Sha256f, 3× ArithEq, 3× BinaryExtension, 3×
-Keccakf, 2× MemAlignReadByte, plus one each of Arith, InputData, MemAlign,
-MemAlignWriteByte, Rom, RomData, SpecifiedRanges, VirtualTable0,
-VirtualTable1), folded into one Vadcop Final proof. Verified both
-in-process (`-y`) and standalone (`cargo-zisk verify`, 50ms).
+Recorded result: **45 AIR instances** (16× Main, 4× Mem, 4× Sha256f, 3×
+BinaryHuge, 2× Keccakf, 2× ArithEq384Large, plus one each of Arith,
+Arith256XLarge, ArithEq, ArithEq384, BinaryAddHiHuge, BinaryExtension,
+BinaryExtensionLarge, InputData, MemAlign, MemAlignReadByteLarge,
+MemAlignWriteByte, Rom, VirtualTableZisk0, VirtualTableZisk1), folded into
+one Vadcop Final proof. This is far fewer instances than 0.18.0's 127 (Main
+alone dropped from 63 to 16), consistent with 1.x's trace-packing
+improvements rather than a smaller proof — file size is essentially
+unchanged (see below). Verified both in-process (`-y`) and standalone
+(`cargo-zisk verify`, 115ms).
 
 | Stage | Time |
 | --- | --- |
-| Execute (witness/plan) | 5.7s |
-| Calculating contributions | 479.6s (8.0 min) |
-| Generating inner proofs | 2353.1s (39.2 min) |
-| Generating Vadcop final proof | 4.7s |
-| Verifying Vadcop final proof (in-process) | 0.02s |
-| **Total proving** | **~2843s (47.4 min)** |
+| Execute (witness/plan) | 3.8s |
+| Calculating contributions | 184.7s (3.1 min) |
+| Generating inner proofs | 1877.7s (31.3 min) |
+| Generating Vadcop final proof | 13.0s |
+| **Total proving** | **~2079s (34.7 min)** |
 
-Wall clock for the whole `prove` invocation (including proving-key load):
-**47m29s**; **955m** of user CPU time and **234m** of system time consumed
-across all cores over that wall time (`nice -n 15` is what keeps this from
-starving other work on a shared machine). The proof file is **376 KB
-(375,809 bytes)** — identical in size to the small `hello.pnk`/EEST-fixture
-proofs in [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) (the
-aggregated proof is fixed-size regardless of the underlying execution
-length).
+(Recorded on a run that reused some already-computed proof units from an
+earlier attempt against the same proving key; a fully cold run may take
+longer.)
 
-This machine is shared with other tenants; the first two attempts at this
-proof were OOM-killed partway through (once during contribution
-calculation, once at the very start) when system load spiked from unrelated
-processes (load average briefly over 40 on this host). The run recorded
-above succeeded once load dropped back to single digits. This is a
-host-contention issue, not a compiler or ZisK-version difference — worth
-knowing if reproducing this on a busy shared machine.
+The proof file is **935,028 bytes** (close to `hello.pnk`'s and the EEST
+fixture's proofs in [docs/ZISK-PROVE-FLAPJACK.md](ZISK-PROVE-FLAPJACK.md) —
+the aggregated proof is fixed-size regardless of the underlying execution
+length), noticeably bigger than 0.18.0's Poseidon-based 375,809 bytes,
+since BLAKE3 costs more to verify in-circuit than an algebraic hash.
+
+This machine was not under contention for this run (contrast with the
+0.18.0 run recorded previously, where the first two attempts were
+OOM-killed by unrelated load spikes on this shared host).
 
 ## Notes
 

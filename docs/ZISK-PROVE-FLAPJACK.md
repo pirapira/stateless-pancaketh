@@ -13,19 +13,44 @@ Follow [README.md's "Quick start"](../README.md#quick-start) first. This
 document assumes it has already been run: submodules initialized, `lake`
 and `spike_run` built, and `tools/make-inputs.sh 50` plus
 `tools/build_both.sh` already producing `work/inputs/manifest.tsv`,
-`guest/build/guest.elf`, and `guest/build/guest-accel.elf`.
+`guest/build/guest.elf`, and `guest/build/guest-accel.elf`. This guide also
+needs its own guest builds, with `ZISK_V1=1` (see "Build the ZisK 1.x guest
+ELFs" below) — Quick Start's plain builds cannot run under ZisK 1.x at all.
 
 ## Prerequisites
 
 A ZisK toolchain installed via `ziskup` (https://ziskup.zisk.tech):
-`ziskup -v 0.18.0 --provingkey`, then `cargo-zisk check-setup` (it
-regenerates constant-tree files for a new key on first run, which takes a
-couple of minutes). Two `ziskup` gotchas hit while preparing this
-document, worth knowing before you run it:
+`ziskup -v 1.3.0-alpha --provingkey`, plus a manual proving-key fix (see
+below). Gotchas hit while preparing this document, worth knowing before you
+run it:
 
 * `ziskup --provingkey` with no `-v` installs the latest release first,
   silently swapping out a pinned older `ziskemu`/`cargo-zisk`. Always pass
   `-v <version>`.
+* `ziskup`'s own proving-key download is broken for this release. It
+  computes the download URL by dropping the `-alpha` suffix
+  (`zisk-provingkey-1.3.0.tar.gz`, no longer even present in the bucket as
+  of this writing) instead of the correctly-suffixed
+  `zisk-provingkey-1.3.0-alpha.tar.gz`, so its checksum check against the
+  wrong file's sidecar fails and `ziskup --provingkey` exits partway through
+  (the `ziskemu`/`cargo-zisk` binaries install fine; the key does not).
+  Fetch and verify the correct key manually instead:
+
+  ```bash
+  curl -fL -o zisk-provingkey-1.3.0-alpha-blake3.tar.gz \
+    https://storage.googleapis.com/zisk-setup/zisk-provingkey-1.3.0-alpha-blake3.tar.gz
+  curl -fL -o zisk-provingkey-1.3.0-alpha-blake3.tar.gz.md5 \
+    https://storage.googleapis.com/zisk-setup/zisk-provingkey-1.3.0-alpha-blake3.tar.gz.md5
+  md5sum -c zisk-provingkey-1.3.0-alpha-blake3.tar.gz.md5
+  rm -rf ~/.zisk/provingKey   # only needed if a different version's key is already there
+  tar xzf zisk-provingkey-1.3.0-alpha-blake3.tar.gz -C ~/.zisk
+  ```
+
+  Use this exact key. A similarly-named
+  `zisk-provingkey-pre-1.3.0-alpha-blake3.tar.gz` also exists in the same
+  bucket; despite the name, it's a different (older) artifact whose proofs
+  fail witness generation — don't use it. `cargo-zisk prove` logs `Using
+  hash function: blake3` when the right key is active.
 * The installer's "Configuring CPU binaries" step is unreliable when
   switching versions in an existing `~/.zisk`: it can leave `ziskemu`
   updated but `cargo-zisk` on the old version (`cargo-zisk --version` will
@@ -37,34 +62,32 @@ Versions used for the run recorded below:
 
 | Component | Version / commit |
 | --- | --- |
-| `ziskemu` | 0.18.0 (790f9e2, 2026-05-15) |
-| `cargo-zisk` | 0.18.0 (790f9e2, 2026-05-15) |
+| `ziskemu` | 1.3.0-alpha (2026-09-21) |
+| `cargo-zisk` | 1.3.0-alpha (2026-09-21) |
 | `flapjack` (lake dependency) | `2732831e21be0a32e3135417f39563cc1124a8d4` |
 | `evm-asm` submodule | `7e65e4d024718f704226cd795f3d03d4e9aafe13` |
 | EEST fixtures | `tests-zkevm@v0.6.2` |
 | Host | Ubuntu 24.04.5, 32 cores |
 
-**Proving is CPU-heavy** (the fixture run below used all cores at ~86
-CPU-minutes of user time over ~4 minutes wall-clock). Run `cargo-zisk
-prove`/`execute` under `nice` so it does not starve other work on a shared
-machine, as done in every command below.
+**Proving is CPU-heavy** (full CPU-time figures are recorded below for each
+run). Run `cargo-zisk prove`/`execute` under `nice` so it does not starve
+other work on a shared machine, as done in every command below.
 
-## Build `hello.elf`
+## Build the ZisK 1.x guest ELFs
 
-Quick start already builds `guest/build/guest.elf` and
-`guest/build/guest-accel.elf`, and its `work/inputs/manifest.tsv` (50
-fixtures) already includes fixture 00000: `tools/make-inputs.sh`'s fixture
-selection is sorted, so `--limit 1` and `--limit 50` agree on which fixture
-comes first. The one artifact `tools/build_both.sh` doesn't build is this
-walkthrough's small example:
+Quick Start's plain guest builds cannot run under ZisK 1.x; this guide needs
+its own `ZISK_V1=1` builds instead. Keep them in separate output paths from
+Quick Start's, as done below — they write output to a different address, so
+don't run them through `tools/eest-run.py` or `tools/check_all.sh`'s
+`CHECK_ALL_ZISKE_PARITY=1` gate.
 
 ```bash
-guest/build.sh guest/src/hello.pnk guest/build/hello.elf
+ZISK_V1=1 guest/build.sh guest/src/hello.pnk guest/build/hello-v1.elf
+ACCEL=1 ZISK_V1=1 guest/build.sh guest/src/main.pnk guest/build/guest-accel-v1.elf
 ```
 
-It builds in well under a second. (The 40 static-analysis warnings
-`flapjack-compile` prints while Quick start builds `main.pnk` are
-non-fatal and expected, not specific to this walkthrough.)
+(The 40 static-analysis warnings `flapjack-compile` prints while building
+`main.pnk` are non-fatal and expected, not specific to this walkthrough.)
 
 ## Small example: `hello.pnk`
 
@@ -72,75 +95,93 @@ An 8-byte input (`ziskemu` requires input length to be a multiple of 8):
 
 ```bash
 printf 'hello\0\0\0' > /tmp/hello.input
-~/.zisk/bin/ziskemu -e guest/build/hello.elf -i /tmp/hello.input -o /tmp/hello.out -m
+~/.zisk/bin/ziskemu -e guest/build/hello-v1.elf -i /tmp/hello.input -o /tmp/hello.out -m
 ```
 
-Recorded result: **1,032 steps**.
+Recorded result: **907 steps** (0.18.0's bootstrapped-`cake` build gave
+1,032; `FLAPJACK-CORRECTNESS.md` separately recorded 906 for a
+prebuilt-release `cake` build — the gap from either 0.18.0 figure is
+consistent with ISA-level step-accounting changes across the 0.18.0→1.x
+line, e.g. 1.3.0-alpha's native RISC-V Zba support, not a correctness
+regression).
 
 Generate and verify a proof (`-o` is a single output file; `prove` always
-produces one aggregated, fixed-size proof):
+produces one aggregated, fixed-size proof; unlike 0.18.0, there is no
+separate `cargo-zisk check-setup` step — the first `prove` invocation
+against a given proving key regenerates the constant trees automatically):
 
 ```bash
-time nice cargo-zisk prove -e guest/build/hello.elf -i /tmp/hello.input \
-  -l -o work/proof-hello.json -y
+time nice cargo-zisk prove -e guest/build/hello-v1.elf -i /tmp/hello.input \
+  -o work/proof-hello.json -y
 cargo-zisk verify -p work/proof-hello.json
 ```
 
-Recorded result: 11 AIR instances (Main, Rom, Binary, BinaryExtension,
-MemAlignWriteByte, Mem, InputData, RomData, SpecifiedRanges, VirtualTable0/1)
-folded into one **Vadcop Final** proof, verified in-process (`-y`) and again
-standalone (`verify`, 70ms); contributions 31.1s, inner proofs 172.5s, final
-aggregation 9.3s, **3m43s** wall including proving-key load, **376 KB
-(375,809 bytes)** proof file.
+Recorded result: the first-ever invocation against this proving key spent
+134.6s regenerating constant trees (one-time; the tool's own reported
+"Proof generated in 416.257s" excludes this). 9 AIR instances (Binary,
+BinaryExtension, InputData, Main, Mem, MemAlign, Rom, VirtualTableZisk0/1)
+folded into one Vadcop Final proof: contributions 19.5s, inner proofs
+383.4s, final aggregation 13.4s, verified in-process (`-y`) and again
+standalone (`verify`, 121ms); **9m31s** wall including the one-time
+constant-tree regeneration, **934,980 bytes** proof file.
 
 ## EEST test fixture 00000
 
 EEST fixture 00000
 (`blockchain_tests/for_amsterdam/amsterdam/eip2780_reduce_intrinsic_tx_gas/authorization_charges/account_write_authority_is_recipient.json`).
-This uses the **accelerated** guest (`guest-accel.elf`, already built by
-Quick start's `tools/build_both.sh`) throughout — it's the guest anyone
-proving a real block cares about; see
+This uses the **accelerated** guest (`guest-accel-v1.elf`, built above)
+throughout — it's the guest anyone proving a real block cares about; see
 [docs/ZISK-PROVE-BLOCK-FLAPJACK.md](ZISK-PROVE-BLOCK-FLAPJACK.md) for the
 real-block pipeline.
 
 ```bash
 INPUT=work/inputs/00000_test_account_write_authority_is_recipient_fork_Amsterdam-blockchain_test_from_state_test-non-zer.input
-time ~/.zisk/bin/ziskemu -e guest/build/guest-accel.elf -i "$INPUT" -o /tmp/block00000.out -m
+time ~/.zisk/bin/ziskemu -e guest/build/guest-accel-v1.elf -i "$INPUT" -o /tmp/block00000.out -m
 ```
 
-Recorded result: **2,584,624 ZisK steps**, and `PASS(full)` per
-`tools/eest-run.py`'s classification against the Python oracle.
+Recorded result: **2,576,557 ZisK steps** (0.18.0: 2,584,624); the dumped
+output's first 71 bytes match `work/inputs/manifest.tsv`'s expected-output
+column exactly, with the rest of the fixed-size output buffer correctly
+zero-padded.
 
 ```bash
-time nice cargo-zisk prove -e guest/build/guest-accel.elf -i "$INPUT" \
-  -l -o work/proof-block00000-accel.json -y
+time nice cargo-zisk prove -e guest/build/guest-accel-v1.elf -i "$INPUT" \
+  -o work/proof-block00000-accel.json -y
 cargo-zisk verify -p work/proof-block00000-accel.json
 ```
 
-Recorded result: 15 AIR instances (one each of Main, Rom, Binary,
-BinaryExtension, Arith, ArithEq, Keccakf, Sha256f, MemAlign, Mem, InputData,
-RomData, SpecifiedRanges, VirtualTable0/1) folded into one Vadcop Final
-proof; `cargo-zisk`'s own log reports proving completed in 243.5s
-(`Proofman 243.1s + Execution 0.08s + Count&Plan 0.004s`), **4m9s** wall
-clock for the whole `prove` invocation (85m46s user / 24m10s system CPU
-time across cores, including proving-key load), **376 KB (375,809 bytes)**
-proof file (identical size to `hello.pnk`'s — the aggregated proof is
-fixed-size regardless of the underlying execution length).
+Recorded result: 13 AIR instances (one each of Arith, ArithEq, Binary,
+BinaryExtension, InputData, Keccakf, Main, Mem, MemAlign, Rom, Sha256f,
+VirtualTableZisk0/1) folded into one Vadcop Final proof; `cargo-zisk`'s own
+log reports proving completed in 511.4s (contributions 30.7s, inner proofs
+468.0s, final aggregation 12.7s), **8m52s** wall clock for the whole `prove`
+invocation, **935,024 bytes** proof file (close to `hello.pnk`'s — the
+aggregated proof is fixed-size regardless of the underlying execution
+length). Verified both in-process (`-y`) and standalone (`cargo-zisk
+verify`, 160ms).
 
 ## Notes
 
-* `-l/--emulator` and `-s/--asm` are mutually exclusive; this guest is a raw
-  RISC-V ELF (not a ZisK SDK Rust program), so there is no `--asm` build to
-  use — always pass `-l`.
-* `-o` takes a single output file path; `prove` always aggregates into one
-  Vadcop Final proof, and `cargo-zisk verify -p <that file>` works correctly
-  and quickly.
-* Proving cost is dominated by the fixed per-AIR setup (contributions/inner-
-  proof machinery), not step count: 1,032 steps (`hello.pnk`) and 2.58M
-  steps (the fixture, accelerated guest) differ by three orders of
-  magnitude in steps, yet proving time is close (3m43s vs. 4m9s wall),
-  because both stay within a handful of AIR instances of the fixed
-  proving-key size.
+* `ziskemu`'s `-l`/`-s` flags no longer mean `--emulator`/`--asm` as they
+  did in 0.18.0 (`-l` on 1.x means `--log-step`); there is no longer a
+  choice to make on `ziskemu` itself — this guest, a raw RISC-V ELF, always
+  runs under the default Rust emulator. `cargo-zisk prove`/`setup`/`execute`
+  instead have their own `-a`/`--asm` to opt into the (unused here) ASM
+  backend.
+* `-o` still takes a single output file path; `prove` still always
+  aggregates into one Vadcop Final proof, and `cargo-zisk verify -p <that
+  file>` still works correctly and quickly.
+* Proof size is still fixed-size regardless of step count: 934,980 /
+  935,024 / 935,028 bytes across hello / this fixture /
+  [docs/ZISK-PROVE-BLOCK-FLAPJACK.md](ZISK-PROVE-BLOCK-FLAPJACK.md)'s real
+  block — all close to each other. BLAKE3 proofs are noticeably bigger than
+  0.18.0's Poseidon-based 375,809 bytes across the same three cases, since
+  BLAKE3 isn't an algebraic hash and costs more to verify in-circuit.
+* The AIR-instance count per proof dropped from 0.18.0 (11→9 for hello,
+  15→13 for this fixture, 127→45 for the real block in
+  [docs/ZISK-PROVE-BLOCK-FLAPJACK.md](ZISK-PROVE-BLOCK-FLAPJACK.md)), which
+  matches 1.x's trace-packing work (multiple execution steps packed per
+  row) rather than a smaller proof — file size is essentially unchanged.
 
 For the same pipeline against a real chain block instead of a synthetic
 EEST fixture, see

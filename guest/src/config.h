@@ -3,10 +3,19 @@
 #define INPUT_ADDR       1073741824   /* 0x40000000: [8B zero meta][8B LE len][blob] */
 #define INPUT_LEN_ADDR   1073741832   /* 0x40000008 */
 #define INPUT_DATA_ADDR  1073741840   /* 0x40000010 */
+/* ZisK >=1.1.0-alpha reserves RAM_ADDR..+4MB as a guarded stack region (see
+   core/src/mem.rs upstream), pushing OUTPUT_ADDR from 0xa0010000 (0.18.0,
+   and evm-asm's Spike-based guest contract, unchanged) up by 0x400000.
+   ZISK_V1 (see guest/build.sh) selects the new address. */
+#ifdef ZISK_V1
+#define OUTPUT_ADDR      2688614400   /* 0xa0410000 */
+#define SCRATCH_BASE     2688618496   /* 0xa0411000: after the output/debug prefix */
+#else
 #define OUTPUT_ADDR      2684420096   /* 0xa0010000 */
+#define SCRATCH_BASE     2684424192   /* 0xa0011000: after the output/debug prefix */
+#endif
 #define HEAP_BASE        2701131776   /* 0xa1000000 (= @base) */
 #define HEAP_END         2952790016   /* 0xb0000000 */
-#define SCRATCH_BASE     2684424192   /* 0xa0011000: after the output/debug prefix */
 #define SCRATCH_END      2701127680   /* 0xa0fff000: below the Pancake heap */
 #define M32              4294967295
 #define WORD             8
