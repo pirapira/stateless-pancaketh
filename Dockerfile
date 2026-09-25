@@ -15,7 +15,7 @@
 # ── Stage 1: build ziskemu from source ───────────────────────────────────────
 FROM ubuntu:24.04 AS ziskemu-builder
 
-ARG ZISK_TAG=v0.18.0
+ARG ZISK_TAG=v1.3.0-alpha
 ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
