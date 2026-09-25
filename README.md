@@ -53,7 +53,7 @@ corpus, so you can reproduce a conformance run with one `docker run` — no
 Lean, Rust, or RISC-V toolchain needed locally:
 
 ```bash
-docker run --rm ghcr.io/pirapira/stateless-pancaketh:v0.1.0
+docker run --rm ghcr.io/pirapira/stateless-pancaketh:v0.1.1
 ```
 
 This defaults to the accelerated guest against the full fixture corpus under
@@ -62,15 +62,15 @@ This defaults to the accelerated guest against the full fixture corpus under
 ```bash
 # Fewer parallel ziskemu jobs (each uses ~6.5-6.7 GB RSS; the entrypoint
 # auto-caps --jobs to available memory already, but you can go lower)
-docker run --rm ghcr.io/pirapira/stateless-pancaketh:v0.1.0 \
+docker run --rm ghcr.io/pirapira/stateless-pancaketh:v0.1.1 \
   guest/build/guest-accel.elf work/inputs/manifest.tsv --ziskemu --quiet-passes --jobs 2
 
 # Unaccelerated software guest instead of the ZisK-accelerated one
-docker run --rm ghcr.io/pirapira/stateless-pancaketh:v0.1.0 \
+docker run --rm ghcr.io/pirapira/stateless-pancaketh:v0.1.1 \
   guest/build/guest.elf work/inputs/manifest.tsv --ziskemu --quiet-passes
 
 # Narrow subset for a quick smoke check
-docker run --rm ghcr.io/pirapira/stateless-pancaketh:v0.1.0 \
+docker run --rm ghcr.io/pirapira/stateless-pancaketh:v0.1.1 \
   guest/build/guest-accel.elf work/inputs/manifest.tsv --ziskemu --quiet-passes \
   --filter random_statetest --limit 50
 ```
