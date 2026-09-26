@@ -38,8 +38,8 @@ case "$COMPILER" in
 esac
 # cake's .S uses C-preprocessor macros (cdecl, makesym); run cpp first.
 "$CPP" -P -x assembler-with-cpp "$b.cake.S" > "$b.cake.s"
-"$AS" -march=rv64imac -mno-relax -o "$b.cake.o" "$b.cake.s"
-"$AS" -march=rv64imac_zicsr -mno-relax -o "$b.start.o" "$HERE/runtime/start.S"
+"$AS" -march=rv64ima -mno-relax -o "$b.cake.o" "$b.cake.s"
+"$AS" -march=rv64ima_zicsr -mno-relax -o "$b.start.o" "$HERE/runtime/start.S"
 "$LD" -T "$HERE/runtime/guest.ld" -nostdlib --no-relax -e _start \
   -o "$out" "$b.start.o" "$b.cake.o"
 echo "built $out"

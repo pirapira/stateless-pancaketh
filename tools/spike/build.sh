@@ -62,7 +62,7 @@ if [[ "$OS_NAME" == "Darwin" ]]; then
     zisk_accel.cc -o libziskaccel.so
   echo "built $(pwd)/libziskaccel.so"
 
-  "$AS" -march=rv64imac_zicsr -o handler.o handler.s
+  "$AS" -march=rv64ima_zicsr -o handler.o handler.s
   "$LD" -Ttext=0x60000000 -nostdlib -o handler.elf handler.o
   "${RISCV_OBJCOPY:-riscv64-elf-objcopy}" -O binary handler.elf handler.bin
   xxd -i handler.bin > handler_bin.h
@@ -82,7 +82,7 @@ else
   echo "built $(pwd)/libziskaccel.so"
 
   # 2) trap handler -> raw binary -> C header
-  "$AS" -march=rv64imac_zicsr -o handler.o handler.s
+  "$AS" -march=rv64ima_zicsr -o handler.o handler.s
   "$LD" -Ttext=0x60000000 -e _handler -nostdlib -o handler.elf handler.o
   "$OBJCOPY" -O binary handler.elf handler.bin
   xxd -i handler.bin > handler_bin.h
