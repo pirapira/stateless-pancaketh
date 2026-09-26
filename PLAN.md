@@ -82,7 +82,7 @@ memcpy/memcmp/inputcpy/memset, 0x817/0x818 secp256r1 add/dbl. They can be added 
 **Pancake side.** A Pancake FFI call `@name(p1, n1, p2, n2)` reaches the symbol `ffiname` with
 a0 = p1, a1 = n1, a2 = p2, a3 = n2 (absolute addresses; probed 2026-09-03), running on the shim's C stack.
 An accelerator is therefore a 2-instruction stub in `guest/runtime/start.S` (`csrrs x0, CSR, a0; ret`;
-the shim is assembled with `-march=rv64imac_zicsr`) plus `#ifdef ZISK_ACCEL` in the library; the software
+the shim is assembled with `-march=rv64ima_zicsr`) plus `#ifdef ZISK_ACCEL` in the library; the software
 implementation stays as the reference and the default build. `ACCEL=1 guest/build.sh ...` selects the
 accelerated build. `alloc` returns 8-aligned pointers; data inside the input blob is not necessarily
 aligned, so wrappers copy into scratch (the sponge already does).

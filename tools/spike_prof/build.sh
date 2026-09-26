@@ -44,7 +44,7 @@ CXX_STD=(-std=c++2a -O2 -Wall -Wno-unused-parameter)
 
 # spike_prof.cc uses the same trap handler as spike_run.  Generate the header
 # locally so a clean checkout needs no checked-in build products.
-"$AS" -march=rv64imac_zicsr \
+"$AS" -march=rv64ima_zicsr \
   -o handler.o "$ROOT/tools/spike/handler.s"
 "$LD" -Ttext=0x60000000 -e _handler -nostdlib \
   -o handler.elf handler.o
